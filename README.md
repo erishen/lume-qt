@@ -69,7 +69,11 @@ qt-react-shell/
 
 ```bash
 make            # 完整构建（前端 + C++）
-make run        # 构建并运行
+make run        # 构建并运行（加载 app:// 构建产物，默认模式）
+make dev        # 开发模式：Vite 热重载 + 应用（推荐做前端开发时用）
+make dev-hot    # 只启动 Vite dev server，另开终端手动运行应用
+make dev-stop   # 清理残留的 Vite dev server（端口 5173）
+make dev-rebuild # 全量重建后运行（旧的 make dev 行为）
 make frontend   # 仅构建前端
 make clean      # 清理 build 与前端产物
 make rebuild    # clean + 完整重建
@@ -101,17 +105,22 @@ cmake --build build
 ./build/qt-react-shell
 ```
 
-> CMake 的 `frontend-build` 目标会在每次 `cmake --build` 时自动重新构建前端，并将 `qwebchannel.js`（Qt 安装的 `share/qt6/webchannel/` 下）拷贝到 `resources/web/`。
+> CMake 的 `frontend-build` 目标带有 staleness 检查：仅当前端源码比 `resources/web/` 新时才重新跑 `npm run build`，所以改 C++ 一行不会触发整次前端构建。它会同时把 `qwebchannel.js`（Qt 安装的 `share/qt6/webchannel/` 下）拷贝到 `resources/web/`。
 
-### 前端开发模式（热更新）
-
-若希望前端热更新而无需反复重建 C++，可：
+### 前端开发模式（热重载）
 
 ```bash
-cd frontend && npm run dev
+make dev        # 一条命令：启动 Vite dev server（5173）+ Qt 应用，Ctrl-C 一并退出
+make dev-hot    # 只起 Vite，另开终端执行：QTRS_DEV_URL=http://localhost:5173 ./build/qt-react-shell
+make dev-stop   # 若 Ctrl-C 后 5173 仍有残留进程
 ```
 
-然后将 `src/mainwindow.cpp` 中加载的 URL 临时改为 `http://localhost:5173/`（开发服务器）。此时 QWebChannel 仍可用——`qwebchannel.js` 由开发页面通过脚本标签引入。
+`make dev` 通过环境变量 `QTRS_DEV_URL` 让应用加载 `http://localhost:5173` 而非 `app://app/index.html`；前端改动经 Vite HMR 即时生效，无需重编 C++ 或重新打包。
+
+- **QWebChannel 在 HTTP 模式下同样可用**：transport 由 `QWebEnginePage::setWebChannel` 注入，与页面 scheme 无关。`qwebchannel.js` 由 `frontend/vite.config.ts` 在启动时同步到 `frontend/public/`（Vite 静态根），与生产构建同源；该文件是生成物，已 gitignored。
+- **dev server 固定 5173 端口**（`strictPort: true`）：`make dev` 启动前会预检端口，若被旧实例占用直接报错并提示 `make dev-stop`，避免应用静默连到过期页面。退出时按监听端口清理，不会残留孤儿 Vite 进程。
+- **Qt 侧必须用命名（持久化）`QWebEngineProfile`**：实测 Qt 6.12 下 off-the-record profile（无 name 构造）不会把 `app://` 请求投递给自定义 scheme handler，页面会直接空白。代价是状态写在 `~/Library/Application Support/research/qt-react-shell/`，因此不要同时运行多个实例；`make dev` 已做端口预检与退出清理，避免残留实例。
+- `make dev-rebuild` 保留旧的「清空后全量重建再运行」行为，不依赖 dev server，适合排查构建产物相关问题。
 
 ## C++ ↔ JS 通信示例
 
@@ -306,3 +315,5 @@ make test-all
 
 - 首次构建 Qt 时若 Homebrew 为 `qt` 公式，`qwebchannel.js` 位于 `/opt/homebrew/opt/qtwebchannel/share/qt6/webchannel/`，CMake 会自动查找并拷贝；若未找到会在构建时输出 WARNING，需手动复制。
 - 若需打包分发（`.app` / 安装包），可在 `CMakeLists.txt` 中启用 `MACOSX_BUNDLE`，并将 `resources/web/` 拷贝进包内资源目录。
+- 启动后若日志出现 `[WebEngine] 前端加载失败`，现在会同时打印 `加载错误详情`（Chromium 的 errorDomain / errorCode / errorString），据此区分：前端产物缺失、自定义 scheme 未投递、或进程在 WebEngine 就绪前被终止。先确认 `resources/web/index.html` 存在，再检查是否有残留实例；`make dev` 的残留可用 `make dev-stop` 清理。
+- 在**隔离沙箱 / 无 GUI 会话**的环境里启动 Qt 应用，WebEngine 渲染进程可能起不来并报 `loadFinished(false)`；此类失败属于运行环境限制，请在本机 Terminal（或 `make run` / `make dev`）正常桌面会话中运行。

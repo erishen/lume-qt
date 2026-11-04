@@ -1,13 +1,18 @@
 #include "mainwindow.h"
 
 #include <QWebChannel>
+#include <QWebEngineLoadingInfo>
+#include <QWebEnginePage>
 #include <QWebEngineProfile>
 #include <QWebEngineScript>
 #include <QWebEngineScriptCollection>
 #include <QWebEngineSettings>
 #include <QWebEngineView>
+#include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
+
+#include <memory>
 
 #include "appschemehandler.h"
 #include "bridge.h"
@@ -41,6 +46,14 @@ const char *kFrontendDiagnostics = R"JS(
   window.addEventListener('unhandledrejection', function (ev) {
     mark('unhandledrejection', [ev.reason]);
   });
+
+  // 报告 QWebChannel transport 是否可用；缺失时 bridge 会静默降级为 null，
+  // 这里让它在终端里可见，避免「所有 C++ 功能都无反应」却无从排查。
+  mark('transport', [
+    'qt=' + typeof window.qt,
+    'transport=' + (window.qt ? typeof window.qt.webChannelTransport : 'n/a'),
+    'send=' + (window.qt && window.qt.webChannelTransport ? typeof window.qt.webChannelTransport.send : 'n/a')
+  ]);
 
   // 拦截 WebGL 上下文创建：返回 null 时明确报告原因
   var origGetContext = HTMLCanvasElement.prototype.getContext;
@@ -80,8 +93,14 @@ MainWindow::MainWindow(QWidget *parent)
     setWindowTitle(QStringLiteral("qt-react-shell"));
     resize(1280, 800);
 
-    // 独立 off-the-record profile，避免污染用户默认 profile，
-    // 同时让我们能自定义 scheme handler 与权限策略。
+    // 必须用「命名（持久化）」profile，不能用 off-the-record 的无参构造：
+    // 实测 Qt 6.12 下 off-the-record profile 不会把 app:// 请求投递给
+    // installUrlSchemeHandler 注册的 handler（loadFinished(false)、无 404、
+    // 无 JS 日志），页面直接空白。自定义 scheme 与 off-the-record 不兼容。
+    //
+    // 代价是会在 ~/Library/Application Support/research/qt-react-shell/ 留下
+    // History / Cookies / Session Storage。并发启动多个实例实测仍能加载，
+    // 但会共享/覆盖这份缓存；排查异常时先确认没有残留进程（见 README「已知事项」）。
     m_profile = new QWebEngineProfile(QStringLiteral("qt-react-shell"), this);
     m_schemeHandler = new AppSchemeHandler(QStringLiteral(WEB_ROOT_PATH), this);
     m_profile->installUrlSchemeHandler(QByteArrayLiteral("app"), m_schemeHandler);
@@ -102,13 +121,33 @@ MainWindow::MainWindow(QWidget *parent)
     setupWebChannel();
 
     // 加载前端（React 构建产物）
-    const QUrl url(QStringLiteral("app://app/index.html"));
-    connect(m_view, &QWebEngineView::loadFinished, this, [](bool ok) {
+    // 若设置了 QTRS_DEV_URL（如 http://localhost:5173），则加载 Vite 开发服务器，
+    // 前端改动即时生效（热重载）；否则加载本地构建产物 app://app/index.html。
+    const QByteArray devUrlEnv = qgetenv("QTRS_DEV_URL");
+    const QUrl url(devUrlEnv.isEmpty()
+                       ? QStringLiteral("app://app/index.html")
+                       : QString::fromLocal8Bit(devUrlEnv));
+
+    // WebEngine 渲染进程首次启动时，自定义 scheme 的首帧导航偶发失败。
+    // 有限重试一次作为兜底；两次都失败才判定为真正的加载错误。
+    // 无论成败，setupConsoleBridge() 里的 loadingChanged 都会打印 Chromium
+    // 的真实错误域/错误码，用于区分资源缺失、scheme 未投递与进程被提前终止。
+    auto retries = std::make_shared<int>(0);
+    connect(m_view, &QWebEngineView::loadFinished, this,
+            [this, url, retries](bool ok) {
         if (!ok) {
-            qWarning() << "[WebEngine] 前端加载失败：app://app/index.html";
+            if ((*retries)++ < 1) {
+                qWarning().noquote() << "[WebEngine] 前端加载失败，重试一次："
+                                     << url.toString();
+                QTimer::singleShot(300, m_view, [this, url]() { m_view->load(url); });
+                return;
+            }
+            qWarning().noquote() << "[WebEngine] 前端加载失败：" << url.toString()
+                                 << "（WEB_ROOT=" << QStringLiteral(WEB_ROOT_PATH) << "；"
+                                 << "请确认已执行 make cpp 生成前端产物，并查看上方「加载错误详情」）";
             return;
         }
-        qInfo() << "[WebEngine] 前端已加载，诊断钩子已注入";
+        qInfo().noquote() << "[WebEngine] 前端已加载：" << url.toString();
     });
     m_view->load(url);
 }
@@ -141,5 +180,20 @@ void MainWindow::setupConsoleBridge()
     script.setWorldId(0); // 主世界，与前端脚本共享全局对象
     script.setRunsOnSubFrames(false);
     m_profile->scripts()->insert(script);
+
+    // loadFinished(false) 只有一个 bool，排查「页面空白」时信息量太少。
+    // loadingChanged 会带出 Chromium 侧的真实错误域/错误码/错误文本，
+    // 例如自定义 scheme 未投递时是 InternalErrorDomain / ERR_UNKNOWN_URL_SCHEME，
+    // 资源缺失则是 ConnectionErrorDomain / ERR_FILE_NOT_FOUND。
+    connect(m_page, &QWebEnginePage::loadingChanged, this,
+            [](const QWebEngineLoadingInfo &info) {
+        if (info.status() != QWebEngineLoadingInfo::LoadFailedStatus)
+            return;
+        qWarning().noquote() << "[WebEngine] 加载错误详情："
+                             << info.url().toString()
+                             << "domain=" << info.errorDomain()
+                             << "code=" << info.errorCode()
+                             << "detail=" << info.errorString();
+    });
 }
 

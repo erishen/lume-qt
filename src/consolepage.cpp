@@ -4,10 +4,17 @@
 #include <QWebEngineProfile>
 
 namespace {
-/// 过滤前端自己注入的诊断探针日志，避免刷屏（它们由 installFrontendDiagnostics 标记）
+/// 过滤前端诊断脚本自身产生的高频日志，避免刷屏；
+/// 但 transport / shader / WebGL 上下文这类关键诊断必须保留——
+/// 它们正是「画布全黑却无任何提示」时唯一可见的根因线索。
 bool isDiagnosticProbe(const QString &message)
 {
-    return message.startsWith(QStringLiteral("[__qtrs_probe]"));
+    if (!message.startsWith(QStringLiteral("[__qtrs_probe] ")))
+        return false;
+    return !message.contains(QStringLiteral("transport"))
+        && !message.contains(QStringLiteral("shader-compile-failed"))
+        && !message.contains(QStringLiteral("shader-link-failed"))
+        && !message.contains(QStringLiteral("webgl-context-failed"));
 }
 } // namespace
 

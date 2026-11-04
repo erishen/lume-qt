@@ -20,6 +20,8 @@ void AppSchemeHandler::requestStarted(QWebEngineUrlRequestJob *job)
     const QUrl url = job->requestUrl();
     QString path = url.path();
 
+    // 正常请求不打日志（每次启动 5+ 条会刷屏）；
+    // 只在 404 / 打开失败时告警，这两类正是「页面空白」时的关键线索。
     // 根路径回退到 index.html
     if (path.isEmpty() || path == QLatin1String("/")) {
         path = QStringLiteral("/index.html");
@@ -37,12 +39,19 @@ void AppSchemeHandler::requestStarted(QWebEngineUrlRequestJob *job)
     const QString canonicalFile = info.canonicalFilePath();
 
     if (!canonicalFile.startsWith(canonicalRoot) || !info.exists() || !info.isFile()) {
+        qWarning().noquote()
+            << "[Scheme] 404:" << url.toString()
+            << "canonicalFile=" << canonicalFile
+            << "canonicalRoot=" << canonicalRoot
+            << "exists=" << info.exists() << "isFile=" << info.isFile();
         job->fail(QWebEngineUrlRequestJob::UrlNotFound);
         return;
     }
 
     QFile *file = new QFile(info.absoluteFilePath(), job);
     if (!file->open(QIODevice::ReadOnly)) {
+        qWarning().noquote() << "[Scheme] 打开失败:" << info.absoluteFilePath()
+                             << file->errorString();
         job->fail(QWebEngineUrlRequestJob::RequestFailed);
         return;
     }

@@ -26,8 +26,8 @@ NPM        ?= npm
 CMAKE      ?= cmake
 GENERATOR  ?= Ninja
 
-.PHONY: all run frontend cpp configure setup deps clean rebuild dev run-tests \
-        bridge_test frontend-tests perf-bench test-all help
+.PHONY: all run frontend cpp configure setup deps clean rebuild dev dev-hot dev-rebuild dev-wait dev-stop \
+        run-tests bridge_test frontend-tests perf-bench test-all help
 
 # ctest 可执行文件（与 cmake 同目录）
 CTEST ?= ctest
@@ -79,11 +79,73 @@ clean:
 ## 清理后完整重建
 rebuild: clean all
 
-## 开发构建（带调试支持）
-# 重新构建并运行，适用于开发和调试
-dev: clean all
-	@echo "==> 开发构建：重新构建完整项目"
-	$(MAKE) all
+## 开发模式（推荐）：Vite 热重载 + Qt 加载开发服务器
+# 前端改动即时生效（HMR），无需重编 C++ 或重新打包。
+# 用法：make dev          —— 启动 Vite dev server + 应用（Ctrl-C 一并退出）
+#      make dev-hot      —— 只起 Vite，另开终端手动运行应用
+#      make dev-rebuild  —— 旧的「全量重建后运行」（不依赖 dev server）
+#
+# QWebChannel 的 transport 由 QWebEnginePage::setWebChannel 注入，与页面
+# scheme 无关，因此 http://localhost 下 bridge 同样可用。
+DEV_PORT ?= 5173
+DEV_URL  ?= http://localhost:$(DEV_PORT)
+
+dev: cpp
+	@echo "==> [dev] 启动 Vite dev server（$(DEV_URL)）与 Qt 应用"
+	@echo "==> [dev] 前端改动即时生效；Ctrl-C 退出"
+	@# 预检端口：Vite 配了 strictPort，若被旧实例占用会直接退出，
+	@# 但 dev-wait 探测到的是旧实例的 /@vite/client，应用会静默连到过期页面。
+	@if lsof -nP -tiTCP:$(DEV_PORT) -sTCP:LISTEN >/dev/null 2>&1; then \
+		echo "==> [dev] 端口 $(DEV_PORT) 已被占用（可能是上次残留的 Vite）；请先执行 make dev-stop"; \
+		exit 1; \
+	fi
+	@# 用子 shell + exec 启动，保证 $$! 就是 dev server 进程本身，
+	@# 而不是「cd && npm」这条后台链的壳进程（否则 Ctrl-C 只杀壳、Vite 变孤儿）。
+	@# 清理时同时按监听端口兜底，避免 npm → node/vite 的子进程残留。
+	@( cd $(ROOT)/frontend && exec $(NPM) run dev -- --port $(DEV_PORT) ) > $(BUILD_DIR)/vite-dev.log 2>&1 & \
+		VITE_PID=$$!; \
+		cleanup() { \
+			PIDS=$$(lsof -nP -tiTCP:$(DEV_PORT) -sTCP:LISTEN 2>/dev/null); \
+			if [ -n "$$PIDS" ]; then kill $$PIDS 2>/dev/null || true; fi; \
+			kill $$VITE_PID 2>/dev/null || true; \
+		}; \
+		trap 'cleanup; exit 129' HUP; \
+		trap 'cleanup; exit 130' INT TERM; \
+		trap cleanup EXIT; \
+		$(MAKE) --no-print-directory dev-wait; \
+		QTRS_DEV_URL=$(DEV_URL) $(BIN)
+
+# 等待 Vite dev server 就绪（内部目标，由 make dev 调用，不在 help 中展示）
+# 注意：不能用 GET / 判定就绪——Vite 端口一旦 listen 就会返回 200，
+# 但此时模块转换尚未就绪，Qt 侧加载会失败。这里探测真实模块端点。
+dev-wait:
+	@for i in $$(seq 1 60); do \
+		if curl -fsS --noproxy '*' --max-time 2 -o /dev/null $(DEV_URL)/@vite/client 2>/dev/null; then \
+			echo "==> [dev] Vite dev server 已就绪"; exit 0; \
+		fi; \
+		sleep 0.5; \
+	done; \
+	echo "==> [dev] 警告：等待 Vite dev server 超时（继续尝试启动应用）"; \
+	echo "          若 $(DEV_PORT) 端口被占用，请先执行 make dev-stop"
+
+## 清理可能残留的 Vite dev server（Ctrl-C 未正常退出时）
+dev-stop:
+	@PIDS=$$(lsof -nP -tiTCP:$(DEV_PORT) -sTCP:LISTEN 2>/dev/null); \
+	if [ -n "$$PIDS" ]; then \
+		echo "==> [dev-stop] 结束占用 $(DEV_PORT) 的进程: $$PIDS"; \
+		kill $$PIDS 2>/dev/null || true; \
+	else \
+		echo "==> [dev-stop] $(DEV_PORT) 端口空闲"; \
+	fi
+
+## 开发模式（仅前端热重载，不自动启动应用）
+dev-hot: cpp
+	@echo "==> [dev-hot] 仅启动 Vite dev server（$(DEV_URL)）"
+	@echo "==> [dev-hot] 另开终端运行：QTRS_DEV_URL=$(DEV_URL) $(BIN)"
+	@cd $(ROOT)/frontend && $(NPM) run dev -- --port $(DEV_PORT)
+
+## 旧的「全量重建后运行」：清空 build 与前端产物再重建
+dev-rebuild: clean all
 	@echo "==> 启动应用（开发模式）"
 	$(BIN)
 

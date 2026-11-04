@@ -6,6 +6,8 @@
 # Frontend
 frontend/node_modules/
 frontend/dist/
+# qwebchannel.js 由 vite.config.ts 从 Qt 安装同步，属生成物
+frontend/public/qwebchannel.js
 
 # Qt WebEngine 运行数据（缓存/存储）
 *.log
