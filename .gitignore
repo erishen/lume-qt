@@ -1,0 +1,22 @@
+# Build artifacts
+/build/
+/out/
+/cmake-build-*/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Qt WebEngine 运行数据（缓存/存储）
+*.log
+resources/web/
+!resources/web/.gitkeep
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+*.user
+
+# Qt Creator
+CMakeLists.txt.user*

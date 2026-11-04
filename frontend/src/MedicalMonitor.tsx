@@ -1,0 +1,617 @@
+import { useEffect, useRef, useState } from 'react'
+import type { Bridge, DicomVolumeMeta, Intervention, Vitals } from './qwebchannel'
+import Neuro3D from './Neuro3D'
+import Volume3D from './Volume3D'
+import { createSyntheticBrain } from './syntheticVolume'
+
+// ECG 波形缓冲长度（点），对应画布横向采样
+const ECG_BUFFER = 600
+
+/**
+ * MedicalMonitor — 医疗影像实时数据模拟面板。
+ *
+ * 数据源：C++ 侧 Bridge 经 QWebChannel 推送
+ *  - ecgSample(double)：每 40ms 一个心电图样本
+ *  - vitalsReady(map)：每 600ms 一次生命体征快照
+ *
+ * 渲染：
+ *  - Canvas 实时滚动 ECG 波形
+ *  - Canvas 模拟超声实时扫描影像
+ *  - 体征数值卡（含颜色告警）
+ */
+export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
+  const [vitals, setVitals] = useState<Vitals | null>(null)
+  const ecgRef = useRef<HTMLCanvasElement | null>(null)
+  const usRef = useRef<HTMLCanvasElement | null>(null)
+  // ECG 样本缓冲（ref 避免频繁 setState）
+  const ecgBuf = useRef<number[]>([])
+
+  useEffect(() => {
+    // 订阅实时数据（Qt 桥接或纯浏览器演示）
+    const onEcg = (value: number) => {
+      const buf = ecgBuf.current
+      buf.push(value)
+      if (buf.length > ECG_BUFFER) buf.splice(0, buf.length - ECG_BUFFER)
+    }
+    const onVitals = (v: Vitals) => setVitals(v)
+
+    // 纯浏览器演示：无 Qt 桥接时用 JS 模拟同源数据（与 C++ 侧一致）
+    let ecgTimer: number | undefined
+    let vitalsTimer: number | undefined
+
+    if (bridge) {
+      bridge.ecgSample.connect(onEcg)
+      bridge.vitalsReady.connect(onVitals)
+      bridge.startMedicalSimulation()
+    } else {
+      let phase = 0
+      ecgTimer = window.setInterval(() => {
+        phase += 0.048
+        if (phase >= 1) phase -= 1
+        onEcg(synthesizeEcgJs(phase))
+      }, 40)
+
+      let hr = 72, spo2 = 98, rr = 16, sys = 118, dia = 76, temp = 36.6
+      vitalsTimer = window.setInterval(() => {
+        hr = clamp(hr + (Math.random() * 6 - 3) * 0.2, 58, 102)
+        spo2 = clamp(spo2 + (Math.random() * 4 - 2) * 0.1, 93, 100)
+        rr = clamp(rr + (Math.random() * 4 - 2) * 0.1, 12, 24)
+        sys = clamp(sys + (Math.random() * 6 - 3) * 0.3, 108, 142)
+        dia = clamp(dia + (Math.random() * 4 - 2) * 0.2, 68, 92)
+        temp = clamp(temp + (Math.random() * 4 - 2) * 0.02, 36, 38)
+        onVitals({
+          hr: Math.round(hr),
+          spo2: Math.round(spo2),
+          rr: Math.round(rr),
+          sys: Math.round(sys),
+          dia: Math.round(dia),
+          temp: Math.round(temp * 10) / 10,
+          time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+        })
+      }, 600)
+    }
+
+    return () => {
+      if (bridge) {
+        bridge.ecgSample.disconnect(onEcg)
+        bridge.vitalsReady.disconnect(onVitals)
+        bridge.stopMedicalSimulation()
+      } else {
+        if (ecgTimer !== undefined) clearInterval(ecgTimer)
+        if (vitalsTimer !== undefined) clearInterval(vitalsTimer)
+      }
+    }
+  }, [bridge])
+
+  // 渲染循环：Canvas 绘制 ECG + 超声
+  useEffect(() => {
+    let raf = 0
+    let lastT = 0
+
+    const draw = (t: number) => {
+      const dt = Math.min(t - lastT, 100) / 1000
+      lastT = t
+      drawEcg(ecgRef.current, ecgBuf.current, t)
+      drawUltrasound(usRef.current, t, dt)
+      raf = requestAnimationFrame(draw)
+    }
+    raf = requestAnimationFrame(draw)
+    return () => cancelAnimationFrame(raf)
+  }, [])
+
+  return (
+    <section className="card monitor">
+      <h2>医疗影像实时数据模拟</h2>
+      <p className="monitor-note">数据由 C++ 侧实时生成并经 QWebChannel 推送 · Canvas 渲染</p>
+
+      {/* 生命体征数值卡 */}
+      <div className="vitals">
+        <Vital label="心率" value={vitals?.hr} unit="bpm" color="var(--c-heart)"
+               alert={vitals ? vitals.hr > 100 || vitals.hr < 60 : false} />
+        <Vital label="血氧" value={vitals?.spo2} unit="%" color="var(--c-spo2)"
+               alert={vitals ? vitals.spo2 < 95 : false} />
+        <Vital label="呼吸" value={vitals?.rr} unit="次/分" color="var(--c-rr)" />
+        <Vital label="血压" value={vitals ? `${vitals.sys}/${vitals.dia}` : undefined}
+               unit="mmHg" color="var(--c-bp)"
+               alert={vitals ? vitals.sys > 135 || vitals.dia > 88 : false} />
+        <Vital label="体温" value={vitals?.temp} unit="°C" color="var(--c-temp)"
+               alert={vitals ? vitals.temp > 37.5 : false} />
+      </div>
+
+      {/* 波形 + 影像 */}
+      <div className="monitor-row">
+        <div className="panel">
+          <div className="panel-head">
+            <span>心电图 ECG · II 导联</span>
+            <span className="panel-meta">{vitals?.time ?? '--:--:--'}</span>
+          </div>
+          <canvas ref={ecgRef} className="ecg-canvas" width={780} height={200} />
+        </div>
+        <div className="panel">
+          <div className="panel-head">
+            <span>超声影像 · 实时扫描</span>
+            <span className="panel-meta">模拟 B 超</span>
+          </div>
+          <canvas ref={usRef} className="us-canvas" width={340} height={200} />
+        </div>
+      </div>
+
+      {/* 神经内科介入模拟面板 */}
+      <NeurologyPanel bridge={bridge} />
+
+      {/* DICOM 体渲染面板 */}
+      <DicomPanel bridge={bridge} />
+    </section>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 神经内科介入模拟面板
+// ---------------------------------------------------------------------------
+
+/** 神经波形缓冲长度 */
+const NEURO_BUFFER = 400
+
+function NeurologyPanel({ bridge }: { bridge: Bridge | null }) {
+  const [interventions, setInterventions] = useState<Intervention[]>([])
+  const eegRef = useRef<HTMLCanvasElement | null>(null)
+  const emgRef = useRef<HTMLCanvasElement | null>(null)
+  const neuralRef = useRef<HTMLCanvasElement | null>(null)
+  // 各波形缓冲（ref 避免频繁 setState）
+  const eegBuf = useRef<number[]>([])
+  const emgBuf = useRef<number[]>([])
+  const neuralBuf = useRef<number[]>([])
+
+  useEffect(() => {
+    const push = (buf: number[], v: number) => {
+      buf.push(v)
+      if (buf.length > NEURO_BUFFER) buf.splice(0, buf.length - NEURO_BUFFER)
+    }
+    const onEeg = (v: number) => push(eegBuf.current, v)
+    const onEmg = (v: number) => push(emgBuf.current, v)
+    const onNeural = (v: number) => push(neuralBuf.current, v)
+    const onIv = (iv: Intervention) =>
+      setInterventions((prev) => [...prev, iv].slice(-8))
+
+    // 纯浏览器演示：JS 模拟同源数据
+    let eegTimer: number | undefined
+    let emgTimer: number | undefined
+    let neuralTimer: number | undefined
+    let ivTimer: number | undefined
+
+    if (bridge) {
+      bridge.eegSample.connect(onEeg)
+      bridge.emgSample.connect(onEmg)
+      bridge.neuralSpike.connect(onNeural)
+      bridge.interventionReady.connect(onIv)
+      bridge.startNeurologySimulation()
+    } else {
+      // 压力模式：?stress=1 把数据生成频率提高 10 倍（模拟医疗大数据量）
+      const stress = new URLSearchParams(window.location.search).get('stress') === '1'
+      const eegMs = stress ? 5 : 50
+      const emgMs = stress ? 10 : 100
+      const neuralMs = stress ? 8 : 75
+      const ivMs = stress ? 50 : 500
+      let phase = 0
+      let emgBurst = 0
+      let neuralEnv = 0
+      eegTimer = window.setInterval(() => {
+        phase += 0.5
+        onEeg(synthesizeEegJs(phase))
+      }, eegMs)
+      emgTimer = window.setInterval(() => {
+        emgBurst = Math.max(0, Math.min(1, emgBurst + (Math.random() - 0.5) * 0.24))
+        if (Math.random() < 0.04) emgBurst = 1
+        onEmg(0.5 + (emgBurst * (Math.random() - 0.5) * 1.2))
+      }, emgMs)
+      neuralTimer = window.setInterval(() => {
+        neuralEnv = Math.max(0, Math.min(1, neuralEnv + (Math.random() - 0.5) * 0.16))
+        if (Math.random() < 0.02) neuralEnv = 1
+        onNeural(0.15 * Math.sin(phase * 0.7) + (Math.random() - 0.5) * 0.1 + neuralEnv * (Math.random() - 0.2) * 0.8)
+      }, neuralMs)
+      ivTimer = window.setInterval(() => {
+        const labels = ['TMS', 'DBS', 'ECT', 'NF']
+        const label = labels[Math.floor(Math.random() * labels.length)]
+        onIv({
+          type: label,
+          label,
+          intensity: Math.round(30 + Math.random() * 70),
+          frequency: Math.round(1 + Math.random() * 129),
+          duration: Math.round(5 + Math.random() * 55),
+          status: Math.random() < 0.7 ? 'active' : 'completed',
+          time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+        })
+      }, ivMs)
+    }
+
+    return () => {
+      if (bridge) {
+        bridge.eegSample.disconnect(onEeg)
+        bridge.emgSample.disconnect(onEmg)
+        bridge.neuralSpike.disconnect(onNeural)
+        bridge.interventionReady.disconnect(onIv)
+        bridge.stopNeurologySimulation()
+      } else {
+        if (eegTimer !== undefined) clearInterval(eegTimer)
+        if (emgTimer !== undefined) clearInterval(emgTimer)
+        if (neuralTimer !== undefined) clearInterval(neuralTimer)
+        if (ivTimer !== undefined) clearInterval(ivTimer)
+      }
+    }
+  }, [bridge])
+
+  // 渲染循环：三条神经波形
+  useEffect(() => {
+    let raf = 0
+    const draw = () => {
+      drawWave(eegRef.current, eegBuf.current, '#5ee7df', -2, 2)
+      drawWave(emgRef.current, emgBuf.current, '#ff8a65', 0, 1)
+      drawWave(neuralRef.current, neuralBuf.current, '#ffd166', -1, 1)
+      raf = requestAnimationFrame(draw)
+    }
+    raf = requestAnimationFrame(draw)
+    return () => cancelAnimationFrame(raf)
+  }, [])
+
+  return (
+    <div className="neuro">
+      <h3 className="neuro-title">🧠 神经内科介入监测</h3>
+      <div className="neuro-grid">
+        <NeuroPanel title="脑电图 EEG · 10μV/格" refCb={eegRef} color="#5ee7df" />
+        <NeuroPanel title="肌电图 EMG · 运动单位电位" refCb={emgRef} color="#ff8a65" />
+        <NeuroPanel title="神经元活动 · 棘波放电" refCb={neuralRef} color="#ffd166" />
+      </div>
+
+      {/* 三维神经脉络 */}
+      <div className="neuro-3d-wrap">
+        <div className="panel-head">
+          <span>🧠 神经脉络 · 实时介入手术可视化</span>
+          <span className="panel-meta">拖拽旋转 · 滚轮缩放</span>
+        </div>
+        <Neuro3D bridge={bridge} />
+      </div>
+      <div className="neuro-iv">
+        <div className="panel-head">
+          <span>神经介入事件 · 实时记录</span>
+          <span className="panel-meta">
+            {bridge ? 'C++ 推送' : 'JS 模拟'}
+          </span>
+        </div>
+        <div className="iv-list">
+          {interventions.length === 0 && (
+            <p className="iv-empty">等待介入事件…</p>
+          )}
+          {interventions.slice().reverse().map((iv, i) => (
+            <div key={i} className={`iv-item ${iv.status === 'active' ? 'iv-active' : 'iv-done'}`}>
+              <span className="iv-badge">{iv.label}</span>
+              <span className="iv-meta">
+                强度 {iv.intensity}% · {iv.frequency}Hz · {iv.duration}min
+              </span>
+              <span className="iv-time">{iv.time}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function NeuroPanel({ title, refCb, color }: {
+  title: string
+  refCb: React.Ref<HTMLCanvasElement>
+  color: string
+}) {
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <span>{title}</span>
+        <span className="panel-meta" style={{ color }}>●</span>
+      </div>
+      <canvas ref={refCb} className="neuro-canvas" width={340} height={130} />
+    </div>
+  )
+}
+
+/** 通用波形绘制（归一化 min/max 到画布） */
+function drawWave(canvas: HTMLCanvasElement | null, data: number[], color: string, lo: number, hi: number) {
+  if (!canvas) return
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+  const { width: w, height: h } = canvas
+
+  ctx.fillStyle = '#08121a'
+  ctx.fillRect(0, 0, w, h)
+  ctx.strokeStyle = 'rgba(40,80,110,0.2)'
+  ctx.lineWidth = 1
+  for (let x = 0; x < w; x += 20) {
+    ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, h); ctx.stroke()
+  }
+  ctx.beginPath(); ctx.moveTo(0, h / 2 + 0.5); ctx.lineTo(w, h / 2 + 0.5); ctx.stroke()
+
+  const n = data.length
+  if (n < 2) return
+
+  ctx.strokeStyle = color
+  ctx.lineWidth = 1.5
+  ctx.beginPath()
+  const step = w / (NEURO_BUFFER - 1)
+  const startX = w - (n - 1) * step
+  for (let i = 0; i < n; i++) {
+    const x = startX + i * step
+    const norm = (data[i] - lo) / (hi - lo)
+    const y = h - 8 - norm * (h - 16)
+    if (i === 0) ctx.moveTo(x, y)
+    else ctx.lineTo(x, y)
+  }
+  ctx.stroke()
+}
+
+/** JS 版 EEG 合成（与 C++ 侧一致） */
+function synthesizeEegJs(phase: number): number {
+  let v = 0
+  v += 0.8 * Math.sin(phase * 3.0)
+  v += 0.4 * Math.sin(phase * 6.5)
+  v += 0.2 * Math.sin(phase * 12.0)
+  v += 0.1 * Math.sin(phase * 1.2)
+  v += (Math.random() - 0.5) * 0.08
+  if (Math.random() < 0.03) v += 0.4 + Math.random() * 0.8
+  return Math.max(-2, Math.min(2, v))
+}
+
+// ---------------------------------------------------------------------------
+// 纯浏览器演示数据源（与 C++ 侧 Bridge::synthesizeEcg 逻辑一致）
+// ---------------------------------------------------------------------------
+
+/** JS 版心电图合成：P 波 → QRS 波群 → T 波 */
+function synthesizeEcgJs(phase: number): number {
+  const gauss = (x: number, c: number, w: number, a: number) => {
+    const d = (x - c) / w
+    return a * Math.exp(-d * d)
+  }
+  let v = 0
+  v += gauss(phase, 0.18, 0.035, 0.12)  // P
+  v -= gauss(phase, 0.32, 0.012, 0.10)  // Q
+  v += gauss(phase, 0.36, 0.014, 1.0)   // R
+  v -= gauss(phase, 0.40, 0.012, 0.22)  // S
+  v += gauss(phase, 0.62, 0.045, 0.28)  // T
+  v += 0.02 * Math.sin(phase * Math.PI)  // 基线漂移
+  v += (Math.random() - 0.5) * 0.012     // 噪声
+  return v
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return v < lo ? lo : v > hi ? hi : v
+}
+
+/** 生命体征数值卡 */
+function Vital({ label, value, unit, color, alert }: {
+  label: string
+  value?: number | string
+  unit: string
+  color: string
+  alert?: boolean
+}) {
+  return (
+    <div className={`vital ${alert ? 'vital-alert' : ''}`}>
+      <span className="vital-label">{label}</span>
+      <span className="vital-value" style={{ color }}>
+        {value ?? '--'}
+        <small className="vital-unit">{unit}</small>
+      </span>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Canvas 渲染
+// ---------------------------------------------------------------------------
+
+/** 滚动 ECG 波形 */
+function drawEcg(canvas: HTMLCanvasElement | null, data: number[], t: number) {
+  if (!canvas) return
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+  const { width: w, height: h } = canvas
+
+  // 背景 + 网格
+  ctx.fillStyle = '#060a10'
+  ctx.fillRect(0, 0, w, h)
+  ctx.strokeStyle = 'rgba(40,80,110,0.25)'
+  ctx.lineWidth = 1
+  const grid = 20
+  for (let x = 0; x < w; x += grid) {
+    ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, h); ctx.stroke()
+  }
+  for (let y = 0; y < h; y += grid) {
+    ctx.beginPath(); ctx.moveTo(0, y + 0.5); ctx.lineTo(w, y + 0.5); ctx.stroke()
+  }
+
+  const mid = h / 2
+  const amp = h * 0.38
+  const n = data.length
+
+  if (n < 2) return
+
+  // 信号折线
+  ctx.strokeStyle = '#33e07a'
+  ctx.lineWidth = 1.6
+  ctx.beginPath()
+  const step = w / (ECG_BUFFER - 1)
+  const startX = w - (n - 1) * step
+  for (let i = 0; i < n; i++) {
+    const x = startX + i * step
+    const y = mid - data[i] * amp
+    if (i === 0) ctx.moveTo(x, y)
+    else ctx.lineTo(x, y)
+  }
+  ctx.stroke()
+
+  // 扫描头（当前最右端）
+  const lastX = w - 2
+  const lastY = mid - data[n - 1] * amp
+  ctx.fillStyle = '#33e07a'
+  ctx.beginPath()
+  ctx.arc(lastX, lastY, 2.5, 0, Math.PI * 2)
+  ctx.fill()
+
+  // 实时数值（心率来自 vitals 由父组件传，这里画提示）
+  void t
+}
+
+/** 模拟超声实时扫描影像 */
+function drawUltrasound(canvas: HTMLCanvasElement | null, t: number, dt: number) {
+  if (!canvas) return
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+  const { width: w, height: h } = canvas
+
+  ctx.fillStyle = '#04070a'
+  ctx.fillRect(0, 0, w, h)
+
+  // 探头位于底部中央，扇形向上张开（标准 B 超布局，图像居中）
+  const cx = w * 0.5
+  const cy = h * 0.93
+  const radius = Math.min(w, h) * 0.82
+  const spread = 0.55 // 半张角（弧度）
+
+  ctx.save()
+  ctx.beginPath()
+  ctx.moveTo(cx, cy)
+  ctx.arc(cx, cy, radius, -Math.PI / 2 - spread, -Math.PI / 2 + spread)
+  ctx.closePath()
+  ctx.clip()
+
+  // 组织底色（径向渐变，近场亮、远场暗）
+  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius)
+  g.addColorStop(0, '#0d141c')
+  g.addColorStop(1, '#05080c')
+  ctx.fillStyle = g
+  ctx.fillRect(0, 0, w, h)
+
+  // 组织界面（伪随机斑点，缓慢漂移模拟呼吸/搏动）
+  for (let i = 0; i < 70; i++) {
+    const seed = i * 137.508
+    const angle = -Math.PI / 2 + (Math.sin(seed * 1.7) * 0.5) * spread * 1.6
+    const r = ((Math.sin(seed * 1.31 + t * 0.25) * 0.5 + 0.5) * 0.92 + 0.05) * radius
+    const x = cx + Math.cos(angle) * r
+    const y = cy + Math.sin(angle) * r
+    const a = 0.10 + 0.35 * (Math.sin(seed * 2.73 + t * 0.9) * 0.5 + 0.5)
+    const s = 1 + (Math.sin(seed + t * 0.6) * 0.5 + 0.5) * 2.4
+    ctx.fillStyle = `rgba(150,195,220,${a.toFixed(3)})`
+    ctx.beginPath()
+    ctx.arc(x, y, s, 0, Math.PI * 2)
+    ctx.fill()
+  }
+
+  // 血流多普勒（红/蓝斑点，沿扇轴移动）
+  for (let i = 0; i < 14; i++) {
+    const seed = i * 89.7
+    const angle = -Math.PI / 2 + (Math.sin(seed) * 0.5) * spread * 1.2
+    const speed = 0.10 + (seed % 7) / 40
+    const r = ((t * speed + seed * 0.13) % 1.0) * radius
+    const x = cx + Math.cos(angle) * r
+    const y = cy + Math.sin(angle) * r
+    const a = 0.5 * (1 - r / radius)
+    const red = (i % 2) === 0
+    ctx.fillStyle = red ? `rgba(255,90,90,${a.toFixed(3)})` : `rgba(90,150,255,${a.toFixed(3)})`
+    ctx.beginPath()
+    ctx.arc(x, y, 1.6, 0, Math.PI * 2)
+    ctx.fill()
+  }
+
+  // 扫描线（往复摆动）
+  const sweep = -Math.PI / 2 + Math.sin(t * 1.4) * spread * 0.9
+  const grad = ctx.createLinearGradient(cx, cy,
+    cx + Math.cos(sweep) * radius, cy + Math.sin(sweep) * radius)
+  grad.addColorStop(0, 'rgba(180,240,255,0.9)')
+  grad.addColorStop(1, 'rgba(180,240,255,0)')
+  ctx.strokeStyle = grad
+  ctx.lineWidth = 2
+  ctx.beginPath()
+  ctx.moveTo(cx, cy)
+  ctx.lineTo(cx + Math.cos(sweep) * radius, cy + Math.sin(sweep) * radius)
+  ctx.stroke()
+
+  ctx.restore()
+
+  // 扇区边界弧
+  ctx.strokeStyle = 'rgba(80,130,160,0.55)'
+  ctx.lineWidth = 1.5
+  ctx.beginPath()
+  ctx.arc(cx, cy, radius, -Math.PI / 2 - spread, -Math.PI / 2 + spread)
+  ctx.stroke()
+  // 探头图标
+  ctx.fillStyle = 'rgba(120,180,210,0.9)'
+  ctx.fillRect(cx - 3, cy - 4, 6, 8)
+
+  void dt
+}
+
+// ---------------------------------------------------------------------------
+// DICOM 体渲染面板
+// ---------------------------------------------------------------------------
+
+function DicomPanel({ bridge }: { bridge: Bridge | null }) {
+  const [volume, setVolume] = useState<{ base64: string; meta: DicomVolumeMeta } | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    let mounted = true
+
+    const onReady = (meta: DicomVolumeMeta, base64: string) => {
+      if (!mounted) return
+      setLoading(false)
+      setVolume({ base64, meta })
+      setError(null)
+      console.log('[DicomPanel] 体渲染就绪', meta.slices, '层', meta.dims)
+    }
+    const onError = (msg: string) => {
+      if (!mounted) return
+      setLoading(false)
+      setError(msg)
+    }
+
+    if (bridge) {
+      bridge.dicomSamplePath().then((path) => {
+        if (!mounted) return
+        console.log('[DicomPanel] 样例路径:', path)
+        bridge!.dicomVolumeReady.connect(onReady)
+        bridge!.dicomVolumeError.connect(onError)
+        setLoading(true)
+        bridge!.loadDicomVolume(path)
+      })
+    } else {
+      // 纯浏览器演示：合成体积
+      setLoading(true)
+      setTimeout(() => {
+        if (!mounted) return
+        const syn = createSyntheticBrain(96)
+        setVolume(syn)
+        setLoading(false)
+      }, 300)
+    }
+
+    return () => {
+      mounted = false
+      if (bridge) {
+        bridge.dicomVolumeReady.disconnect(onReady)
+        bridge.dicomVolumeError.disconnect(onError)
+      }
+    }
+  }, [bridge])
+
+  return (
+    <div className="vol-panel">
+      <div className="panel-head">
+        <span>🏥 DICOM 体渲染 · 三维医学影像</span>
+        <span className="panel-meta">
+          {bridge ? 'C++ / DCMTK' : 'JS 合成'}
+        </span>
+      </div>
+      {loading && <div className="vol-loading">加载体积数据中…</div>}
+      {error && <div className="vol-error">加载失败：{error}</div>}
+      {volume && <Volume3D volume={volume} />}
+    </div>
+  )
+}
