@@ -70,9 +70,9 @@ qt-react-shell/
 ```bash
 make            # 完整构建（前端 + C++）
 make run        # 构建并运行（加载 app:// 构建产物，默认模式）
-make dev        # 开发模式：Vite 热重载 + 应用（推荐做前端开发时用）
+make dev        # 开发模式：Vite 热重载 + 应用（自动清理 5173 残留后启动）
 make dev-hot    # 只启动 Vite dev server，另开终端手动运行应用
-make dev-stop   # 清理残留的 Vite dev server（端口 5173）
+make dev-stop   # 清理残留的 Vite dev server（打印 lsof 明细并等待端口释放）
 make dev-rebuild # 全量重建后运行（旧的 make dev 行为）
 make frontend   # 仅构建前端
 make clean      # 清理 build 与前端产物
@@ -110,16 +110,18 @@ cmake --build build
 ### 前端开发模式（热重载）
 
 ```bash
-make dev        # 一条命令：启动 Vite dev server（5173）+ Qt 应用，Ctrl-C 一并退出
-make dev-hot    # 只起 Vite，另开终端执行：QTRS_DEV_URL=http://localhost:5173 ./build/qt-react-shell
-make dev-stop   # 若 Ctrl-C 后 5173 仍有残留进程
+make dev        # 一条命令：清理残留 → 启动 Vite dev server（5173）+ Qt 应用，Ctrl-C 一并退出
+make dev-hot    # 只起 Vite（同样先清残留），另开终端执行：QTRS_DEV_URL=http://localhost:5173 ./build/qt-react-shell
+make dev-stop   # 单独清理残留；也可用于排查端口状态
+DEV_KILL_STALE=0 make dev   # 关闭自动清理：端口被占用时改为报错退出
 ```
 
 `make dev` 通过环境变量 `QTRS_DEV_URL` 让应用加载 `http://localhost:5173` 而非 `app://app/index.html`；前端改动经 Vite HMR 即时生效，无需重编 C++ 或重新打包。
 
 - **QWebChannel 在 HTTP 模式下同样可用**：transport 由 `QWebEnginePage::setWebChannel` 注入，与页面 scheme 无关。`qwebchannel.js` 由 `frontend/vite.config.ts` 在启动时同步到 `frontend/public/`（Vite 静态根），与生产构建同源；该文件是生成物，已 gitignored。
-- **dev server 固定 5173 端口**（`strictPort: true`）：`make dev` 启动前会预检端口，若被旧实例占用直接报错并提示 `make dev-stop`，避免应用静默连到过期页面。退出时按监听端口清理，不会残留孤儿 Vite 进程。
-- **Qt 侧必须用命名（持久化）`QWebEngineProfile`**：实测 Qt 6.12 下 off-the-record profile（无 name 构造）不会把 `app://` 请求投递给自定义 scheme handler，页面会直接空白。代价是状态写在 `~/Library/Application Support/research/qt-react-shell/`，因此不要同时运行多个实例；`make dev` 已做端口预检与退出清理，避免残留实例。
+- **dev server 固定 5173 端口**（`strictPort: true`）：`make dev` / `make dev-hot` 启动前会**自动清理残留**——按监听端口找到旧进程、打印 `lsof` 明细（进程名 / PID / 监听地址）后结束，并等待端口真正释放（最多 5 秒）再启动新服务，避免应用静默连到过期页面。退出时按监听端口清理，不会残留孤儿 Vite 进程。若不想自动结束进程，用 `DEV_KILL_STALE=0 make dev` 退回严格报错模式。
+- `make dev-stop` 是同一套清理逻辑的独立入口：空闲时直接返回，遇到结束不掉（如权限不足）的进程会报错并以非零码退出，方便脚本判断。
+- **Qt 侧必须用命名（持久化）`QWebEngineProfile`**：实测 Qt 6.12 下 off-the-record profile（无 name 构造）不会把 `app://` 请求投递给自定义 scheme handler，页面会直接空白。代价是状态写在 `~/Library/Application Support/research/qt-react-shell/`，因此不要同时运行多个实例；`make dev` 已做启动前自动清理与退出清理，避免残留实例。
 - `make dev-rebuild` 保留旧的「清空后全量重建再运行」行为，不依赖 dev server，适合排查构建产物相关问题。
 
 ## C++ ↔ JS 通信示例
@@ -315,5 +317,5 @@ make test-all
 
 - 首次构建 Qt 时若 Homebrew 为 `qt` 公式，`qwebchannel.js` 位于 `/opt/homebrew/opt/qtwebchannel/share/qt6/webchannel/`，CMake 会自动查找并拷贝；若未找到会在构建时输出 WARNING，需手动复制。
 - 若需打包分发（`.app` / 安装包），可在 `CMakeLists.txt` 中启用 `MACOSX_BUNDLE`，并将 `resources/web/` 拷贝进包内资源目录。
-- 启动后若日志出现 `[WebEngine] 前端加载失败`，现在会同时打印 `加载错误详情`（Chromium 的 errorDomain / errorCode / errorString），据此区分：前端产物缺失、自定义 scheme 未投递、或进程在 WebEngine 就绪前被终止。先确认 `resources/web/index.html` 存在，再检查是否有残留实例；`make dev` 的残留可用 `make dev-stop` 清理。
+- 启动后若日志出现 `[WebEngine] 前端加载失败`，现在会同时打印 `加载错误详情`（Chromium 的 errorDomain / errorCode / errorString），据此区分：前端产物缺失、自定义 scheme 未投递、或进程在 WebEngine 就绪前被终止。先确认 `resources/web/index.html` 存在，再检查是否有残留实例；`make dev` 会在启动前自动清理 5173 残留，也可随时单独执行 `make dev-stop`。
 - 在**隔离沙箱 / 无 GUI 会话**的环境里启动 Qt 应用，WebEngine 渲染进程可能起不来并报 `loadFinished(false)`；此类失败属于运行环境限制，请在本机 Terminal（或 `make run` / `make dev`）正常桌面会话中运行。

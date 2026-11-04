@@ -9,7 +9,7 @@
 #   make clean       清理 build 与前端产物
 #   make setup       安装前端依赖
 #
-# 环境变量可覆盖: NPM / CMAKE / QT_PREFIX
+# 环境变量可覆盖: NPM / CMAKE / QT_PREFIX / DEV_PORT / DEV_URL / DEV_KILL_STALE
 # ============================================================================
 
 ROOT      := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
@@ -26,7 +26,7 @@ NPM        ?= npm
 CMAKE      ?= cmake
 GENERATOR  ?= Ninja
 
-.PHONY: all run frontend cpp configure setup deps clean rebuild dev dev-hot dev-rebuild dev-wait dev-stop \
+.PHONY: all run frontend cpp configure setup deps clean rebuild dev dev-hot dev-rebuild dev-wait dev-stop dev-stale \
         run-tests bridge_test frontend-tests perf-bench test-all help
 
 # ctest 可执行文件（与 cmake 同目录）
@@ -89,16 +89,13 @@ rebuild: clean all
 # scheme 无关，因此 http://localhost 下 bridge 同样可用。
 DEV_PORT ?= 5173
 DEV_URL  ?= http://localhost:$(DEV_PORT)
+# 启动新 dev server 前，是否自动清掉占用 DEV_PORT 的残留进程（默认开启）。
+# 设 0 则退回严格模式：端口被占用时报错退出，由你自己决定怎么处理。
+DEV_KILL_STALE ?= 1
 
-dev: cpp
+dev: cpp dev-stale
 	@echo "==> [dev] 启动 Vite dev server（$(DEV_URL)）与 Qt 应用"
 	@echo "==> [dev] 前端改动即时生效；Ctrl-C 退出"
-	@# 预检端口：Vite 配了 strictPort，若被旧实例占用会直接退出，
-	@# 但 dev-wait 探测到的是旧实例的 /@vite/client，应用会静默连到过期页面。
-	@if lsof -nP -tiTCP:$(DEV_PORT) -sTCP:LISTEN >/dev/null 2>&1; then \
-		echo "==> [dev] 端口 $(DEV_PORT) 已被占用（可能是上次残留的 Vite）；请先执行 make dev-stop"; \
-		exit 1; \
-	fi
 	@# 用子 shell + exec 启动，保证 $$! 就是 dev server 进程本身，
 	@# 而不是「cd && npm」这条后台链的壳进程（否则 Ctrl-C 只杀壳、Vite 变孤儿）。
 	@# 清理时同时按监听端口兜底，避免 npm → node/vite 的子进程残留。
@@ -115,6 +112,19 @@ dev: cpp
 		$(MAKE) --no-print-directory dev-wait; \
 		QTRS_DEV_URL=$(DEV_URL) $(BIN)
 
+# 内部目标：启动新 dev server 前处理端口残留（dev / dev-hot 共用，不在 help 中展示）。
+# Vite 配了 strictPort，旧实例占着端口时新 Vite 会直接退出，而 dev-wait 又会
+# 探测到旧实例的 /@vite/client，导致应用静默连到过期页面——所以必须先清干净。
+dev-stale:
+	@if ! lsof -nP -tiTCP:$(DEV_PORT) -sTCP:LISTEN >/dev/null 2>&1; then exit 0; fi; \
+	if [ "$(DEV_KILL_STALE)" != "1" ]; then \
+		echo "==> [dev] 端口 $(DEV_PORT) 已被占用；请先执行 make dev-stop"; \
+		echo "          （或保持默认 DEV_KILL_STALE=1 由 make dev 自动清理）"; \
+		exit 1; \
+	fi; \
+	echo "==> [dev] 发现 $(DEV_PORT) 残留服务，先自动清理再启动新服务"; \
+	$(MAKE) --no-print-directory dev-stop
+
 # 等待 Vite dev server 就绪（内部目标，由 make dev 调用，不在 help 中展示）
 # 注意：不能用 GET / 判定就绪——Vite 端口一旦 listen 就会返回 200，
 # 但此时模块转换尚未就绪，Qt 侧加载会失败。这里探测真实模块端点。
@@ -126,20 +136,32 @@ dev-wait:
 		sleep 0.5; \
 	done; \
 	echo "==> [dev] 警告：等待 Vite dev server 超时（继续尝试启动应用）"; \
-	echo "          若 $(DEV_PORT) 端口被占用，请先执行 make dev-stop"
+	echo "          请查看 $(BUILD_DIR)/vite-dev.log，确认 Vite 是否启动失败"
 
-## 清理可能残留的 Vite dev server（Ctrl-C 未正常退出时）
+## 清理残留的 Vite dev server：结束占用端口的进程并等待端口真正释放
 dev-stop:
 	@PIDS=$$(lsof -nP -tiTCP:$(DEV_PORT) -sTCP:LISTEN 2>/dev/null); \
-	if [ -n "$$PIDS" ]; then \
-		echo "==> [dev-stop] 结束占用 $(DEV_PORT) 的进程: $$PIDS"; \
-		kill $$PIDS 2>/dev/null || true; \
-	else \
+	if [ -z "$$PIDS" ]; then \
 		echo "==> [dev-stop] $(DEV_PORT) 端口空闲"; \
-	fi
+		exit 0; \
+	fi; \
+	echo "==> [dev-stop] 清理占用 $(DEV_PORT) 的残留进程："; \
+	lsof -nP -iTCP:$(DEV_PORT) -sTCP:LISTEN 2>/dev/null | sed 's/^/           /'; \
+	kill $$PIDS 2>/dev/null || true; \
+	REMAIN=$$PIDS; \
+	for i in $$(seq 1 25); do \
+		REMAIN=$$(lsof -nP -tiTCP:$(DEV_PORT) -sTCP:LISTEN 2>/dev/null); \
+		if [ -z "$$REMAIN" ]; then \
+			echo "==> [dev-stop] 端口 $(DEV_PORT) 已释放"; \
+			exit 0; \
+		fi; \
+		sleep 0.2; \
+	done; \
+	echo "==> [dev-stop] 错误：端口 $(DEV_PORT) 仍被占用 ($$REMAIN)，请手动检查后重试"; \
+	exit 1
 
 ## 开发模式（仅前端热重载，不自动启动应用）
-dev-hot: cpp
+dev-hot: cpp dev-stale
 	@echo "==> [dev-hot] 仅启动 Vite dev server（$(DEV_URL)）"
 	@echo "==> [dev-hot] 另开终端运行：QTRS_DEV_URL=$(DEV_URL) $(BIN)"
 	@cd $(ROOT)/frontend && $(NPM) run dev -- --port $(DEV_PORT)
