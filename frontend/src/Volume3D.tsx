@@ -39,10 +39,12 @@ uniform float uSampleCount;
 uniform float uAlphaScale;
 uniform vec2 uWindow;     // x=lo, y=hi（归一化灰度窗）
 
-vec2 hitBox(vec3 orig, vec3 dir, vec3 center, float half) {
+// 注意：参数名不可用 half —— 它是 GLSL ES 的保留字，
+// 会导致片元着色器编译失败（表现为 WebGL 面板整块空白）。
+vec2 hitBox(vec3 orig, vec3 dir, vec3 center, float halfSize) {
   vec3 inv = 1.0 / dir;
-  vec3 t0 = (center - half - orig) * inv;
-  vec3 t1 = (center + half - orig) * inv;
+  vec3 t0 = (center - halfSize - orig) * inv;
+  vec3 t1 = (center + halfSize - orig) * inv;
   vec3 tn = min(t0, t1);
   vec3 tx = max(t0, t1);
   float tN = max(max(tn.x, tn.y), tn.z);
@@ -50,7 +52,9 @@ vec2 hitBox(vec3 orig, vec3 dir, vec3 center, float half) {
   return vec2(max(tN, 0.0), tF);
 }
 
-vec3 shade(vec3 p, vec3 rd) {
+// 返回标量（漫反射强度），不可声明为 vec3——与 return 表达式类型不匹配
+// 同样会导致着色器编译失败。
+float shade(vec3 p, vec3 rd) {
   // 简单有限差分梯度光照
   float e = 0.006;
   float vx = texture(uVolume, p + vec3(e,0,0)).r - texture(uVolume, p - vec3(e,0,0)).r;

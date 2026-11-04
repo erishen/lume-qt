@@ -20,7 +20,7 @@ if (GTest_FOUND)
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/dicomreader.h
     )
 
-    # 链接 Qt、DCMTK 和 GTest
+# 链接 Qt、DCMTK 和 GTest
     target_link_libraries(bridge_test
         Qt6::Core
         Qt6::Test

@@ -1,8 +1,11 @@
 #include <gtest/gtest.h>
 
+#include <QByteArray>
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QSignalSpy>
+
+#include <iostream>
 
 #include "../src/bridge.h"
 
@@ -112,13 +115,84 @@ bool waitForDicomSignal(Bridge *bridge, int timeoutMs)
     }
     return !readySpy.isEmpty() || !errorSpy.isEmpty();
 }
+
+// 泵事件直到收到“成功”信号（dicomVolumeReady）。
+// 注意：不能复用 waitForDicomSignal —— 它把 dicomVolumeError 也算作“有信号”，
+// 会让“解析彻底失败”的场景伪装成测试通过（曾导致 DICOM 面板黑屏却显示绿灯）。
+bool waitForDicomReady(QSignalSpy &readySpy, int timeoutMs)
+{
+    QElapsedTimer timer;
+    timer.start();
+    while (readySpy.isEmpty() && timer.elapsed() < timeoutMs) {
+        QCoreApplication::processEvents(QEventLoop::WaitForMoreEvents, 100);
+    }
+    return !readySpy.isEmpty();
+}
 } // namespace
 
 TEST_F(BridgeTest, DicomVolumeLoadsAndCleansUp) {
+    QSignalSpy readySpy(bridge, SIGNAL(dicomVolumeReady(QVariantMap, QString)));
+    QSignalSpy errorSpy(bridge, SIGNAL(dicomVolumeError(QString)));
     bridge->loadDicomVolume(bridge->dicomSamplePath());
-    EXPECT_TRUE(waitForDicomSignal(bridge, 30000))
+    EXPECT_TRUE(waitForDicomReady(readySpy, 30000))
         << "DICOM 解析既未成功也未报错——cleanup 闭包可能未执行"
            "（线程未 join 会触发 std::terminate）";
+    EXPECT_TRUE(errorSpy.isEmpty())
+        << "DICOM 解析失败：" << errorSpy.value(0).at(0).toString().toStdString();
+}
+
+// 端到端验证“前端真正拿到的体数据”是否可渲染：
+//   1. 必须收到 dicomVolumeReady（成功信号），而非 dicomVolumeError；
+//   2. base64 必须能解码、长度等于 dims³；
+//   3. 体数据必须有真实的灰度分布（非全零、非常数）——否则体渲染只会画出一块黑屏。
+// 这一用例曾因“只看信号是否到达”而漏判：着色器编译失败时前端全黑，
+// 而 C++ 侧一切正常，测试却显示绿灯。
+TEST_F(BridgeTest, DicomVolumePayloadIsRenderable) {
+    QSignalSpy readySpy(bridge, SIGNAL(dicomVolumeReady(QVariantMap, QString)));
+    QSignalSpy errorSpy(bridge, SIGNAL(dicomVolumeError(QString)));
+
+    bridge->loadDicomVolume(bridge->dicomSamplePath());
+    ASSERT_TRUE(waitForDicomReady(readySpy, 30000))
+        << "未收到 dicomVolumeReady；错误信息："
+        << (errorSpy.isEmpty() ? QStringLiteral("(无)") : errorSpy.value(0).at(0).toString()).toStdString();
+    ASSERT_TRUE(errorSpy.isEmpty());
+
+    const QVariantMap meta = readySpy.value(0).at(0).toMap();
+    const QString base64 = readySpy.value(0).at(1).toString();
+    ASSERT_FALSE(base64.isEmpty()) << "体数据 base64 为空";
+
+    const QVariantList dims = meta.value("dims").toList();
+    ASSERT_EQ(dims.size(), 3) << "meta.dims 应为 [d,d,d]";
+    const int d = dims.at(0).toInt();
+    ASSERT_GT(d, 0);
+
+    const QByteArray raw = QByteArray::fromBase64(base64.toLatin1());
+    ASSERT_EQ(raw.size(), d * d * d)
+        << "解码后字节数与 dims³ 不符：期望 " << (d * d * d) << "，实际 " << raw.size();
+
+    // 统计灰度分布：体渲染需要有对比度，全零或常数都会渲染成纯黑/纯色
+    int nonZero = 0;
+    quint8 minV = 255, maxV = 0;
+    double sum = 0.0;
+    for (int i = 0; i < raw.size(); ++i) {
+        const quint8 v = static_cast<quint8>(raw.at(i));
+        if (v != 0) ++nonZero;
+        minV = qMin(minV, v);
+        maxV = qMax(maxV, v);
+        sum += v;
+    }
+    const double mean = sum / raw.size();
+    std::cout << "[DicomVolume] dims=" << d << " bytes=" << raw.size()
+              << " min=" << int(minV) << " max=" << int(maxV)
+              << " mean=" << mean << " nonZero=" << nonZero
+              << " (" << (100.0 * nonZero / raw.size()) << "%)" << std::endl;
+
+    EXPECT_GT(nonZero, raw.size() / 100)
+        << "体数据几乎全零 —— 体渲染将显示为黑屏";
+    EXPECT_GT(int(maxV) - int(minV), 32)
+        << "体数据灰度范围过窄（无对比度），体渲染不可见";
+    EXPECT_GT(mean, 8.0)
+        << "体数据平均灰度过低，几乎透明";
 }
 
 TEST_F(BridgeTest, DicomVolumeRejectsReentrantLoad) {

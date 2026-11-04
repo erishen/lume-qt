@@ -83,6 +83,8 @@ qt_add_executable(qt-react-shell
     src/dicomreader.h
     src/appschemehandler.cpp
     src/appschemehandler.h
+    src/consolepage.cpp
+    src/consolepage.h
 )
 
 # 设置编译器警告（目标定义后设置）
