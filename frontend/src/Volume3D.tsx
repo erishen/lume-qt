@@ -120,12 +120,21 @@ export default function Volume3D({ volume }: { volume: VolumeInput | null }) {
     const mount = mountRef.current
     if (!mount) return
 
+    // DICOM 体渲染依赖 WebGL2 的 sampler3D / GLSL3；缺 WebGL2 时明确提示，
+    // 而非静默黑屏（否则用户只会看到“三维医学影像”标题下一片空白）。
+    const probe = document.createElement('canvas')
+    if (!probe.getContext('webgl2')) {
+      mount.innerHTML =
+        '<div class="vol-error">当前环境不支持 WebGL2，DICOM 三维体渲染需要 WebGL2 + 3D 纹理支持</div>'
+      return
+    }
+
     const scene = new THREE.Scene()
     scene.background = new THREE.Color(0x05080d)
     sceneRef.current = scene
 
     const camera = new THREE.PerspectiveCamera(50, mount.clientWidth / mount.clientHeight, 0.05, 100)
-    camera.position.set(0.7, 0.35, 1.6)
+    camera.position.set(0, 0, 2.4)
     cameraRef.current = camera
 
     const canvas = document.createElement('canvas')
@@ -165,6 +174,13 @@ export default function Volume3D({ volume }: { volume: VolumeInput | null }) {
     const animate = () => {
       raf = requestAnimationFrame(animate)
       controls.update()
+      // ray-marching 的射线原点必须跟随真实相机：OrbitControls（含
+      // autoRotate）会持续移动相机，若 uCameraPos 不更新，体将被错误投影
+      // 到视野外，表现为“标题在但三维不显示”。
+      const mat = boxMeshRef.current?.material as THREE.RawShaderMaterial | undefined
+      if (mat?.uniforms?.uCameraPos) {
+        ;(mat.uniforms.uCameraPos.value as THREE.Vector3).copy(camera.position)
+      }
       renderer.render(scene, camera)
     }
     animate()
