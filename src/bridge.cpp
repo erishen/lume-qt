@@ -77,49 +77,68 @@ Bridge::Bridge(QObject *parent)
 
 Bridge::~Bridge()
 {
-    // 等待 DICOM 后台线程结束，避免悬挂
-    if (m_dicomThread && m_dicomThread->joinable()) {
-        m_dicomThread->join();
-        delete m_dicomThread;
-        m_dicomThread = nullptr;
+    // 若 DICOM 解析仍在进行：先置 alive=false（位于堆上、独立于 this），
+    // 再 join 等待线程结束。已入队的回调会因 alive=false 跳过对 this 的访问，
+    // 避免 Bridge 释放后的 use-after-free。
+    if (m_dicomHolder) {
+        m_dicomHolder->alive = false;
+        if (m_dicomHolder->thread && m_dicomHolder->thread->joinable())
+            m_dicomHolder->thread->join();
+        // 释放本副本；若仍有已入队闭包持有 holder 副本，它会存活到那些
+        // 闭包执行完毕（此时 alive 已为 false，不会访问 this）。
     }
 }
 
 void Bridge::loadDicomVolume(const QString &directory)
 {
-    // 若上次线程已结束但未收尾，先 join 清理
-    if (m_dicomThread) {
-        if (m_dicomThread->joinable()) m_dicomThread->join();
-        delete m_dicomThread;
-        m_dicomThread = nullptr;
+    // 重入保护：只允许一个在途 DICOM 解析（UI 实际只触发一次，此处仅为
+    // 健壮性兜底；如需排队可改为任务队列实现）。
+    if (m_dicomHolder) {
+        qWarning() << "[Bridge] DICOM 解析已在进行中，忽略重复请求：" << directory;
+        return;
     }
+
     qInfo().noquote() << "[Bridge] 开始后台解析 DICOM：" << directory;
 
-    m_dicomThread = new std::thread([this, directory]() {
+    // holder 位于堆上，worker 闭包与收尾闭包各持一份 shared_ptr 副本：
+    //  - 收尾闭包仅操作 holder->thread，绝不读成员指针，因此不会被之后
+    //    新建的线程误伤（修 #7 竞态）；
+    //  - alive 标志独立于 Bridge，Bridge 析构后仍可被已入队回调安全读取。
+    auto holder = std::make_shared<DicomThreadHolder>();
+    holder->alive = true;
+    holder->thread = std::make_unique<std::thread>([this, directory, holder]() {
         QByteArray data;
         QVariantMap meta;
         QString err;
         const bool ok = DicomReader::loadVolume(directory, data, meta, err);
-        // 结果必须回到 Qt 主线程再发射信号（QWebChannel 依赖所在线程）
+
+        // 结果必须回到 Qt 主线程再发射信号（QWebChannel 依赖所在线程）。
+        // 闭包通过 holder->alive 判断 Bridge 是否仍存活，避免析构后
+        // 对已释放 this 的访问（use-after-free）。
         if (ok) {
             const QString base64 = QString::fromLatin1(data.toBase64());
-            QMetaObject::invokeMethod(this, [this, meta, base64]() {
-                emit dicomVolumeReady(meta, base64);
+            QMetaObject::invokeMethod(this, [this, holder, meta, base64]() {
+                if (holder->alive) emit dicomVolumeReady(meta, base64);
             });
         } else {
-            QMetaObject::invokeMethod(this, [this, err]() {
-                emit dicomVolumeError(err);
+            QMetaObject::invokeMethod(this, [this, holder, err]() {
+                if (holder->alive) emit dicomVolumeError(err);
             });
         }
-        // 主线程收尾：join 已结束的子线程并释放
-        QMetaObject::invokeMethod(this, [this]() {
-            if (m_dicomThread && m_dicomThread->joinable()) {
-                m_dicomThread->join();
-                delete m_dicomThread;
-                m_dicomThread = nullptr;
-            }
+
+        // 回到主线程收尾：仅 join/释放“本线程”对象（holder->thread），
+        // 不读成员指针，因此即便期间又发起了新的 loadDicomVolume，
+        // 也不会误伤新线程。
+        QMetaObject::invokeMethod(this, [this, holder]() {
+            if (!holder->alive) return;   // Bridge 已析构，跳过（不访问 this）
+            if (holder->thread && holder->thread->joinable())
+                holder->thread->join();
+            if (m_dicomHolder == holder)
+                m_dicomHolder.reset();
         });
     });
+
+    m_dicomHolder = holder;
 }
 
 QString Bridge::appName() const

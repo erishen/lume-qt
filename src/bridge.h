@@ -4,7 +4,18 @@
 #include <QVariant>
 #include <QVariantMap>
 
+#include <atomic>
+#include <memory>
 #include <thread>
+
+// DICOM 后台加载线程的持有结构（堆分配、由 shared_ptr 共享）。
+//  - thread：后台解析线程（unique_ptr 保证单一所有权）；
+//  - alive：生命周期标志，独立于 Bridge 对象，确保 Bridge 析构后
+//    已入队的回调仍能安全读取它而不会产生 use-after-free。
+struct DicomThreadHolder {
+    std::unique_ptr<std::thread> thread;
+    std::atomic<bool> alive{false};
+};
 
 class QTimer;
 
@@ -130,6 +141,8 @@ private:
     double m_emgBurst = 0.0;      // 当前肌肉爆发包络
     double m_neuralSpikeEnv = 0.0; // 神经元棘波包络
 
-    // DICOM 后台加载线程
-    std::thread *m_dicomThread = nullptr;
+    // DICOM 后台加载线程的持有结构（堆上、shared_ptr 管理）。
+    // 使 worker 收尾闭包能精确删除“本线程”、并在 Bridge 析构后安全
+    // 跳过已入队的回调（详见 bridge.cpp 的 loadDicomVolume / ~Bridge）。
+    std::shared_ptr<DicomThreadHolder> m_dicomHolder;
 };
