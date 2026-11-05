@@ -1155,3 +1155,37 @@ MR 样例（`resources/dicom/brain-t1`，HU 0…249 → a.u.）：
 
 验证开关：`QTRS_VOLUME_DIR=<dir>` 启动 6 s 后加载指定序列（等网页侧演示样例先落地），
 `QTRS_VOLUME_PRESET=0|1|2|3` 指定初始窗预设，`QTRS_VOLUME_COLOR=1` 打开伪彩叠加。
+
+### 23.2 事件型通道的耗时口径与原生接管
+
+体积和波形不是一类通道：波形是持续流，可以用「采集时刻 → 现在」算年龄；体积是一次性
+加载，用发布时刻当采集时刻会把「发布至今」当成延迟，看板上积出 `530282.0 ms` 这种假值。
+
+这一批把口径和通道责任一起改掉：
+
+- **耗时口径**：`Bridge` 在 `loadDicomVolume()` 入口起 `QElapsedTimer`，解析成功后把
+  `parseMs` 写进体积 meta（保留 `tsUs` 但不再用于延迟）；前端 `latency.ts` 新增
+  `recordSpan(channel, phase, ms)`，只记单次耗时并刷新 `lastReceipt`，供健康判定继续工作。
+- **上屏耗时**：原生侧 `VolumeView` 首帧完成时回调 `MainWindow`，先
+  `Bridge::reportNativeFrame(ms)` 发 `volumeNativeFirstFrame`，再写
+  `dicom.volumeNativeFrame` 台账；网页挂载晚于事件时用 `lastVolumeTiming()` 拉一次快照补上。
+- **不重复拉取**：`Bridge` 暴露 `Q_PROPERTY(bool nativeVolume)`；为 true 时前端不再挂载
+  `<DicomPanel>`，因此那 33 MB 体数据只被原生侧读一次。代价是「加载」这一步也移到了
+  C++：`setupNativeVolume()` 里延时 1.2 s 触发样例加载（`QTRS_NATIVE_VOLUME=0` 时不触发，
+  仍由网页侧加载，用于对照）。
+- **空闲不重绘**：`VolumeView` 加了 `m_needsRender` 脏标记，30 fps 定时器只在脏时
+  `renderFrame()`；相机拖动/滚轮/双击/尺寸变化置脏，窗预设与数据更新直接渲染。
+
+实测（`/tmp/qtrs-perf4.log`，256³ MR 样例）：
+
+```
+[DicomReader] 解析完成： 384 张切片 274 × 384 → 重采样到 256 ³
+[Volume] 原生首帧：273 ms（256×256×256）
+看板 DICOM 体积：到达 1849.0 ms / 上屏 273.0 ms / 样本 1
+```
+
+RSS 从 519 MB 降到约 408 MB（少了一份网页侧体数据与 Three.js 场景）；空闲时
+`原生渲染稳态` 日志不再增长（事件驱动前是每 60 帧一条），说明体渲染确实停下来了。
+注意整机 CPU 仍被 WebView 波形刷新占住（主进程 26–30%，与体渲染无关），
+这是下一批「波形降帧/脏区重绘」要处理的对象，不要把它算到体渲染头上。
+

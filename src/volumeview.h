@@ -102,6 +102,8 @@ private:
     int m_frameCount = 0;
     qint64 m_frameTotalMs = 0;
     int m_firstFrameMs = -1;
+    /// 只有相机/窗/数据/尺寸发生变化才需要重绘；否则 30fps 定时器只是空转
+    bool m_needsRender = false;
 
     float m_yaw = 25.0f;
     float m_pitch = 18.0f;

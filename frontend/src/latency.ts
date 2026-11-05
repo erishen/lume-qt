@@ -157,6 +157,17 @@ export function recordReceipt(channel: Channel, tsUs: number | undefined) {
   push(series[channel].receipt, residualUs(channel, now - tsUs))
 }
 
+/**
+ * 记录事件型通道（体积这类一次性加载）的单次耗时。
+ * 它没有「年龄」语义：把发布时刻当采集时刻会算出数百秒的假延迟，
+ * 这里直接记本次请求花了多久；同时刷新 lastReceipt 供健康判定用。
+ */
+export function recordSpan(channel: Channel, phase: 'receipt' | 'painted', ms: number) {
+  if (!Number.isFinite(ms) || ms < 0) return
+  lastReceiptUs[channel] = nowMicros()
+  push(series[channel][phase], ms)
+}
+
 /** 记录一次「采集 → 本帧绘制」的年龄；在真正 draw 的那一帧调用 */
 export function recordPainted(channel: Channel, tsUs: number | undefined) {
   if (typeof tsUs !== 'number' || !Number.isFinite(tsUs) || tsUs <= 0) return

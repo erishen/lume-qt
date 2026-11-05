@@ -762,6 +762,20 @@ void Bridge::recoverLastSession()
                       static_cast<int>(qRound((nowMicros() - lastTs) / 1000000.0)));
 }
 
+void Bridge::reportNativeFrame(int ms)
+{
+    m_lastNativeFrameMs = ms;
+    emit volumeNativeFirstFrame(ms);
+}
+
+QVariantMap Bridge::lastVolumeTiming() const
+{
+    QVariantMap m;
+    if (m_lastParseMs >= 0) m.insert(QStringLiteral("parseMs"), m_lastParseMs);
+    if (m_lastNativeFrameMs >= 0) m.insert(QStringLiteral("firstFrameMs"), m_lastNativeFrameMs);
+    return m;
+}
+
 void Bridge::loadDicomVolume(const QString &directory)
 {
     // 重入保护：只允许一个在途 DICOM 解析（UI 实际只触发一次，此处仅为
@@ -784,6 +798,7 @@ void Bridge::loadDicomVolume(const QString &directory)
     }
 
     qInfo().noquote() << "[Bridge] 开始后台解析 DICOM：" << directory;
+    m_volumeParseTimer.start();
 
     // holder 位于堆上，worker 闭包与收尾闭包各持一份 shared_ptr 副本：
     //  - 收尾闭包仅操作 holder->thread，绝不读成员指针，因此不会被之后
@@ -804,7 +819,11 @@ void Bridge::loadDicomVolume(const QString &directory)
         // 闭包通过 holder->alive 判断 Bridge 是否仍存活，避免析构后
         // 对已释放 this 的访问（use-after-free）。
         if (ok) {
+            // 事件型通道不能用「发布时刻」当采集时刻：体积是一次性解析，
+            // 前端要的是「这次解析花了多久」，不是「距上次发布过了多久」。
+            m_lastParseMs = static_cast<int>(m_volumeParseTimer.elapsed());
             meta.insert(QStringLiteral("tsUs"), nowMicros());
+            meta.insert(QStringLiteral("parseMs"), m_lastParseMs);
             QMetaObject::invokeMethod(this, [this, holder, meta, data, huData]() {
                 if (!holder->alive) return;
                 // 体积数据存进成员，由 AppSchemeHandler 以二进制供数；
@@ -856,6 +875,11 @@ void Bridge::loadDicomVolume(const QString &directory)
 QString Bridge::appName() const
 {
     return QStringLiteral("qt-react-shell");
+}
+
+bool Bridge::nativeVolume() const
+{
+    return qgetenv("QTRS_NATIVE_VOLUME") != "0";
 }
 
 QString Bridge::platform() const

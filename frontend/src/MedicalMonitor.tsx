@@ -11,6 +11,7 @@ import {
   recordFrame,
   recordPainted,
   recordReceipt,
+  recordSpan,
   setClockSource,
   snapshot,
   type ChannelHealth,
@@ -181,8 +182,8 @@ export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
       {/* 神经内科介入模拟面板 */}
       <NeurologyPanel bridge={bridge} />
 
-      {/* DICOM 体渲染面板 */}
-      <DicomPanel bridge={bridge} />
+      {/* DICOM 体渲染面板：原生侧接管时不再让网页重复拉 33MB 体数据 */}
+      {!bridge?.nativeVolume && <DicomPanel bridge={bridge} />}
     </section>
   )
 }
@@ -593,6 +594,30 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
     }
   }, [bridge])
 
+  // 原生体渲染接管时，体积指标由 C++ 上报：解析耗时 + 首帧耗时。
+  // 以前这里用 tsUs 算「年龄」，事件型通道会积出几百秒的假值。
+  useEffect(() => {
+    if (!bridge || !bridge.nativeVolume) return
+    const onReady = (meta: DicomVolumeMeta) => {
+      if (typeof meta.parseMs === 'number' && meta.parseMs > 0) {
+        recordSpan('volume', 'receipt', meta.parseMs)
+      }
+    }
+    const onFrame = (ms: number) => {
+      if (ms > 0) recordSpan('volume', 'painted', ms)
+    }
+    void bridge.lastVolumeTiming().then((t) => {
+      if (typeof t.parseMs === 'number' && t.parseMs > 0) recordSpan('volume', 'receipt', t.parseMs)
+      if (typeof t.firstFrameMs === 'number' && t.firstFrameMs > 0) recordSpan('volume', 'painted', t.firstFrameMs)
+    })
+    bridge.dicomVolumeReady.connect(onReady)
+    bridge.volumeNativeFirstFrame.connect(onFrame)
+    return () => {
+      bridge.dicomVolumeReady.disconnect(onReady)
+      bridge.volumeNativeFirstFrame.disconnect(onFrame)
+    }
+  }, [bridge])
+
   useEffect(() => {
     if (!bridge || typeof bridge.pacsStatus?.connect !== 'function') return
     const onStatus = (st: PacsStatus) => {
@@ -1000,6 +1025,7 @@ function DicomPanel({ bridge }: { bridge: Bridge | null }) {
 
   useEffect(() => {
     let mounted = true
+    const requestedAt = performance.now()
 
     const onReady = (meta: DicomVolumeMeta, volumeUrl: string) => {
       if (!mounted) return
@@ -1012,8 +1038,9 @@ function DicomPanel({ bridge }: { bridge: Bridge | null }) {
         })
         .then((buf) => {
           if (!mounted) return
-          recordReceipt('volume', meta.tsUs)
+          recordSpan('volume', 'receipt', meta.parseMs ?? performance.now() - requestedAt)
           setLoading(false)
+          recordSpan('volume', 'painted', performance.now() - requestedAt)
           setVolume({ pixels: buf, meta })
           setError(null)
           console.log('[DicomPanel] 体数据已取回', buf.byteLength, 'bytes', meta.dims)

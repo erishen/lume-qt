@@ -342,9 +342,18 @@ void MainWindow::setupNativeVolume()
     connect(m_bridge, &Bridge::dicomVolumeError, this, [this](const QString &message) {
         if (m_volumeStatus) m_volumeStatus->setText(QStringLiteral("解析失败：%1").arg(message));
     });
+    // 原生接管后，网页侧的 DicomPanel 不再挂载（避免重复拉一份体数据），
+    // 因此「加载样例」这一步要由 C++ 侧发起，否则面板永远停在「等待体数据」。
+    if (qgetenv("QTRS_NATIVE_VOLUME") != "0") {
+        QTimer::singleShot(1200, this, [this]() {
+            if (m_bridge) m_bridge->loadDicomVolume(m_bridge->dicomSamplePath());
+        });
+    }
+
     connect(m_volumeView, &VolumeView::firstFrameRendered, this,
             [this](int ms, const QString &dims) {
         if (m_bridge) {
+            m_bridge->reportNativeFrame(ms);
             m_bridge->logAuditEvent(QVariantMap{
                 {QStringLiteral("type"), QStringLiteral("dicom.volumeNativeFrame")},
                 {QStringLiteral("ms"), ms},

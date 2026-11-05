@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QElapsedTimer>
 #include <QObject>
 #include <QVariant>
 #include <QVariantList>
@@ -70,6 +71,8 @@ class Bridge : public QObject
     // 暴露给 JS 的属性（只读，经 Q_PROPERTY 自动同步到 QWebChannel）
     Q_PROPERTY(QString appName READ appName CONSTANT)
     Q_PROPERTY(QString platform READ platform CONSTANT)
+    /// 原生体渲染是否接管了右侧面板；为 true 时前端不要再自己 fetch 一份 33MB 体数据
+    Q_PROPERTY(bool nativeVolume READ nativeVolume CONSTANT)
 
 public:
     explicit Bridge(QObject *parent = nullptr);
@@ -77,6 +80,7 @@ public:
 
     QString appName() const;
     QString platform() const;
+    bool nativeVolume() const;
 
     // Q_INVOKABLE 方法可被 JS 直接调用（qwebchannel 会生成对应 Promise）
     Q_INVOKABLE QString getPlatformInfo() const;
@@ -100,6 +104,13 @@ public:
     /// 最近一次 PACS 状态快照。信号可能在前端订阅之前就发过（启动即探测），
     /// 只靠信号会让界面永远停在「未配置」——和时钟口径一样，必须能拉一次当前值。
     Q_INVOKABLE QVariantMap pacsState() const;
+
+    /// 原生体渲染第一帧完成（毫秒），供前端记「数据到位 → 原生上屏」的耗时
+    void reportNativeFrame(int ms);
+
+    /// 最近一次体积加载的耗时快照：网页可能在事件发出之后才挂载，
+    /// 只靠信号会漏掉第一次（看板就显示「—」），所以必须能拉一次当前值。
+    Q_INVOKABLE QVariantMap lastVolumeTiming() const;
 
     /// 上一次运行是否异常结束（没有 session.end）：{previousSession, previousStart, gapSeconds, events}
     Q_INVOKABLE QVariantMap lastRecovery() const;
@@ -151,6 +162,8 @@ signals:
     // 不是体积数据本身：2MB 级二进制不能走 QWebChannel 的文本序列化
     // （实测会被 UTF-8 转换破坏），前端 fetch 该 URL 取真正的 ArrayBuffer。
     void dicomVolumeReady(const QVariantMap &meta, const QString &volumeUrl);
+    /// 原生侧首帧耗时（ms），与 dicom.volumeNativeFrame 台账同源
+    void volumeNativeFirstFrame(int ms);
     void dicomVolumeError(const QString &message);
     // PACS 结果：{ok, host, port, calledAe, roundTripMs, message, tsUs}
     void pacsStatus(const QVariantMap &status);
@@ -184,6 +197,9 @@ private:
     class AuditSink *m_audit = nullptr;
     /// 上次运行异常结束的摘要（空表示上次是正常退出或没有历史）
     QVariantMap m_recovery;
+    QElapsedTimer m_volumeParseTimer;
+    int m_lastParseMs = -1;
+    int m_lastNativeFrameMs = -1;
 
     /// PACS 后台请求（单飞：上一次没回来就不再发，避免网络卡住时堆线程）
     /// 解析在途时的排队目录：PACS 取回与前端样例加载会撞在一起，

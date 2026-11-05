@@ -53,6 +53,8 @@ export interface ProviderInfo {
 export interface Bridge {
   appName: string
   platform: string
+  /** true = 原生体渲染接管右侧面板，前端不要再 fetch 一份体数据 */
+  nativeVolume: boolean
 
   getPlatformInfo(): Promise<string>
   showMessage(message: string): Promise<string>
@@ -88,6 +90,8 @@ export interface Bridge {
   // ---- DICOM 体积加载 ----
   loadDicomVolume(directory: string): void
   dicomSamplePath(): Promise<string>
+  /** 最近一次体积加载耗时（网页挂载晚于事件时用它补一次） */
+  lastVolumeTiming(): Promise<{ parseMs?: number; firstFrameMs?: number }>
 
   dataFromCpp: QtSignal<(payload: Record<string, unknown>) => void>
   // 标量信号的第二个参数是采集时刻（epoch 微秒）
@@ -99,6 +103,8 @@ export interface Bridge {
   interventionReady: QtSignal<(intervention: Intervention) => void>
   // 体积数据不走桥接：信号只给 URL，前端 fetch 该虚拟资源拿 ArrayBuffer
   dicomVolumeReady: QtSignal<(meta: DicomVolumeMeta, volumeUrl: string) => void>
+  /** 原生体渲染首帧耗时（ms） */
+  volumeNativeFirstFrame: QtSignal<(ms: number) => void>
   dicomVolumeError: QtSignal<(message: string) => void>
   pacsStatus: QtSignal<(status: PacsStatus) => void>
   pacsStudies: QtSignal<(studies: PacsStudy[], meta: PacsQueryMeta) => void>
@@ -179,6 +185,8 @@ export interface DicomVolumeMeta {
   min: number
   max: number
   slices: number
+  /** C++ 侧本次解析耗时（ms）；事件型通道用它，而不是 tsUs 年龄 */
+  parseMs?: number
   /** 因矩阵尺寸不一致被剔除的切片数（C++ 侧计入 meta.skipped） */
   skipped: number
   source: string
