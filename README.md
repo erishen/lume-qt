@@ -361,6 +361,39 @@ bridge.dataFromCpp.connect((payload) => {
 QTRS_FAULT=spo2,ecg ./build/qt-react-shell   # 启动 3 秒后停掉指定通道
 ```
 
+### 6. 设备接入抽象层（DeviceProvider）
+
+前面几步把「显示与判定」从 WebView 里搬了出来，但采样与传输仍然堆在 `Bridge` 里：
+`Bridge` 既是设备、又是传输层，换真实设备（监护仪串口/网口、导联盒、导航系统、
+DICOM 网络 C-FIND/C-GET/STOW）时没有落点。这一步把它们分开。
+
+- **`src/deviceprovider.h`**：设备抽象接口。波形通道 `ecgSample` / `spo2Sample` /
+  `eegSample` / `emgSample` / `neuralSpike` 都是 `(value, tsUs)`，快照通道
+  `vitalsReady` / `interventionReady` 传 map。启停分医疗与神经两组，要求幂等。
+  另有 `kind()` / `description()`，以及 `hasHardwareClock()`——时间戳是否来自设备侧。
+- **`src/simulatorprovider.h/.cpp`**：内置模拟器，`DeviceProvider` 的一种实现。
+  原来 `Bridge` 里的定时器、波形合成（ECG/Pleth/EEG/EMG/neural）、生命体征随机游走、
+  神经干预事件、`QTRS_FAULT` 故障注入都搬到这里。
+- **`Bridge` 退化为传输层**：构造时创建 provider，把它的 7 条信号原样 `connect` 到自己的
+  信号上（前端契约完全不动）；`startMedicalSimulation()` 等仍可被 JS 调用，内部只是委派。
+  转发不重新打时间戳——采集时刻由 provider 决定。
+
+启动日志会明确当前用的是哪种设备：
+
+```
+[Bridge] provider: simulator · 内置生理信号模拟器（ECG 40ms / SpO₂ 40ms / vitals 600ms，宿主墙钟时基） · 硬件时基: 否（宿主墙钟）
+```
+
+**接入真实设备时要做的事**（下一步）：
+
+1. 写一个 `XxxProvider : DeviceProvider`，在 `startMedical()` 里打开串口/建 TCP 连接/
+   发 C-FIND，收到数据就 `emit ecgSample(value, tsUs)`。
+2. 时间戳用**设备侧**的；如果设备不给时间戳，就只有宿主墙钟可用，此时
+   `hasHardwareClock()` 必须返回 `false`——上层据此知道「采集→上屏」这段延迟
+   只能做相对测量，不能当成临床延迟指标。
+3. 在 `Bridge` 构造函数里把 `new SimulatorProvider(this)` 换成新 provider
+   （或按 `QTRS_PROVIDER` 环境变量选择），前端与原生条不用改。
+
 ## 🧪 测试基础设施
 
 ### C++ 单元测试

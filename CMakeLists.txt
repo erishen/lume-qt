@@ -79,6 +79,9 @@ qt_add_executable(qt-react-shell
     src/mainwindow.h
     src/bridge.cpp
     src/bridge.h
+    src/deviceprovider.h
+    src/simulatorprovider.cpp
+    src/simulatorprovider.h
     src/dicomreader.cpp
     src/dicomreader.h
     src/appschemehandler.cpp

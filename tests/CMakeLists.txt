@@ -15,7 +15,9 @@ if (GTest_FOUND)
     add_executable(bridge_test
         bridge_test.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/bridge.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/simulatorprovider.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/bridge.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/deviceprovider.h
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/dicomreader.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/dicomreader.h
     )
