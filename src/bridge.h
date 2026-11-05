@@ -197,7 +197,8 @@ private:
 
     /// 单次取回尝试；失败且可重试时由调用方按退避再排一次。
     void startRetrieveAttempt(const QString &host, int port, const QString &calledAe,
-                              const QString &studyUid, const QString &destDir, int attempt);
+                              const QString &studyUid, const QString &destDir,
+                              const QString &method, int attempt);
 
     // DICOM 后台加载线程的持有结构（堆上、shared_ptr 管理）。
     // 使 worker 收尾闭包能精确删除“本线程”、并在 Bridge 析构后安全

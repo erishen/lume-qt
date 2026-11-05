@@ -156,6 +156,8 @@ export interface PacsRetrieveStatus {
   maxAttempts?: number
   /** 失败但可重试：随后会自动按退避再试一次 */
   retrying?: boolean
+  /** 本次实际用的取回方式：C-GET 或回退到的 C-MOVE */
+  method?: 'get' | 'move'
 }
 
 /** DICOM 体积元数据（与 C++ DicomReader 输出对应） */

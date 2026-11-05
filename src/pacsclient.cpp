@@ -1,10 +1,13 @@
 #include "pacsclient.h"
 
 #include <algorithm>
+#include <atomic>
+#include <thread>
 
 #include <QElapsedTimer>
 #include <QDir>
 #include <QFile>
+#include <QStandardPaths>
 #include <QStringList>
 
 #include <dcmtk/config/osconfig.h>
@@ -12,9 +15,37 @@
 #include <dcmtk/dcmdata/dcdeftag.h>
 #include <dcmtk/dcmdata/dcuid.h>
 #include <dcmtk/dcmnet/dimse.h>
+#include <dcmtk/dcmnet/dstorscp.h>
+#include <dcmtk/dcmnet/scp.h>
 #include <dcmtk/dcmnet/scu.h>
 
 namespace {
+
+/// C-MOVE 的接收端：PACS 会主动连过来把影像推给我们（我们在这里是 Storage SCP）。
+/// 让它直接落盘并统一补 .dcm 后缀，这样下游解析器和 C-GET 走同一套命名。
+class MoveSinkScp : public DcmStorageSCP
+{
+public:
+    int received() const { return m_received.load(); }
+
+    /// 外部（发 C-MOVE 的线程）在收到最终响应后调用，让监听循环尽快收尾。
+    void requestStop() { (void)stopAfterCurrentAssociation(); }
+
+protected:
+    /// 非阻塞模式下没有关联进来时，按连接超时退出监听，避免线程永远挂着。
+    OFBool stopAfterConnectionTimeout() override { return OFTrue; }
+
+    void notifyInstanceStored(const OFString &filename, const OFString &sopClassUID,
+                              const OFString &sopInstanceUID,
+                              DcmDataset *dataset = nullptr) const override
+    {
+        DcmStorageSCP::notifyInstanceStored(filename, sopClassUID, sopInstanceUID, dataset);
+        ++m_received;
+    }
+
+private:
+    mutable std::atomic<int> m_received{0};
+};
 
 /// 把 DcmSCU 会话建起来：注册 AE、设置超时、发起关联。
 /// 每个操作都开一个新的关联再关闭，避免长连接在术中网络抖动时留下半死状态。
@@ -116,6 +147,162 @@ bool PacsClient::isRetryableError(const QString &message)
         || lower.contains(QStringLiteral("超时")) || lower.contains(QStringLiteral("association"))
         || lower.contains(QStringLiteral("关联")) || lower.contains(QStringLiteral("dimse"))
         || lower.contains(QStringLiteral("connection")) || lower.contains(QStringLiteral("连接"));
+}
+
+bool PacsClient::moveStudy(const Endpoint &endpoint, const QString &studyUid,
+                           const QString &destAe, int destPort, const QString &destDir,
+                           int *fileCount, QString *err)
+{
+    if (studyUid.trimmed().isEmpty()) {
+        if (err) *err = QStringLiteral("缺少 StudyInstanceUID，无法取回");
+        return false;
+    }
+    if (destAe.trimmed().isEmpty() || destPort <= 0 || destPort > 65535) {
+        if (err) *err = QStringLiteral("C-MOVE 目标 AE 或端口无效：%1:%2")
+                             .arg(destAe).arg(destPort);
+        return false;
+    }
+    if (!QDir().mkpath(destDir)) {
+        if (err) *err = QStringLiteral("无法创建取回目录：%1").arg(destDir);
+        return false;
+    }
+
+    // 先把本机的存储 SCP 挂起来：C-MOVE 是「服务端反向连我们」，
+    // 它必须先能接受关联，否则 PACS 那边只会报 move destination unreachable。
+    MoveSinkScp scp;
+    scp.setPort(static_cast<Uint16>(destPort));
+    scp.setAETitle(destAe.toStdString());
+    scp.setOutputDirectory(QDir(destDir).absolutePath().toStdString());
+    scp.setFilenameExtension(".dcm");
+    scp.setDatasetStorageMode(DcmStorageSCP::DGM_StoreBitPreserving);
+    // DcmStorageSCP 的头文件写得很直白：不加载协商档，它只认 Verification，
+    // 于是 openListenPort() 直接报 Invalid or non-existing SCP Association Profile。
+    // 把存储类写进一份临时协商档，让接收端在关联协商阶段就能接住 PACS 推来的图。
+    const QString assocPath = QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+                              + QStringLiteral("/qtrs-store-scp.cfg");
+    {
+        QFile assoc(assocPath);
+        if (!assoc.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+            if (err) *err = QStringLiteral("无法写入接收端协商档：%1").arg(assocPath);
+            return false;
+        }
+        assoc.write(R"([[TransferSyntaxes]]
+[Uncompressed]
+TransferSyntax1 = LittleEndianExplicit
+TransferSyntax2 = LittleEndianImplicit
+
+[[PresentationContexts]]
+[StorageSCP]
+PresentationContext1 = VerificationSOPClass\Uncompressed
+PresentationContext2 = MRImageStorage\Uncompressed
+PresentationContext3 = CTImageStorage\Uncompressed
+PresentationContext4 = EnhancedMRImageStorage\Uncompressed
+PresentationContext5 = SecondaryCaptureImageStorage\Uncompressed
+
+[[Profiles]]
+[StorageSCP]
+PresentationContexts = StorageSCP
+)");
+        assoc.close();
+    }
+    if (scp.loadAssociationConfiguration(assocPath.toStdString(), "StorageSCP").bad()) {
+        if (err) *err = QStringLiteral("接收端协商档无效：%1").arg(assocPath);
+        return false;
+    }
+    scp.setConnectionBlockingMode(DUL_NOBLOCK);
+    // 监听循环在没有新关联时会一直等到连接超时才退出：这个值既是
+    // 「两次关联之间最多等多久」，也决定了收完后多久能收工，取 3 s。
+    scp.setConnectionTimeout(3);
+
+    const OFCondition bindRc = scp.openListenPort();
+    if (bindRc.bad()) {
+        if (err) *err = QStringLiteral("无法监听本机接收端口 %1：%2")
+                             .arg(destPort).arg(bindRc.text());
+        return false;
+    }
+
+    std::thread scpThread([&scp]() { (void)scp.acceptAssociations(); });
+
+    DcmSCU scu;
+    OFList<OFString> xfer;
+    xfer.push_back(UID_LittleEndianExplicitTransferSyntax);
+    xfer.push_back(UID_LittleEndianImplicitTransferSyntax);
+
+    bool ok = false;
+    QString localErr;
+    int completed = 0;
+    auto finish = [&]() {
+        // 取回结束（成功或失败）都要让接收线程退出并回收，
+        // 否则下次取回会撞在同一端口上。
+        scp.requestStop();
+        if (scpThread.joinable()) scpThread.join();
+    };
+
+    if (scu.addPresentationContext(UID_MOVEStudyRootQueryRetrieveInformationModel, xfer,
+                                   ASC_SC_ROLE_SCU)
+            .bad()) {
+        localErr = QStringLiteral("注册 C-MOVE 呈现上下文失败");
+        finish();
+        if (err) *err = localErr;
+        return false;
+    }
+
+    if (!openAssociation(scu, endpoint, &localErr)) {
+        finish();
+        if (err) *err = localErr;
+        return false;
+    }
+
+    const T_ASC_PresentationContextID presId =
+        scu.findPresentationContextID(UID_MOVEStudyRootQueryRetrieveInformationModel, "");
+    if (presId == 0) {
+        localErr = QStringLiteral("服务端未接受 C-MOVE 呈现上下文");
+        (void)scu.releaseAssociation();
+        finish();
+        if (err) *err = localErr;
+        return false;
+    }
+
+    DcmDataset query;
+    query.putAndInsertString(DCM_QueryRetrieveLevel, "STUDY");
+    query.putAndInsertString(DCM_StudyInstanceUID, studyUid.toUtf8().constData());
+
+    OFList<RetrieveResponse *> responses;
+    const OFCondition rc = scu.sendMOVERequest(presId, destAe.toStdString(), &query, &responses);
+
+    // 取最终状态里的完成数：中间响应只会给「还剩几个」，最后一个才是结论。
+    if (!responses.empty()) {
+        completed = static_cast<int>(responses.back()->m_numberOfCompletedSubops);
+    }
+    const int failed = responses.empty() ? 0
+                                         : static_cast<int>(responses.back()->m_numberOfFailedSubops);
+    for (RetrieveResponse *r : responses) delete r;
+    responses.clear();
+
+    (void)scu.releaseAssociation();
+    finish();
+
+    const int landed = static_cast<int>(
+        QDir(destDir).entryList({QStringLiteral("*.dcm")}, QDir::Files).size());
+    if (fileCount) *fileCount = landed;
+
+    if (landed < completed) {
+        localErr = QStringLiteral("C-MOVE 部分失败：只收到 %1/%2 张（失败 %3）")
+                       .arg(landed).arg(completed).arg(failed);
+        if (err) *err = localErr;
+        return false;
+    }
+
+    if (rc.bad() || landed == 0) {
+        localErr = rc.bad() ? QStringLiteral("C-MOVE 失败：%1").arg(rc.text())
+                            : QStringLiteral("C-MOVE 结束但没有文件落地（完成 %1，失败 %2）")
+                                  .arg(completed).arg(failed);
+        if (err) *err = localErr;
+        return false;
+    }
+
+    ok = true;
+    return ok;
 }
 
 bool PacsClient::retrieveStudy(const Endpoint &endpoint, const QString &studyUid,

@@ -568,6 +568,7 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
   // 取回失败会按退避自动重试；这里把「第几次 / 为什么」写在按钮上，
   // 否则术中只能看到一个转圈，不知道是在重试还是卡死。
   const [retrieveNote, setRetrieveNote] = useState('')
+  const [retrieveMethod, setRetrieveMethod] = useState<'get' | 'move'>('get')
   const pacsRef = useRef<{ host: string; port: number; ae: string } | null>(null)
 
   // 时间戳到底来自宿主时钟还是设备时钟，由 C++ 侧 provider 如实声明。
@@ -607,6 +608,7 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
       setStudyUid(uid ?? '')
     }
     const onRetrieve = (st: PacsRetrieveStatus) => {
+      if (st.method === 'get' || st.method === 'move') setRetrieveMethod(st.method)
       setRetrieving(Boolean(st.retrying))
       setRetrieveNote(
         st.ok
@@ -684,7 +686,7 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
             <button
               type="button"
               className="pacs-retrieve"
-              title={retrieveNote}
+              title={`${retrieveMethod === 'move' ? 'C-MOVE' : 'C-GET'}${retrieveNote ? ' · ' + retrieveNote : ''}`}
               disabled={retrieving}
               onClick={() => {
                 const target = pacsRef.current

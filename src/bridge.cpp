@@ -141,6 +141,40 @@ int pacsHeartbeatIntervalMs()
 
 constexpr int kPacsRetrieveMaxAttempts = 3;
 
+/// 取回方式：`auto`（先 C-GET，不支持则回落 C-MOVE）/ `get` / `move`。
+QString pacsRetrieveMode()
+{
+    const QByteArray raw = qgetenv("QTRS_PACS_MODE");
+    const QString mode = QString::fromLocal8Bit(raw).trimmed().toLower();
+    if (mode == QStringLiteral("get") || mode == QStringLiteral("move")) return mode;
+    return QStringLiteral("auto");
+}
+
+/// C-MOVE 的接收端身份：PACS 的 AE 表里必须登记这套 AE/端口，否则推不过来。
+QString pacsStoreAe()
+{
+    const QByteArray raw = qgetenv("QTRS_PACS_STORE_AE");
+    return raw.isEmpty() ? QStringLiteral("QTRSSTORE") : QString::fromLocal8Bit(raw);
+}
+
+int pacsStorePort()
+{
+    bool ok = false;
+    const int port = qgetenv("QTRS_PACS_STORE_PORT").toInt(&ok);
+    return (ok && port > 0 && port <= 65535) ? port : 11113;
+}
+
+/// 服务端明确不会做 C-GET 的几种表现。C-MOVE 是这时唯一的退路，
+/// 重试同一个 C-GET 只会把同样的拒绝再走三遍。
+bool getLooksUnsupported(const QString &err)
+{
+    const QString lower = err.toLower();
+    return lower.contains(QStringLiteral("scp role"))
+        || lower.contains(QStringLiteral("presentation context"))
+        || lower.contains(QStringLiteral("部分失败"))
+        || lower.contains(QStringLiteral("0x0122"));
+}
+
 } // namespace
 
 void Bridge::pacsProbe(const QString &host, int port, const QString &calledAe)
@@ -282,16 +316,23 @@ void Bridge::pacsRetrieveStudy(const QString &host, int port, const QString &cal
     // 路径里的点号是 DICOM UID 的一部分，文件系统允许。
     const QString destDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
                             + QStringLiteral("/pacs/") + studyUid;
-    startRetrieveAttempt(host, port, calledAe, studyUid, destDir, 1);
+
+    // auto 先试 C-GET：它不需要 PACS 侧登记任何 AE，能用就是最省事的一条。
+    const QString mode = pacsRetrieveMode();
+    const QString method = (mode == QStringLiteral("move")) ? QStringLiteral("move")
+                                                            : QStringLiteral("get");
+    startRetrieveAttempt(host, port, calledAe, studyUid, destDir, method, 1);
 }
 
 void Bridge::startRetrieveAttempt(const QString &host, int port, const QString &calledAe,
-                                  const QString &studyUid, const QString &destDir, int attempt)
+                                  const QString &studyUid, const QString &destDir,
+                                  const QString &method, int attempt)
 {
     if (m_pacsBusy) {
         qInfo() << "[PACS] 上一次请求尚未返回，本次取回尝试推迟";
-        QTimer::singleShot(500, this, [this, host, port, calledAe, studyUid, destDir, attempt]() {
-            startRetrieveAttempt(host, port, calledAe, studyUid, destDir, attempt);
+        QTimer::singleShot(500, this, [this, host, port, calledAe, studyUid, destDir, method,
+                                       attempt]() {
+            startRetrieveAttempt(host, port, calledAe, studyUid, destDir, method, attempt);
         });
         return;
     }
@@ -309,23 +350,39 @@ void Bridge::startRetrieveAttempt(const QString &host, int port, const QString &
     holder->alive = true;
     m_pacsHolder = holder;
 
-    qInfo().noquote() << QStringLiteral("[PACS] C-GET %1 → %2:%3 AE=%4（第 %5/%6 次）")
+    const QString verb = method == QStringLiteral("move") ? QStringLiteral("C-MOVE")
+                                                         : QStringLiteral("C-GET");
+    qInfo().noquote() << QStringLiteral("[PACS] %1 %2 → %3:%4 AE=%5（第 %6/%7 次）")
+                             .arg(verb)
                              .arg(studyUid.left(24) + QStringLiteral("…"))
                              .arg(host).arg(port).arg(calledAe)
                              .arg(attempt).arg(kPacsRetrieveMaxAttempts);
-    holder->thread = std::make_unique<std::thread>([this, holder, ep, studyUid, destDir, attempt]() {
+    holder->thread = std::make_unique<std::thread>([this, holder, ep, studyUid, destDir, method,
+                                                    verb, attempt]() {
         QElapsedTimer timer;
         timer.start();
         QString err;
         int files = 0;
-        const bool ok = PacsClient::retrieveStudy(ep, studyUid, destDir, &files, &err);
+        bool ok = false;
+        if (method == QStringLiteral("move")) {
+            ok = PacsClient::moveStudy(ep, studyUid, pacsStoreAe(), pacsStorePort(), destDir,
+                                       &files, &err);
+        } else {
+            ok = PacsClient::retrieveStudy(ep, studyUid, destDir, &files, &err);
+        }
         const int ms = static_cast<int>(timer.elapsed());
 
-        QMetaObject::invokeMethod(this, [this, holder, ep, studyUid, destDir, ok, files, err, ms, attempt]() {
+        QMetaObject::invokeMethod(this, [this, holder, ep, studyUid, destDir, ok, files, err, ms,
+                                          method, verb, attempt]() {
             if (!holder->alive) return;
             m_pacsBusy = false;
 
-            const bool willRetry = !ok && attempt < kPacsRetrieveMaxAttempts
+            // 服务端不做 C-GET 时，退路是 C-MOVE（前提是它在 AE 表里认得我们的接收端）。
+            const bool fallbackToMove = !ok && method != QStringLiteral("move")
+                                        && pacsRetrieveMode() != QStringLiteral("get")
+                                        && getLooksUnsupported(err);
+            const bool willRetry = !ok && !fallbackToMove
+                                   && attempt < kPacsRetrieveMaxAttempts
                                    && PacsClient::isRetryableError(err);
 
             QVariantMap status;
@@ -334,24 +391,29 @@ void Bridge::startRetrieveAttempt(const QString &host, int port, const QString &
             status.insert(QStringLiteral("files"), files);
             status.insert(QStringLiteral("dir"), destDir);
             status.insert(QStringLiteral("ms"), ms);
+            status.insert(QStringLiteral("method"), method);
             status.insert(QStringLiteral("attempt"), attempt);
             status.insert(QStringLiteral("maxAttempts"), kPacsRetrieveMaxAttempts);
-            status.insert(QStringLiteral("retrying"), willRetry);
+            status.insert(QStringLiteral("retrying"), willRetry || fallbackToMove);
             status.insert(QStringLiteral("message"),
-                          willRetry ? QStringLiteral("取回失败，正在重试（第 %1 次）：%2")
-                                          .arg(attempt + 1).arg(humanPacsError(err))
-                                    : humanPacsError(err));
+                          fallbackToMove
+                              ? QStringLiteral("C-GET 不被支持，改用 C-MOVE：%1")
+                                    .arg(humanPacsError(err))
+                              : willRetry ? QStringLiteral("取回失败，正在重试（第 %1 次）：%2")
+                                                .arg(attempt + 1).arg(humanPacsError(err))
+                                          : humanPacsError(err));
             status.insert(QStringLiteral("detail"), err);
             status.insert(QStringLiteral("tsUs"), nowMicros());
 
             if (ok) {
-                qInfo().noquote() << QStringLiteral("[PACS] C-GET 完成：%1 个对象，%2 ms → %3")
-                                         .arg(files).arg(ms).arg(destDir);
+                qInfo().noquote() << QStringLiteral("[PACS] %1 完成：%2 个对象，%3 ms → %4")
+                                         .arg(verb).arg(files).arg(ms).arg(destDir);
                 if (m_audit) {
                     m_audit->record(QStringLiteral("pacs.retrieve"), {
                         {QStringLiteral("studyUid"), studyUid},
                         {QStringLiteral("files"), files},
                         {QStringLiteral("ms"), ms},
+                        {QStringLiteral("method"), method},
                         {QStringLiteral("attempt"), attempt},
                         {QStringLiteral("dir"), destDir},
                     });
@@ -362,31 +424,52 @@ void Bridge::startRetrieveAttempt(const QString &host, int port, const QString &
                 // 取回的是一堆 DICOM 文件而不是体数据：交给既有解析链路，
                 // 走的是和本地样例完全同一条路径（含重采样与 app:// 二进制供数）。
                 loadDicomVolume(destDir);
+            } else if (fallbackToMove) {
+                qWarning().noquote() << QStringLiteral("[PACS] C-GET 不被支持，回落 C-MOVE（AE=%1:%2）：")
+                                            .arg(pacsStoreAe()).arg(pacsStorePort())
+                                     << err;
+                if (m_audit) {
+                    m_audit->record(QStringLiteral("pacs.retrieveFallback"), {
+                        {QStringLiteral("studyUid"), studyUid},
+                        {QStringLiteral("from"), QStringLiteral("get")},
+                        {QStringLiteral("to"), QStringLiteral("move")},
+                        {QStringLiteral("storeAe"), pacsStoreAe()},
+                        {QStringLiteral("storePort"), pacsStorePort()},
+                        {QStringLiteral("message"), err},
+                    });
+                }
+                QTimer::singleShot(300, this, [this, ep, studyUid, destDir, attempt]() {
+                    startRetrieveAttempt(ep.host, ep.port, ep.calledAe, studyUid, destDir,
+                                         QStringLiteral("move"), attempt);
+                });
             } else if (willRetry) {
                 // 退避 0.6 s / 1.8 s：术中网络抖动通常是亚秒级，
                 // 重试太快只会撞在同一段抖动上，太慢则让等待变得不可忍受。
                 const int backoffMs = attempt == 1 ? 600 : 1800;
-                qWarning().noquote() << QStringLiteral("[PACS] C-GET 第 %1 次失败（%2 ms），%3 ms 后重试：")
-                                            .arg(attempt).arg(ms).arg(backoffMs)
+                qWarning().noquote() << QStringLiteral("[PACS] %1 第 %2 次失败（%3 ms），%4 ms 后重试：")
+                                            .arg(verb).arg(attempt).arg(ms).arg(backoffMs)
                                      << err;
                 if (m_audit) {
                     m_audit->record(QStringLiteral("pacs.retrieveRetry"), {
                         {QStringLiteral("studyUid"), studyUid},
+                        {QStringLiteral("method"), method},
                         {QStringLiteral("attempt"), attempt},
                         {QStringLiteral("backoffMs"), backoffMs},
                         {QStringLiteral("message"), err},
                     });
                 }
-                QTimer::singleShot(backoffMs, this, [this, ep, studyUid, destDir, attempt]() {
-                    startRetrieveAttempt(ep.host, ep.port, ep.calledAe, studyUid, destDir,
+                QTimer::singleShot(backoffMs, this, [this, ep, studyUid, destDir, method,
+                                                     attempt]() {
+                    startRetrieveAttempt(ep.host, ep.port, ep.calledAe, studyUid, destDir, method,
                                          attempt + 1);
                 });
             } else {
-                qWarning().noquote() << "[PACS] C-GET 失败：" << err;
+                qWarning().noquote() << QStringLiteral("[PACS] %1 失败：").arg(verb) << err;
                 if (m_audit) {
                     m_audit->record(QStringLiteral("pacs.retrieveFailed"), {
                         {QStringLiteral("studyUid"), studyUid},
                         {QStringLiteral("ms"), ms},
+                        {QStringLiteral("method"), method},
                         {QStringLiteral("attempt"), attempt},
                         {QStringLiteral("message"), err},
                     });

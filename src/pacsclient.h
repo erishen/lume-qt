@@ -47,6 +47,17 @@ public:
      */
     static bool isRetryableError(const QString &message);
 
+    /**
+     * C-MOVE 取回：适用于只支持 C-MOVE 的 PACS。
+     *
+     * 与 C-GET 相反，这里由服务端反向连到我们，所以本函数会在 `destPort` 上临时
+     * 起一个存储 SCP（AE = `destAe`），收到的对象直接落盘到 `destDir`。
+     * 前提：PACS 的 AE 表里必须登记了 `destAe` 与它可达的 host/port。
+     */
+    static bool moveStudy(const Endpoint &endpoint, const QString &studyUid,
+                          const QString &destAe, int destPort, const QString &destDir,
+                          int *fileCount, QString *err);
+
     static bool retrieveStudy(const Endpoint &endpoint, const QString &studyUid,
                               const QString &destDir, int *fileCount, QString *err);
 };

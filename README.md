@@ -648,8 +648,58 @@ C-GET（第 2/3 次）→ C-GET 完成：60 个对象，97 ms
 ```
 
 已知边界：重试没有抖动（jitter），多实例同时重试仍可能同步撞车；心跳与取回互斥，
-所以长取回期间的掉线只能在取回失败时暴露；仍没有 C-MOVE 回退，
-遇到只支持 C-MOVE 的 PACS 还需要一轮改造。
+所以长取回期间的掉线只能在取回失败时暴露。C-MOVE 回退见下一节。
+
+### 12. 遇上只支持 C-MOVE 的 PACS：本机起接收 SCP 接图
+
+C-GET 是「我去你那儿取」，C-MOVE 是「你往我这儿推」——后者要求我们自己在手术室这台机器上
+开一个存储 SCP，并把 AE / 端口登记到 PACS 的 AE 表里。真实医院里两种都有，
+所以这一批把 C-MOVE 做成 C-GET 的退路而不是替代品。
+
+- **方式选择**：`QTRS_PACS_MODE=auto|get|move`（默认 auto）。auto 先走 C-GET——
+  它不需要 PACS 侧登记任何 AE，能用就是最省事的一条；失败且判据命中
+  「服务端根本不会 C-GET」（`scp role` / `presentation context` / `部分失败` / `0x0122`）
+  才回落 C-MOVE，并记一行 `pacs.retrieveFallback`。这类拒绝重试三次也没用，只会多等十几秒。
+- **接收端身份**：`QTRS_PACS_STORE_AE`（默认 `QTRSSTORE`）与 `QTRS_PACS_STORE_PORT`（默认 11113）。
+  端口要避开 PACS 和本机其他 DICOM 服务；AE 表里写错一个字母，PACS 就会把图推去别处或直接报错。
+- **状态与台账**：`pacsRetrieve` 带回 `method`，按钮 `title` 写明这次是 C-GET 还是 C-MOVE；
+  台账 `pacs.retrieve` 多一个 `method` 字段，事后能回答「这例是怎么进来的」。
+
+实测（同一台 dcmqrscp，`QTRS_PACS_MODE=move`）：
+
+```
+C-ECHO 成功：20 ms
+C-MOVE 1.2.826.0.1.3680043.2.11… → 127.0.0.1:11112 AE=QTRSQR（第 1/3 次）
+C-MOVE 完成：60 个对象，3137 ms
+[DicomReader] 解析完成：60 张切片 274 × 384 → 重采样到 128 ³
+```
+
+台账：`{"type":"pacs.retrieve","method":"move","files":60,"ms":3137}`。
+
+这一批踩到的坑都出在「接收端怎么被 PACS 认出来」这一侧，记下来省下一次重走：
+
+- **PACS 侧要能解析我们的 AE**：dcmqrscp 的 `AETable` 里 peers 写具体符号名会把 C-ECHO
+  一起挡掉（它同时是「允许谁来查」的白名单），实测报 `DUL Association Rejected`；
+  peers 保持 `ANY`，另在 `HostTable` 里登记 `qtrsstore = (QTRSSTORE, localhost, 11113)`
+  供 C-MOVE 目标解析。
+- **`DcmStorageSCP` 不加载协商档就只认 C-ECHO**：头文件写明「未加载关联协商档时仅支持
+  Verification」，`openListenPort()` 直接返回 `Invalid or non-existing SCP Association Profile`。
+  正确做法是运行时生成一份 `[[PresentationContexts]]` 协商档（Verification + MR/CT/
+  EnhancedMR/SecondaryCapture，显式与隐式小端），再 `loadAssociationConfiguration(path, profile)`；
+  手动 `addPresentationContext()` 不够，profile 仍然「不存在」。
+- **收尾时间是连接超时，不是传输时间**：监听循环没有新关联时会一直等到
+  `setConnectionTimeout()` 才退出，最初设 12 s，60 张图明明 1 s 内推完却报 12207 ms。
+  改成 3 s 后同一批 3137 ms；这 3 s 就是「收完到收工」的固定尾账。
+- **完成数以最终响应为准**：中间响应给的是「还剩几个」，只有最后一个响应才是结论；
+  再用落地文件数交叉校验，`landed < completed` 直接报「部分失败」，不把半例当成功。
+- **接口名与访问级别**：`DcmSCP` 只有虚函数 `stopAfterConnectionTimeout()`（需 override 返回
+  `OFTrue` 让超时后退出），没有 `setStopAfterConnectionTimeout()`；`stopAfterCurrentAssociation()`
+  是 protected，要在自己类里包一层 `requestStop()`；C-MOVE 的成功常量是 `STATUS_MOVE_Success`。
+
+已知边界：回落路径（服务端明确拒绝 C-GET）没有在现场服务端上复现——本地 dcmqrscp
+两种检索都支持，只验证了 `QTRS_PACS_MODE=move` 的直连路径与判据本身；
+接收端目前只登记四个存储类，遇到超声、内镜等其它 SOP 类需要补配置；
+C-MOVE 同样只取第一例，没有多例选择。
 
 ## 🧪 测试基础设施
 
