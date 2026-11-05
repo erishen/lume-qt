@@ -27,13 +27,17 @@ CMAKE      ?= cmake
 GENERATOR  ?= Ninja
 
 .PHONY: all run frontend cpp configure setup deps clean rebuild dev dev-hot dev-rebuild dev-wait dev-stop dev-stale \
-        run-tests bridge_test frontend-tests perf-bench test-all help
+        run-tests bridge_test frontend-tests perf-bench test-all trace help
 
 # ctest 可执行文件（与 cmake 同目录）
 CTEST ?= ctest
 
 # 默认目标：完整构建
 all: cpp
+
+## 检查需求追溯矩阵（ID 唯一 / 状态合法 / 引用文件存在）
+trace:
+	@python3 scripts/check-traceability.py
 
 ## 构建并运行应用
 run: all
