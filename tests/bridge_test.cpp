@@ -22,6 +22,7 @@
 
 #include "../src/bridge.h"
 #include "../src/auditsink.h"
+#include "../src/pacsclient.h"
 #include "../src/simulatorprovider.h"
 #include "../src/dicomreader.h"
 
@@ -481,6 +482,32 @@ TEST(AuditSinkTest, WritesParsableJsonLinesWithFixedFields)
     // 业务字段里的 type 不得覆盖事件类型
     EXPECT_NE(obj.value(QStringLiteral("type")).toString(), QStringLiteral("fake.type"));
 }
+
+/**
+ * PACS 端点解析：接入现场是靠一行环境变量配置的，解析错了就等于连错机器。
+ * 这里只钉纯逻辑（不发网络），网络行为靠本地 dcmqrscp 手工验证。
+ */
+TEST(PacsClientTest, ParsesEndpointSpec)
+{
+    PacsClient::Endpoint ep;
+    QString err;
+
+    EXPECT_TRUE(PacsClient::parseEndpoint(QStringLiteral("127.0.0.1:11112:QTRSQR"), &ep, &err));
+    EXPECT_EQ(ep.host, QStringLiteral("127.0.0.1"));
+    EXPECT_EQ(ep.port, 11112);
+    EXPECT_EQ(ep.calledAe, QStringLiteral("QTRSQR"));
+
+    // 只给 host:port 时 calledAe 留空；调用方必须据此判定「配置不完整」而不是硬连
+    PacsClient::Endpoint partial;
+    EXPECT_TRUE(PacsClient::parseEndpoint(QStringLiteral("pacs.example:104"), &partial, &err));
+    EXPECT_TRUE(partial.calledAe.isEmpty());
+
+    EXPECT_FALSE(PacsClient::parseEndpoint(QStringLiteral("127.0.0.1"), &ep, &err));
+    EXPECT_FALSE(PacsClient::parseEndpoint(QStringLiteral("host:0:AE"), &ep, &err));
+    EXPECT_FALSE(PacsClient::parseEndpoint(QStringLiteral("host:abc:AE"), &ep, &err));
+    EXPECT_FALSE(PacsClient::parseEndpoint(QStringLiteral("a:b:c:d"), &ep, &err));
+}
+
 
 int main(int argc, char **argv) {
     // 为 DICOM 异步回调（QMetaObject::invokeMethod → 主线程事件循环）提供环境

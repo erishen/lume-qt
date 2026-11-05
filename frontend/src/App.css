@@ -551,3 +551,18 @@ button:disabled {
 @keyframes wd-blink {
   50% { opacity: 0.25; }
 }
+
+/* PACS 连通性：和延迟看板同屏，ok/bad 用色区分，未配置保持中性 */
+.pacs-chip {
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+.pacs-chip.ok {
+  color: #34d399;
+}
+.pacs-chip.bad {
+  color: #f87171;
+}
+.pacs-chip.idle {
+  color: #94a3b8;
+}

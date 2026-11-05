@@ -73,6 +73,14 @@ export interface Bridge {
   /** 当前设备数据源与时基信息 */
   providerInfo(): Promise<ProviderInfo>
 
+  // ---- PACS（DICOM 网络）----
+  /** C-ECHO 连通性验证（失败不抛，结果走 pacsStatus 信号） */
+  pacsProbe(host: string, port: number, calledAe: string): void
+  /** STUDY 级 C-FIND，枚举该 AE 上的检查 */
+  pacsFindStudies(host: string, port: number, calledAe: string): void
+  /** 最近一次 PACS 状态快照（空对象表示从未配置/探测过） */
+  pacsState(): Promise<Partial<PacsStatus> & { count?: number }>
+
   // ---- DICOM 体积加载 ----
   loadDicomVolume(directory: string): void
   dicomSamplePath(): Promise<string>
@@ -88,6 +96,42 @@ export interface Bridge {
   // 体积数据不走桥接：信号只给 URL，前端 fetch 该虚拟资源拿 ArrayBuffer
   dicomVolumeReady: QtSignal<(meta: DicomVolumeMeta, volumeUrl: string) => void>
   dicomVolumeError: QtSignal<(message: string) => void>
+  pacsStatus: QtSignal<(status: PacsStatus) => void>
+  pacsStudies: QtSignal<(studies: PacsStudy[], meta: PacsQueryMeta) => void>
+}
+
+/** PACS 连通性结果（与 C++ Bridge::pacsStatus 对应） */
+export interface PacsStatus {
+  ok: boolean
+  host: string
+  port: number
+  calledAe: string
+  /** C-ECHO 往返毫秒；失败为 -1 */
+  roundTripMs: number
+  message: string
+  tsUs: number
+}
+
+/** C-FIND 返回的一例检查 */
+export interface PacsStudy {
+  patientName?: string
+  patientId?: string
+  studyDate?: string
+  studyTime?: string
+  studyInstanceUid?: string
+  accession?: string
+  modality?: string
+  series?: number
+}
+
+/** C-FIND 汇总 */
+export interface PacsQueryMeta {
+  ok: boolean
+  count: number
+  host: string
+  calledAe: string
+  message: string
+  tsUs: number
 }
 
 /** DICOM 体积元数据（与 C++ DicomReader 输出对应） */

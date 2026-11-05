@@ -81,6 +81,8 @@ qt_add_executable(qt-react-shell
     src/bridge.h
     src/auditsink.cpp
     src/auditsink.h
+    src/pacsclient.cpp
+    src/pacsclient.h
     src/deviceprovider.h
     src/simulatorprovider.cpp
     src/simulatorprovider.h
@@ -124,6 +126,7 @@ target_link_libraries(qt-react-shell PRIVATE
     Qt6::WebChannel
     Qt6::Network
     DCMTK::dcmdata
+    DCMTK::dcmnet
     DCMTK::oflog
 )
 

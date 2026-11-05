@@ -482,6 +482,69 @@ python3 -c "import json,sys;[print(json.loads(l)['type']) for l in open(sys.argv
 边界说明：这是**工程级事件时间线**，不是合规证明。IEC 62304 的证据链还要版本冻结、
 验证记录、变更控制与签核；本节的产出是那条链里「发生了什么」这一层。
 
+### 9. 真实设备协议：DICOM 网络（C-ECHO / C-FIND）
+
+前面把设备抽象成 `DeviceProvider`，但那只覆盖波形源。术中的影像与病人信息来自 PACS，
+接入真实环境的第一个问题永远是两句话：「连得上吗？」「这例检查在库里吗？」。
+本批把这两件事做成可验证的一小块——不是又加一层抽象，而是真的走 DICOM 网络。
+
+- **`src/pacsclient.h/.cpp`**：`DcmSCU` 之上封装两个动作。
+  - `echo()`：C-ECHO 连通性验证，返回往返毫秒；
+  - `findStudies()`：STUDY 级 C-FIND，返回 `patientName / patientId / studyDate /
+    studyInstanceUid / modality / series`。
+  - 每次都开新关联再释放，不留长连接——术中网络抖动时长连接会留下半死状态，
+    而下一次探测的开销只有几毫秒。
+- **配置**：`QTRS_PACS=host:port:calledAE`（例 `QTRS_PACS=192.0.2.12:104:ORPACS`）。
+  启动后 1.2 s 自动 C-ECHO，成功则立刻接着 C-FIND——接入现场的真实顺序就是
+  「先验证连通、再找病人」，分两步手动触发只会让人忘了第二步。
+- **线程模型**：网络调用在工作线程里跑，回主线程后才发信号。`PacsThreadHolder`
+  自己负责 join：`std::thread` 析构时若仍 joinable 会直接 `std::terminate()`，
+  这个坑在第一次实测就踩到（第二次请求替换 holder 时进程 abort）。
+- **看板**：延迟看板头部会带一枚状态 chip——
+  `PACS 已连通 13 ms · 1 例`（绿）/ `PACS 未连通 无法建立 TCP 连接…`（红）/ `PACS 未配置`（灰）。
+  状态既能推（`pacsStatus` / `pacsStudies` 信号）也能拉（`pacsState()` 快照），
+  因为启动即探测时信号往往早于 WebView 订阅，只靠信号会永远停在「未配置」。
+- **台账**：`pacs.echo` / `pacs.echoFailed` / `pacs.find` / `pacs.findFailed`，
+  带 host / calledAe / roundTripMs / studies / 原始错误 detail。界面显示人话文案，
+  台账留 DCMTK 原文——排查时要的是原始码，看板上要的是一眼判读。
+
+实测（本机 `dcmqrscp` 起在 127.0.0.1:11112，AE `QTRSQR`，用 `resources/dicom/brain-t1`
+的切片经 `storescu` 入库）：
+
+```
+[PACS] C-ECHO → 127.0.0.1:11112 AE=QTRSQR
+[PACS] C-ECHO 成功：13 ms
+[PACS] C-FIND(STUDY) → 127.0.0.1:11112 AE=QTRSQR
+[PACS] C-FIND 返回 1 例
+```
+
+停掉服务端后同一路径：
+
+```
+[PACS] C-ECHO 失败： 无法建立 TCP 连接（目标未响应或被网络策略拦截）
+```
+
+本地复现一套 PACS（仅验证用，不随仓库分发）：
+
+```bash
+mkdir -p /tmp/qtrs-pacs/db
+cat > /tmp/qtrs-pacs/dcmqrscp.cfg <<'CFG'
+NetworkTCPPort  = 11112
+MaxPDUSize      = 16384
+MaxAssociations = 16
+AETable BEGIN
+QTRSQR   /tmp/qtrs-pacs/db   RW (200, 1024mb)   ANY
+AETable END
+CFG
+export DCMDICTPATH=/opt/homebrew/Cellar/dcmtk/3.7.1/share/dcmtk-3.7.1/dicom.dic
+dcmqrscp -c /tmp/qtrs-pacs/dcmqrscp.cfg &
+storescu -aet QTRS -aec QTRSQR 127.0.0.1 11112 resources/dicom/brain-t1/N2D_0001.dcm
+```
+
+已知边界（后续批次）：没有实现 C-GET / C-MOVE（真正把影像拉回本地并重建体积），
+没有 TLS 与 AE 白名单，没有断线重连与退避；C-FIND 目前是全量 STUDY，未按病人/日期过滤。
+这几项都属于接入真实 PACS 时必须补的，但现在这条链已经能回答「通不通」与「有没有」。
+
 ## 🧪 测试基础设施
 
 ### C++ 单元测试

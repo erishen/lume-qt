@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Bridge, DicomVolumeMeta, Intervention, Vitals } from './qwebchannel'
+import type { Bridge, DicomVolumeMeta, Intervention, PacsQueryMeta, PacsStatus, PacsStudy, Vitals } from './qwebchannel'
 import Neuro3D from './Neuro3D'
 import Volume3D from './Volume3D'
 import { createSyntheticBrain } from './syntheticVolume'
@@ -559,6 +559,9 @@ function WatchdogStrip({ hasBridge, bridge }: { hasBridge: boolean; bridge: Brid
 function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridge | null }) {
   const [rows, setRows] = useState<ChannelLatency[]>([])
   const [clock, setClock] = useState(clockStatus())
+  // PACS 状态：接入现场第一句要问的就是「连上了吗、库里有几例」，
+  // 它和延迟指标同屏，免得再去翻日志。
+  const [pacs, setPacs] = useState<{ ok: boolean; rttMs: number; count: number; ae: string; message: string } | null>(null)
 
   // 时间戳到底来自宿主时钟还是设备时钟，由 C++ 侧 provider 如实声明。
   // 设备时钟与宿主存在未知常量偏移，不先扣掉就会把「时钟差」当成「延迟」。
@@ -576,6 +579,39 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
     })
     return () => {
       alive = false
+    }
+  }, [bridge])
+
+  useEffect(() => {
+    if (!bridge || typeof bridge.pacsStatus?.connect !== 'function') return
+    const onStatus = (st: PacsStatus) => {
+      setPacs({ ok: st.ok, rttMs: st.roundTripMs, count: 0, ae: st.calledAe, message: st.message })
+    }
+    const onStudies = (_studies: PacsStudy[], meta: PacsQueryMeta) => {
+      setPacs((prev) => ({
+        ok: meta.ok,
+        rttMs: prev?.rttMs ?? -1,
+        count: meta.count,
+        ae: meta.calledAe,
+        message: meta.message,
+      }))
+    }
+    bridge.pacsStatus.connect(onStatus)
+    bridge.pacsStudies.connect(onStudies)
+    // 启动即探测，信号往往早于 WebView 订阅，必须主动拉一次当前值
+    void bridge.pacsState?.().then((st) => {
+      if (!st || typeof st.ok !== 'boolean') return
+      setPacs({
+        ok: st.ok,
+        rttMs: st.roundTripMs ?? -1,
+        count: st.count ?? 0,
+        ae: st.calledAe ?? '',
+        message: st.message ?? '',
+      })
+    })
+    return () => {
+      bridge.pacsStatus.disconnect(onStatus)
+      bridge.pacsStudies.disconnect(onStudies)
     }
   }, [bridge])
 
@@ -602,6 +638,16 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
             : clock.mode === 'device'
               ? `设备时钟${clock.offsetMs < 0 ? `快 ${(-clock.offsetMs / 1000).toFixed(1)} s` : `慢 ${(clock.offsetMs / 1000).toFixed(1)} s`} · 偏移已扣除`
               : 'C++ 打时间戳 · 宿主同源'}
+          {pacs ? (
+            <span className={pacs.ok ? 'pacs-chip ok' : 'pacs-chip bad'}>
+              {' · PACS '}
+              {pacs.ok
+                ? `已连通 ${pacs.rttMs} ms · ${pacs.count} 例`
+                : `未连通 ${pacs.message || ''}`}
+            </span>
+          ) : (
+            <span className="pacs-chip idle">{' · PACS 未配置'}</span>
+          )}
         </span>
       </div>
       {active.length === 0 ? (

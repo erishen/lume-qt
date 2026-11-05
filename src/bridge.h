@@ -3,6 +3,7 @@
 #include <QByteArray>
 #include <QObject>
 #include <QVariant>
+#include <QVariantList>
 #include <QVariantMap>
 
 #include <atomic>
@@ -15,6 +16,22 @@
 //    已入队的回调仍能安全读取它而不会产生 use-after-free；
 //  - cancel：协作式取消标志。~Bridge 先置位再 join，让解析在下一个
 //    文件/切片边界尽快退出，避免关窗时被整卷解析（数秒）阻塞。
+struct PacsThreadHolder {
+    std::unique_ptr<std::thread> thread;
+    std::atomic<bool> alive{false};
+
+    /// 必须自己 join：std::thread 析构时若仍 joinable 会直接 std::terminate()。
+    /// 曾经就是第二次请求替换 holder 时，旧 holder 析构带走了未 join 的线程 → 进程 abort。
+    ~PacsThreadHolder()
+    {
+        alive = false;
+        // 若最后一个引用恰好在工作线程里释放（回调没能回到主线程），自 join 会死锁
+        if (thread && thread->joinable() && thread->get_id() != std::this_thread::get_id()) {
+            thread->join();
+        }
+    }
+};
+
 struct DicomThreadHolder {
     std::unique_ptr<std::thread> thread;
     std::atomic<bool> alive{false};
@@ -74,6 +91,16 @@ public:
     Q_INVOKABLE void startNeurologySimulation();
     Q_INVOKABLE void stopNeurologySimulation();
 
+    // ---- PACS（DICOM 网络）----
+    /// C-ECHO 连通性验证；结果经 pacsStatus 信号回主线程（网络调用在工作线程里跑，
+    /// 不允许阻塞 UI 与原生波形绘制）。
+    Q_INVOKABLE void pacsProbe(const QString &host, int port, const QString &calledAe);
+    /// STUDY 级 C-FIND：确认这例病人/这台设备在 PACS 上有哪些检查。
+    Q_INVOKABLE void pacsFindStudies(const QString &host, int port, const QString &calledAe);
+    /// 最近一次 PACS 状态快照。信号可能在前端订阅之前就发过（启动即探测），
+    /// 只靠信号会让界面永远停在「未配置」——和时钟口径一样，必须能拉一次当前值。
+    Q_INVOKABLE QVariantMap pacsState() const;
+
     // ---- 结构化审计台账 ----
     /// 追加一条审计事件（前端看门狗等 WebView 侧事件走这里）。
     /// map 里的 type 是事件类型，其余字段原样并入；固定字段（ts/tsUs/session）不可覆盖。
@@ -117,6 +144,10 @@ signals:
     // （实测会被 UTF-8 转换破坏），前端 fetch 该 URL 取真正的 ArrayBuffer。
     void dicomVolumeReady(const QVariantMap &meta, const QString &volumeUrl);
     void dicomVolumeError(const QString &message);
+    // PACS 结果：{ok, host, port, calledAe, roundTripMs, message, tsUs}
+    void pacsStatus(const QVariantMap &status);
+    // C-FIND 结果：studies 列表 + {count, host, calledAe, tsUs}
+    void pacsStudies(const QVariantList &studies, const QVariantMap &meta);
 
 private:
     /// 当前时刻（epoch 微秒）。给 DICOM 等非设备来源的载荷打时间戳。
@@ -130,6 +161,11 @@ private:
 
     /// 事件台账（JSON Lines）。一行一条，按天切分。
     class AuditSink *m_audit = nullptr;
+
+    /// PACS 后台请求（单飞：上一次没回来就不再发，避免网络卡住时堆线程）
+    std::shared_ptr<PacsThreadHolder> m_pacsHolder;
+    bool m_pacsBusy = false;
+    QVariantMap m_pacsState;
 
     // DICOM 后台加载线程的持有结构（堆上、shared_ptr 管理）。
     // 使 worker 收尾闭包能精确删除“本线程”、并在 Bridge 析构后安全

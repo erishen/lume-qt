@@ -2,6 +2,29 @@
 #include "auditsink.h"
 #include "deviceprovider.h"
 #include "dicomreader.h"
+#include "pacsclient.h"
+
+namespace {
+
+/// DCMTK 的失败文案是给开发者看的（"Operation now in progress" 其实是被拒连），
+/// 看板上要能让人一眼判读，这里做一层人话映射；原始 detail 仍完整进台账。
+QString humanPacsError(const QString &raw)
+{
+    if (raw.isEmpty()) return raw;
+    if (raw.contains(QStringLiteral("TCP Initialization Error"))) {
+        return QStringLiteral("无法建立 TCP 连接（目标未响应或被网络策略拦截）");
+    }
+    if (raw.contains(QStringLiteral("No Presentation Contexts"))) {
+        return QStringLiteral("协商失败：双方没有共同的 DICOM 能力（检查 AE 与传输语法）");
+    }
+    if (raw.contains(QStringLiteral("Refused"))) {
+        return QStringLiteral("对方拒绝了关联（检查 calledAE 是否在白名单内）");
+    }
+    return raw;
+}
+
+} // namespace
+
 #include "simulatorprovider.h"
 
 #include <QDateTime>
@@ -57,10 +80,34 @@ Bridge::Bridge(QObject *parent)
         {QStringLiteral("platform"), m_audit->filePath().isEmpty() ? QStringLiteral("unknown")
                                                                    : QSysInfo::productType()},
     });
+
+    // QTRS_PACS=host:port:calledAE 时启动后自动做一次 C-ECHO：
+    // 接入现场第一步永远是「能不能连上」，让它自己先答一次，而不是等人点按钮。
+    const QByteArray pacsSpec = qgetenv("QTRS_PACS");
+    if (!pacsSpec.isEmpty()) {
+        PacsClient::Endpoint ep;
+        QString perr;
+        if (PacsClient::parseEndpoint(QString::fromLocal8Bit(pacsSpec), &ep, &perr)
+            && !ep.calledAe.isEmpty()) {
+            QTimer::singleShot(1200, this, [this, ep]() {
+                pacsProbe(ep.host, ep.port, ep.calledAe);
+            });
+        } else {
+            qWarning().noquote() << "[PACS] QTRS_PACS 无法解析：" << perr;
+        }
+    }
 }
 
 Bridge::~Bridge()
 {
+    // PACS 网络请求可能还卡在连接/响应超时上（最长几秒）：先置 alive=false 让回调不再碰
+    // this，再 join，避免关窗时后台线程访问已释放对象。
+    if (m_pacsHolder) {
+        m_pacsHolder->alive = false;
+        if (m_pacsHolder->thread && m_pacsHolder->thread->joinable())
+            m_pacsHolder->thread->join();
+    }
+
     // 若 DICOM 解析仍在进行：先置 alive=false（位于堆上、独立于 this），
     // 再置 cancel=true 让 worker 在下一个边界退出，最后 join。
     // 已入队的回调会因 alive=false 跳过对 this 的访问，避免 Bridge 释放后的
@@ -73,6 +120,135 @@ Bridge::~Bridge()
         // 释放本副本；若仍有已入队闭包持有 holder 副本，它会存活到那些
         // 闭包执行完毕（此时 alive 已为 false，不会访问 this）。
     }
+}
+
+void Bridge::pacsProbe(const QString &host, int port, const QString &calledAe)
+{
+    if (m_pacsBusy) {
+        qInfo() << "[PACS] 上一次请求尚未返回，跳过本次探测";
+        return;
+    }
+    m_pacsBusy = true;
+
+    PacsClient::Endpoint ep;
+    ep.host = host;
+    ep.port = port;
+    ep.calledAe = calledAe;
+
+    auto holder = std::make_shared<PacsThreadHolder>();
+    holder->alive = true;
+    m_pacsHolder = holder;
+
+    qInfo().noquote() << QStringLiteral("[PACS] C-ECHO → %1:%2 AE=%3")
+                             .arg(host).arg(port).arg(calledAe);
+    holder->thread = std::make_unique<std::thread>([this, holder, ep]() {
+        QString err;
+        int roundTripMs = -1;
+        const bool ok = PacsClient::echo(ep, &err, &roundTripMs);
+
+        QMetaObject::invokeMethod(this, [this, holder, ep, ok, err, roundTripMs]() {
+            if (!holder->alive) return;
+            m_pacsBusy = false;
+
+            QVariantMap status;
+            status.insert(QStringLiteral("ok"), ok);
+            status.insert(QStringLiteral("host"), ep.host);
+            status.insert(QStringLiteral("port"), ep.port);
+            status.insert(QStringLiteral("calledAe"), ep.calledAe);
+            status.insert(QStringLiteral("roundTripMs"), roundTripMs);
+            status.insert(QStringLiteral("message"), humanPacsError(err));
+            status.insert(QStringLiteral("detail"), err);
+            status.insert(QStringLiteral("tsUs"), nowMicros());
+
+            if (ok) {
+                qInfo().noquote() << QStringLiteral("[PACS] C-ECHO 成功：%1 ms").arg(roundTripMs);
+            } else {
+                qWarning().noquote() << "[PACS] C-ECHO 失败：" << err;
+            }
+            if (m_audit) {
+                m_audit->record(ok ? QStringLiteral("pacs.echo")
+                                   : QStringLiteral("pacs.echoFailed"), {
+                    {QStringLiteral("host"), ep.host},
+                    {QStringLiteral("port"), ep.port},
+                    {QStringLiteral("calledAe"), ep.calledAe},
+                    {QStringLiteral("roundTripMs"), roundTripMs},
+                    {QStringLiteral("message"), err},
+                });
+            }
+            m_pacsState = status;
+            emit pacsStatus(status);
+            // 连通性确认后立刻枚举一次：接入现场的真实顺序就是「先 echo 再找病人」，
+            // 分两步手动触发只会让人忘记第二步。
+            if (ok) {
+                pacsFindStudies(ep.host, ep.port, ep.calledAe);
+            }
+        });
+    });
+}
+
+QVariantMap Bridge::pacsState() const
+{
+    return m_pacsState;
+}
+
+void Bridge::pacsFindStudies(const QString &host, int port, const QString &calledAe)
+{
+    if (m_pacsBusy) {
+        qInfo() << "[PACS] 上一次请求尚未返回，跳过本次查询";
+        return;
+    }
+    m_pacsBusy = true;
+
+    PacsClient::Endpoint ep;
+    ep.host = host;
+    ep.port = port;
+    ep.calledAe = calledAe;
+
+    auto holder = std::make_shared<PacsThreadHolder>();
+    holder->alive = true;
+    m_pacsHolder = holder;
+
+    qInfo().noquote() << QStringLiteral("[PACS] C-FIND(STUDY) → %1:%2 AE=%3")
+                             .arg(host).arg(port).arg(calledAe);
+    holder->thread = std::make_unique<std::thread>([this, holder, ep]() {
+        QString err;
+        QList<QVariantMap> studies;
+        const bool ok = PacsClient::findStudies(ep, &studies, &err);
+
+        QMetaObject::invokeMethod(this, [this, holder, ep, ok, studies, err]() {
+            if (!holder->alive) return;
+            m_pacsBusy = false;
+
+            QVariantList list;
+            for (const QVariantMap &s : studies) list.append(s);
+
+            QVariantMap meta;
+            meta.insert(QStringLiteral("ok"), ok);
+            meta.insert(QStringLiteral("count"), list.size());
+            meta.insert(QStringLiteral("host"), ep.host);
+            meta.insert(QStringLiteral("calledAe"), ep.calledAe);
+            meta.insert(QStringLiteral("message"), humanPacsError(err));
+            meta.insert(QStringLiteral("detail"), err);
+            meta.insert(QStringLiteral("tsUs"), nowMicros());
+
+            qInfo().noquote() << QStringLiteral("[PACS] C-FIND 返回 %1 例%2")
+                                     .arg(list.size())
+                                     .arg(ok ? QString() : QStringLiteral("（失败：%1）").arg(err));
+            if (m_audit) {
+                m_audit->record(ok ? QStringLiteral("pacs.find")
+                                   : QStringLiteral("pacs.findFailed"), {
+                    {QStringLiteral("host"), ep.host},
+                    {QStringLiteral("calledAe"), ep.calledAe},
+                    {QStringLiteral("studies"), list.size()},
+                    {QStringLiteral("message"), err},
+                });
+            }
+            m_pacsState.insert(QStringLiteral("count"), list.size());
+            m_pacsState.insert(QStringLiteral("ok"), ok);
+            m_pacsState.insert(QStringLiteral("message"), err);
+            emit pacsStudies(list, meta);
+        });
+    });
 }
 
 void Bridge::logAuditEvent(const QVariantMap &event)
