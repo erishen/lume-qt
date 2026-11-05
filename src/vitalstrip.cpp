@@ -3,6 +3,7 @@
 #include <QDateTime>
 #include <QFont>
 #include <QFontMetrics>
+#include <QApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPaintEvent>
@@ -30,7 +31,8 @@ const QColor kTraceSpo2(0x60, 0xa5, 0xfa);
 const QColor kText(0xa9, 0xb4, 0xd0);
 const QColor kDim(0x5c, 0x66, 0x78);
 const QColor kAlarm(0xf8, 0x71, 0x71);
-const QColor kAmber(0xf5, 0xb0, 0x4b);
+const QColor kMidAlarm(0xf2, 0xc9, 0x4c);
+const QColor kMuted(0x94, 0x9e, 0xb0);
 } // namespace
 
 NativeVitalStrip::NativeVitalStrip(QWidget *parent)
@@ -50,6 +52,9 @@ NativeVitalStrip::NativeVitalStrip(QWidget *parent)
     m_spo2.title = QStringLiteral("SpO₂ 体积描记波 · 原生判定（不经 WebView）");
     m_spo2.staleMs = 400.0;
 
+    // 声音默认开：报警系统没有声音说不过去；开发时可用 QTRS_ALARM_SOUND=0 关掉。
+    m_soundEnabled = qEnvironmentVariable("QTRS_ALARM_SOUND") != QStringLiteral("0");
+
     bool ok = false;
     const int sec = qEnvironmentVariable("QTRS_ALARM_MUTE_SEC").toInt(&ok);
     if (ok) m_defaultMuteSeconds = std::clamp(sec, 5, 300);
@@ -59,6 +64,11 @@ bool NativeVitalStrip::alarmsMuted() const
 {
     return m_muteTimer.isValid() && m_muteSeconds > 0
         && m_muteTimer.elapsed() < static_cast<qint64>(m_muteSeconds) * 1000;
+}
+
+int NativeVitalStrip::alarmLevel() const
+{
+    return m_alarmLevel;
 }
 
 int NativeVitalStrip::defaultMuteSeconds() const
@@ -94,7 +104,7 @@ bool NativeVitalStrip::muteAlarms(int seconds)
     emit auditEvent(QVariantMap{
         {QStringLiteral("type"), QStringLiteral("alarm.mute")},
         {QStringLiteral("seconds"), m_muteSeconds},
-        {QStringLiteral("alarmActive"), m_alarmActive},
+        {QStringLiteral("alarmLevel"), m_alarmLevel},
         {QStringLiteral("hr"), m_hr},
         {QStringLiteral("spo2"), m_spo2Value},
         {QStringLiteral("source"), QStringLiteral("native-strip")},
@@ -291,22 +301,29 @@ void NativeVitalStrip::paintEvent(QPaintEvent *event)
                    .arg(spo2P50, 0, 'f', 2)
                    .arg(spo2P99, 0, 'f', 2));
 
-    // 报警判定在原生侧完成：不依赖前端是否渲染成功
-    const bool alarm = m_hasVitals && (m_spo2Value < 90.0 || m_hr < 50.0);
-    if (alarm != m_alarmActive) {
-        // 报警边沿记入台账：什么时候报的、依据哪个值，事后能复核
-        m_alarmActive = alarm;
+    // 报警判定在原生侧完成：不依赖前端是否渲染成功。
+    // 两级：高（SpO₂<90 或 HR<50）/ 中（SpO₂<92 或 HR<55）。阈值是演示级，不做医学声明。
+    const bool highAlarm = m_hasVitals && (m_spo2Value < 90.0 || m_hr < 50.0);
+    const bool midAlarm = m_hasVitals && (m_spo2Value < 92.0 || m_hr < 55.0);
+    const int level = highAlarm ? 2 : (midAlarm ? 1 : 0);
+    if (level != m_alarmLevel) {
+        // 级别边沿记入台账：什么时候报的、哪一级、依据哪个值，事后能复核
+        const bool spo2Culprit = highAlarm ? (m_spo2Value < 90.0) : (m_spo2Value < 92.0);
+        m_alarmLevel = level;
         emit auditEvent(QVariantMap{
-            {QStringLiteral("type"), alarm ? QStringLiteral("alarm.on") : QStringLiteral("alarm.off")},
-            {QStringLiteral("channel"), alarm ? (m_spo2Value < 90.0 ? QStringLiteral("SpO2")
-                                                                   : QStringLiteral("HR"))
-                                              : QStringLiteral("all")},
+            {QStringLiteral("type"), level > 0 ? QStringLiteral("alarm.on") : QStringLiteral("alarm.off")},
+            {QStringLiteral("priority"), level == 2 ? QStringLiteral("high")
+                                                    : level == 1 ? QStringLiteral("medium")
+                                                                 : QStringLiteral("none")},
+            {QStringLiteral("channel"), level > 0 ? (spo2Culprit ? QStringLiteral("SpO2")
+                                                                 : QStringLiteral("HR"))
+                                                  : QStringLiteral("all")},
             {QStringLiteral("hr"), m_hr},
             {QStringLiteral("spo2"), m_spo2Value},
             {QStringLiteral("source"), QStringLiteral("native-strip")},
         });
     }
-    if (alarm) {
+    if (m_alarmLevel > 0) {
         const bool muted = alarmsMuted();
         // 静音到期：提示恢复成红色，同时记一条「到期解除」的台账，
         // 免得事后只看到 mute 看不到是谁、什么时候把提示放回来的。
@@ -319,23 +336,40 @@ void NativeVitalStrip::paintEvent(QPaintEvent *event)
                 {QStringLiteral("source"), QStringLiteral("native-strip")},
             });
         }
-        const QColor tone = muted ? kAmber : kAlarm;
+        const QColor tone = muted ? kMuted : (m_alarmLevel == 2 ? kAlarm : kMidAlarm);
         p.setPen(tone);
         p.setFont(QFont(QStringLiteral("Helvetica"), 10, QFont::Bold));
-        const QString what = m_spo2Value < 90.0 ? QStringLiteral("低血氧报警")
-                                                : QStringLiteral("心动过缓报警");
+        const QString prefix = m_alarmLevel == 2 ? QStringLiteral("高优先级") : QStringLiteral("中优先级");
+        const QString what = (m_spo2Value < (m_alarmLevel == 2 ? 90.0 : 92.0))
+                                 ? QStringLiteral("血氧偏低 %1%").arg(m_spo2Value, 0, 'f', 0)
+                                 : QStringLiteral("心率偏低 %1 bpm").arg(m_hr, 0, 'f', 0);
         const QString label = muted
-            ? QStringLiteral("%1 · 已静音 %2 s").arg(what).arg(muteRemainingMs() / 1000)
-            : what;
+            ? QStringLiteral("%1 · %2 · 已静音 %3 s")
+                  .arg(prefix, what).arg(muteRemainingMs() / 1000)
+            : QStringLiteral("%1 · %2").arg(prefix, what);
         p.drawText(QRectF(infoX, 132.0, 200.0, 20.0), Qt::AlignLeft, label);
         p.setPen(Qt::NoPen);
         p.setBrush(tone);
         p.drawEllipse(QPointF(infoX + 8.0, 12.0), 4.0, 4.0);
+
+        // 声音：高优先级 3 s 复鸣、中优先级 8 s；静音期间不响（提示被压掉，判定仍在）。
+        const int intervalMs = m_alarmLevel == 2 ? 3000 : 8000;
+        if (m_soundEnabled && !muted
+            && (!m_beepTimer.isValid() || m_beepTimer.elapsed() >= intervalMs)) {
+            QApplication::beep();
+            m_beepTimer.start();
+            qInfo().noquote() << QStringLiteral("[Alarm] beep level=%1 hr=%2 spo2=%3")
+                                     .arg(m_alarmLevel).arg(m_hr, 0, 'f', 0)
+                                     .arg(m_spo2Value, 0, 'f', 0);
+        }
     }
 
-    // 整条边框随报警状态变红/变琥珀：不依赖文字被看见，也不依赖前端是否渲染成功。
-    if (m_hasVitals && (m_spo2Value < 90.0 || m_hr < 50.0)) {
-        p.setPen(QPen(alarmsMuted() ? kAmber : kAlarm, 3.0));
+    // 整条边框随报警级别变色：红=高、黄=中、灰虚线=已静音。
+    // 不依赖文字被看见，也不依赖前端是否渲染成功。
+    if (m_alarmLevel > 0) {
+        const bool muted = alarmsMuted();
+        const QColor tone = muted ? kMuted : (m_alarmLevel == 2 ? kAlarm : kMidAlarm);
+        p.setPen(QPen(tone, 3.0, muted ? Qt::DashLine : Qt::SolidLine));
         p.setBrush(Qt::NoBrush);
         p.drawRect(QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5));
     }

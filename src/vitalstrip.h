@@ -45,6 +45,8 @@ public:
     int muteRemainingMs() const;
     /// 点击/快捷键触发的默认静音时长（`QTRS_ALARM_MUTE_SEC`，默认 120 s，限 5–300）
     int defaultMuteSeconds() const;
+    /// 当前报警级别：0 无 / 1 中 / 2 高（供测试与外部状态展示）
+    int alarmLevel() const;
 
 public slots:
     /// 与 Bridge::ecgSample(double, double) 直连（不经过 QWebChannel）
@@ -92,8 +94,11 @@ private:
     Lane m_ecg;
     Lane m_spo2;
 
-    /// 报警边沿检测：只在变化时产生审计事件，避免每帧刷台账
-    bool m_alarmActive = false;
+    /// 当前报警级别：0 无 / 1 中 / 2 高。只在级别变化时产生审计事件。
+    int m_alarmLevel = 0;
+    /// 声音节流：同级报警按固定间隔复鸣，避免每帧都响
+    QElapsedTimer m_beepTimer;
+    bool m_soundEnabled = true;
     /// 静音计时：到期自动恢复，且到期本身也记一条台账（谁把提示压掉了、压了多久）
     QElapsedTimer m_muteTimer;
     int m_muteSeconds = 0;
