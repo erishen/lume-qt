@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Bridge, DicomVolumeMeta, Intervention, PacsQueryMeta, PacsStatus, PacsStudy, Vitals } from './qwebchannel'
+import type { Bridge, DicomVolumeMeta, Intervention, PacsQueryMeta, PacsRetrieveStatus, PacsStatus, PacsStudy, Vitals } from './qwebchannel'
 import Neuro3D from './Neuro3D'
 import Volume3D from './Volume3D'
 import { createSyntheticBrain } from './syntheticVolume'
@@ -562,6 +562,10 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
   // PACS 状态：接入现场第一句要问的就是「连上了吗、库里有几例」，
   // 它和延迟指标同屏，免得再去翻日志。
   const [pacs, setPacs] = useState<{ ok: boolean; rttMs: number; count: number; ae: string; message: string } | null>(null)
+  // 取回按钮需要 StudyInstanceUID；这里记第一例，够用且不需要另建病人浏览器
+  const [studyUid, setStudyUid] = useState('')
+  const [retrieving, setRetrieving] = useState(false)
+  const pacsRef = useRef<{ host: string; port: number; ae: string } | null>(null)
 
   // 时间戳到底来自宿主时钟还是设备时钟，由 C++ 侧 provider 如实声明。
   // 设备时钟与宿主存在未知常量偏移，不先扣掉就会把「时钟差」当成「延迟」。
@@ -585,9 +589,10 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
   useEffect(() => {
     if (!bridge || typeof bridge.pacsStatus?.connect !== 'function') return
     const onStatus = (st: PacsStatus) => {
+      pacsRef.current = { host: st.host, port: st.port, ae: st.calledAe }
       setPacs({ ok: st.ok, rttMs: st.roundTripMs, count: 0, ae: st.calledAe, message: st.message })
     }
-    const onStudies = (_studies: PacsStudy[], meta: PacsQueryMeta) => {
+    const onStudies = (studies: PacsStudy[], meta: PacsQueryMeta) => {
       setPacs((prev) => ({
         ok: meta.ok,
         rttMs: prev?.rttMs ?? -1,
@@ -595,9 +600,24 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
         ae: meta.calledAe,
         message: meta.message,
       }))
+      const uid = studies.find((s) => s.studyInstanceUid)?.studyInstanceUid
+      setStudyUid(uid ?? '')
+    }
+    const onRetrieve = (st: PacsRetrieveStatus) => {
+      setRetrieving(false)
+      setPacs((prev) =>
+        prev
+          ? {
+              ...prev,
+              ok: st.ok,
+              message: st.ok ? '' : st.message,
+            }
+          : prev,
+      )
     }
     bridge.pacsStatus.connect(onStatus)
     bridge.pacsStudies.connect(onStudies)
+    bridge.pacsRetrieve.connect(onRetrieve)
     // 启动即探测，信号往往早于 WebView 订阅，必须主动拉一次当前值
     void bridge.pacsState?.().then((st) => {
       if (!st || typeof st.ok !== 'boolean') return
@@ -608,10 +628,12 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
         ae: st.calledAe ?? '',
         message: st.message ?? '',
       })
+      if (st.studyUid) setStudyUid(st.studyUid)
     })
     return () => {
       bridge.pacsStatus.disconnect(onStatus)
       bridge.pacsStudies.disconnect(onStudies)
+      bridge.pacsRetrieve.disconnect(onRetrieve)
     }
   }, [bridge])
 
@@ -648,6 +670,21 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
           ) : (
             <span className="pacs-chip idle">{' · PACS 未配置'}</span>
           )}
+          {pacs?.ok && studyUid && pacsRef.current ? (
+            <button
+              type="button"
+              className="pacs-retrieve"
+              disabled={retrieving}
+              onClick={() => {
+                const target = pacsRef.current
+                if (!target) return
+                setRetrieving(true)
+                bridge?.pacsRetrieveStudy(target.host, target.port, target.ae, studyUid)
+              }}
+            >
+              {retrieving ? '取回中…' : '取回该例'}
+            </button>
+          ) : null}
         </span>
       </div>
       {active.length === 0 ? (

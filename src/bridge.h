@@ -100,6 +100,10 @@ public:
     /// 最近一次 PACS 状态快照。信号可能在前端订阅之前就发过（启动即探测），
     /// 只靠信号会让界面永远停在「未配置」——和时钟口径一样，必须能拉一次当前值。
     Q_INVOKABLE QVariantMap pacsState() const;
+    /// C-GET 取回整例检查到本地目录，成功后自动重解析并替换当前体数据。
+    /// 这是把「PACS 上有」变成「屏幕上能看到」的那一步。
+    Q_INVOKABLE void pacsRetrieveStudy(const QString &host, int port,
+                                       const QString &calledAe, const QString &studyUid);
 
     // ---- 结构化审计台账 ----
     /// 追加一条审计事件（前端看门狗等 WebView 侧事件走这里）。
@@ -148,6 +152,8 @@ signals:
     void pacsStatus(const QVariantMap &status);
     // C-FIND 结果：studies 列表 + {count, host, calledAe, tsUs}
     void pacsStudies(const QVariantList &studies, const QVariantMap &meta);
+    // 取回结果：{ok, studyUid, files, dir, ms, message, detail}
+    void pacsRetrieve(const QVariantMap &status);
 
 private:
     /// 当前时刻（epoch 微秒）。给 DICOM 等非设备来源的载荷打时间戳。
@@ -163,6 +169,14 @@ private:
     class AuditSink *m_audit = nullptr;
 
     /// PACS 后台请求（单飞：上一次没回来就不再发，避免网络卡住时堆线程）
+    /// 解析在途时的排队目录：PACS 取回与前端样例加载会撞在一起，
+    /// 早期版本直接忽略后来的请求，导致「取回了但画面还是样例」。
+    QString m_pendingDicomDir;
+
+    /// PACS 取回的检查一旦解析成功，就占据「当前体数据」：样例的自动加载不应再覆盖它
+    /// （术中屏幕上必须是这个病人的影像，不是演示数据）。为空表示没有权威来源。
+    QString m_authoritativeVolumeDir;
+
     std::shared_ptr<PacsThreadHolder> m_pacsHolder;
     bool m_pacsBusy = false;
     QVariantMap m_pacsState;

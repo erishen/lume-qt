@@ -4,6 +4,9 @@
 #include "dicomreader.h"
 #include "pacsclient.h"
 
+#include <QElapsedTimer>
+#include <QStandardPaths>
+
 namespace {
 
 /// DCMTK 的失败文案是给开发者看的（"Operation now in progress" 其实是被拒连），
@@ -186,6 +189,89 @@ void Bridge::pacsProbe(const QString &host, int port, const QString &calledAe)
     });
 }
 
+void Bridge::pacsRetrieveStudy(const QString &host, int port, const QString &calledAe,
+                               const QString &studyUid)
+{
+    if (m_pacsBusy) {
+        qInfo() << "[PACS] 上一次请求尚未返回，跳过本次取回";
+        return;
+    }
+    m_pacsBusy = true;
+
+    PacsClient::Endpoint ep;
+    ep.host = host;
+    ep.port = port;
+    ep.calledAe = calledAe;
+    // C-GET 会连续收几十到几百个对象，超时按单次 DIMSE 计而不是整个检索，
+    // 给 15 s 容错；真断流时由服务端最终响应失败暴露出来。
+    ep.timeoutMs = 15000;
+
+    // 落盘目录按 UID 分：同一例重复取回可覆盖，不同病人不会串。
+    // 路径里的点号是 DICOM UID 的一部分，文件系统允许。
+    const QString destDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                            + QStringLiteral("/pacs/") + studyUid;
+
+    auto holder = std::make_shared<PacsThreadHolder>();
+    holder->alive = true;
+    m_pacsHolder = holder;
+
+    qInfo().noquote() << QStringLiteral("[PACS] C-GET %1 → %2:%3 AE=%4")
+                             .arg(studyUid.left(24) + QStringLiteral("…"))
+                             .arg(host).arg(port).arg(calledAe);
+    holder->thread = std::make_unique<std::thread>([this, holder, ep, studyUid, destDir]() {
+        QElapsedTimer timer;
+        timer.start();
+        QString err;
+        int files = 0;
+        const bool ok = PacsClient::retrieveStudy(ep, studyUid, destDir, &files, &err);
+        const int ms = static_cast<int>(timer.elapsed());
+
+        QMetaObject::invokeMethod(this, [this, holder, ep, studyUid, destDir, ok, files, err, ms]() {
+            if (!holder->alive) return;
+            m_pacsBusy = false;
+
+            QVariantMap status;
+            status.insert(QStringLiteral("ok"), ok);
+            status.insert(QStringLiteral("studyUid"), studyUid);
+            status.insert(QStringLiteral("files"), files);
+            status.insert(QStringLiteral("dir"), destDir);
+            status.insert(QStringLiteral("ms"), ms);
+            status.insert(QStringLiteral("message"), humanPacsError(err));
+            status.insert(QStringLiteral("detail"), err);
+            status.insert(QStringLiteral("tsUs"), nowMicros());
+
+            if (ok) {
+                qInfo().noquote() << QStringLiteral("[PACS] C-GET 完成：%1 个对象，%2 ms → %3")
+                                         .arg(files).arg(ms).arg(destDir);
+                if (m_audit) {
+                    m_audit->record(QStringLiteral("pacs.retrieve"), {
+                        {QStringLiteral("studyUid"), studyUid},
+                        {QStringLiteral("files"), files},
+                        {QStringLiteral("ms"), ms},
+                        {QStringLiteral("dir"), destDir},
+                    });
+                }
+                // 标记为权威来源，并清掉仍在排队的样例请求
+                m_authoritativeVolumeDir = destDir;
+                m_pendingDicomDir.clear();
+                // 取回的是一堆 DICOM 文件而不是体数据：交给既有解析链路，
+                // 走的是和本地样例完全同一条路径（含重采样与 app:// 二进制供数）。
+                loadDicomVolume(destDir);
+            } else {
+                qWarning().noquote() << "[PACS] C-GET 失败：" << err;
+                if (m_audit) {
+                    m_audit->record(QStringLiteral("pacs.retrieveFailed"), {
+                        {QStringLiteral("studyUid"), studyUid},
+                        {QStringLiteral("ms"), ms},
+                        {QStringLiteral("message"), err},
+                    });
+                }
+            }
+            emit pacsRetrieve(status);
+        });
+    });
+}
+
 QVariantMap Bridge::pacsState() const
 {
     return m_pacsState;
@@ -244,9 +330,27 @@ void Bridge::pacsFindStudies(const QString &host, int port, const QString &calle
                 });
             }
             m_pacsState.insert(QStringLiteral("count"), list.size());
+            // 第一例的 StudyInstanceUID 一并进快照：取回按钮依赖它，
+            // 前端晚订阅就会拿不到 studies 信号。
+            m_pacsState.insert(QStringLiteral("studyUid"),
+                               list.isEmpty() ? QString()
+                                              : list.first().toMap()
+                                                    .value(QStringLiteral("studyInstanceUid"))
+                                                    .toString());
             m_pacsState.insert(QStringLiteral("ok"), ok);
             m_pacsState.insert(QStringLiteral("message"), err);
             emit pacsStudies(list, meta);
+
+            // 自动取回开关：现场联调时希望「连上就看到」而不是先点按钮，
+            // QTRS_PACS_AUTO_GET=1 让 C-FIND 命中第一例后直接 C-GET。
+            const QByteArray autoGet = qgetenv("QTRS_PACS_AUTO_GET");
+            if (!autoGet.isEmpty() && autoGet != "0" && !list.isEmpty()) {
+                const QString uid = list.first().toMap()
+                                        .value(QStringLiteral("studyInstanceUid")).toString();
+                if (!uid.isEmpty()) {
+                    pacsRetrieveStudy(ep.host, ep.port, ep.calledAe, uid);
+                }
+            }
         });
     });
 }
@@ -284,7 +388,19 @@ void Bridge::loadDicomVolume(const QString &directory)
     // 重入保护：只允许一个在途 DICOM 解析（UI 实际只触发一次，此处仅为
     // 健壮性兜底；如需排队可改为任务队列实现）。
     if (m_dicomHolder) {
-        qWarning() << "[Bridge] DICOM 解析已在进行中，忽略重复请求：" << directory;
+        // 不丢请求：记住最后一个待解析目录，当前解析结束再接手。
+        // 术中场景里「取回的新数据被丢掉」比慢一拍更糟。
+        qInfo().noquote() << "[Bridge] DICOM 解析已在进行中，排队后续请求：" << directory;
+        m_pendingDicomDir = directory;
+        return;
+    }
+
+    // PACS 取回的检查是真实病人数据，样例只是演示：一旦后者已经占据画面，
+    // 样例的自动加载必须让位，否则取回成功几秒后又被演示数据覆盖。
+    if (!m_authoritativeVolumeDir.isEmpty()
+        && directory == QStringLiteral(DICOM_SAMPLE_PATH)) {
+        qInfo().noquote() << "[Bridge] 当前体数据来自 PACS 取回，忽略样例自动加载："
+                          << directory;
         return;
     }
 
@@ -339,6 +455,13 @@ void Bridge::loadDicomVolume(const QString &directory)
                 holder->thread->join();
             if (m_dicomHolder == holder)
                 m_dicomHolder.reset();
+
+            // 收尾后立刻接手等待中的目录（例如 PACS 取回结果）
+            if (!m_pendingDicomDir.isEmpty()) {
+                const QString next = m_pendingDicomDir;
+                m_pendingDicomDir.clear();
+                loadDicomVolume(next);
+            }
         });
     });
 

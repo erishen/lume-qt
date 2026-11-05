@@ -36,4 +36,9 @@ public:
     /// STUDY 级 C-FIND。返回每例检查的 PatientName / StudyDate / StudyInstanceUID /
     /// NumberOfStudyRelatedSeries 等字段；列表为空但 ok=true 表示连上了、库是空的。
     static bool findStudies(const Endpoint &endpoint, QList<QVariantMap> *studies, QString *err);
+
+    /// STUDY 级 C-GET：把整例检查取回本地目录（同关联 C-STORE，无需另开监听端口）。
+    /// 成功后 fileCount 为落地文件数；失败时 err 带 DCMTK 原始原因。
+    static bool retrieveStudy(const Endpoint &endpoint, const QString &studyUid,
+                              const QString &destDir, int *fileCount, QString *err);
 };

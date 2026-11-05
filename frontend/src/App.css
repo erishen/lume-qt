@@ -566,3 +566,23 @@ button:disabled {
 .pacs-chip.idle {
   color: #94a3b8;
 }
+
+/* PACS 取回：一个动作按钮，取回后由 dicomVolumeReady 触发体数据重解析 */
+.pacs-retrieve {
+  margin-left: 10px;
+  padding: 2px 10px;
+  font-size: 11px;
+  color: #cbd5e1;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.pacs-retrieve:hover:not(:disabled) {
+  color: #f8fafc;
+  border-color: #64748b;
+}
+.pacs-retrieve:disabled {
+  opacity: 0.55;
+  cursor: default;
+}

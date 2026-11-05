@@ -79,7 +79,9 @@ export interface Bridge {
   /** STUDY 级 C-FIND，枚举该 AE 上的检查 */
   pacsFindStudies(host: string, port: number, calledAe: string): void
   /** 最近一次 PACS 状态快照（空对象表示从未配置/探测过） */
-  pacsState(): Promise<Partial<PacsStatus> & { count?: number }>
+  pacsState(): Promise<Partial<PacsStatus> & { count?: number; studyUid?: string }>
+  /** C-GET 取回整例检查；成功后 C++ 侧自动重解析并替换当前体数据 */
+  pacsRetrieveStudy(host: string, port: number, calledAe: string, studyUid: string): void
 
   // ---- DICOM 体积加载 ----
   loadDicomVolume(directory: string): void
@@ -98,6 +100,7 @@ export interface Bridge {
   dicomVolumeError: QtSignal<(message: string) => void>
   pacsStatus: QtSignal<(status: PacsStatus) => void>
   pacsStudies: QtSignal<(studies: PacsStudy[], meta: PacsQueryMeta) => void>
+  pacsRetrieve: QtSignal<(status: PacsRetrieveStatus) => void>
 }
 
 /** PACS 连通性结果（与 C++ Bridge::pacsStatus 对应） */
@@ -131,6 +134,18 @@ export interface PacsQueryMeta {
   host: string
   calledAe: string
   message: string
+  tsUs: number
+}
+
+/** C-GET 取回结果 */
+export interface PacsRetrieveStatus {
+  ok: boolean
+  studyUid: string
+  files: number
+  dir: string
+  ms: number
+  message: string
+  detail: string
   tsUs: number
 }
 

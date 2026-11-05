@@ -1,6 +1,10 @@
 #include "pacsclient.h"
 
+#include <algorithm>
+
 #include <QElapsedTimer>
+#include <QDir>
+#include <QFile>
 #include <QStringList>
 
 #include <dcmtk/config/osconfig.h>
@@ -99,6 +103,102 @@ bool PacsClient::echo(const Endpoint &endpoint, QString *err, int *roundTripMs)
     return true;
 }
 
+bool PacsClient::retrieveStudy(const Endpoint &endpoint, const QString &studyUid,
+                               const QString &destDir, int *fileCount, QString *err)
+{
+    if (studyUid.trimmed().isEmpty()) {
+        if (err) *err = QStringLiteral("缺少 StudyInstanceUID，无法取回");
+        return false;
+    }
+    if (!QDir().mkpath(destDir)) {
+        if (err) *err = QStringLiteral("无法创建取回目录：%1").arg(destDir);
+        return false;
+    }
+
+    DcmSCU scu;
+
+    // C-GET 的协商要比 C-FIND 多两步：
+    //  1) 除 C-GET 查询上下文外，还要声明愿意接收哪些存储类（否则服务端无法把
+    //     影像推回来）；
+    //  2) 打开落盘模式并指定目录，收到的每个对象由 DcmSCU 直接写文件。
+    OFList<OFString> xfer;
+    xfer.push_back(UID_LittleEndianExplicitTransferSyntax);
+    xfer.push_back(UID_LittleEndianImplicitTransferSyntax);
+
+    auto addPc = [&scu, &xfer](const char *uid, T_ASC_SC_ROLE role) {
+        OFList<OFString> syntaxes = xfer;
+        return scu.addPresentationContext(uid, syntaxes, role);
+    };
+
+    if (addPc(UID_GETStudyRootQueryRetrieveInformationModel, ASC_SC_ROLE_SCU).bad()) {
+        if (err) *err = QStringLiteral("注册 C-GET 呈现上下文失败");
+        return false;
+    }
+    // 关键：存储类必须申请 **SCP 角色**。C-GET 里同一个关联上角色是反的——
+    // 我们发检索请求（SCU），同时接收对方推来的 C-STORE（SCP）。只申请默认角色时
+    // 服务端会报 "No presentation context with requestor SCP role"，所有子操作全失败。
+    // 只声明本项目实际会渲染的存储类：MR / CT / 增强 MR / 二次捕获。
+    for (const char *uid : {UID_MRImageStorage, UID_CTImageStorage,
+                            UID_EnhancedMRImageStorage, UID_SecondaryCaptureImageStorage}) {
+        if (addPc(uid, ASC_SC_ROLE_SCP).bad()) {
+            if (err) *err = QStringLiteral("注册存储类呈现上下文失败：%1").arg(uid);
+            return false;
+        }
+    }
+
+    scu.setStorageMode(DCMSCU_STORAGE_DISK);
+    scu.setStorageDir(destDir.toStdString());
+
+    if (!openAssociation(scu, endpoint, err)) {
+        return false;
+    }
+
+    DcmDataset query;
+    query.putAndInsertString(DCM_QueryRetrieveLevel, "STUDY");
+    query.putAndInsertString(DCM_StudyInstanceUID, studyUid.toUtf8().constData());
+
+    OFList<RetrieveResponse *> responses;
+    const OFCondition cond = scu.sendCGETRequest(1, &query, &responses);
+
+    // 最终状态要以响应里的失败子操作数为准：cond 只代表「对话本身没崩」，
+    // 服务端可能一半成功一半失败。
+    int failed = 0, completed = 0;
+    for (RetrieveResponse *r : responses) {
+        failed = std::max(failed, static_cast<int>(r->m_numberOfFailedSubops));
+        completed = std::max(completed, static_cast<int>(r->m_numberOfCompletedSubops));
+        delete r;
+    }
+    scu.closeAssociation(DCMSCU_RELEASE_ASSOCIATION);
+
+    if (cond.bad()) {
+        if (err) *err = QStringLiteral("C-GET 失败：%1").arg(QString::fromStdString(cond.text()));
+        return false;
+    }
+    if (failed > 0) {
+        if (err) *err = QStringLiteral("C-GET 部分失败：%1 个子操作未完成（已完成 %2）")
+                            .arg(failed).arg(completed);
+        return false;
+    }
+
+    // DcmSCU 落盘用的是 "MR.<SOPInstanceUID>"，没有扩展名；而下游解析器只认
+    // *.dcm / *.dicom。两者之间的落差必须在取回这一层补上，不能让调用方猜。
+    const QDir dir(destDir);
+    for (const QFileInfo &fi : dir.entryInfoList(QDir::Files | QDir::Readable, QDir::Name)) {
+        if (fi.fileName().startsWith(QLatin1Char('.'))) continue;
+        if (!fi.fileName().endsWith(QStringLiteral(".dcm"), Qt::CaseInsensitive)) {
+            QFile::rename(fi.absoluteFilePath(), fi.absoluteFilePath() + QStringLiteral(".dcm"));
+        }
+    }
+
+    const int landed = static_cast<int>(
+        dir.entryList({QStringLiteral("*.dcm")}, QDir::Files).size());
+    if (landed == 0) {
+        if (err) *err = QStringLiteral("C-GET 结束但没有文件落地（检查存储类与写盘权限）");
+        return false;
+    }
+    if (fileCount) *fileCount = landed;
+    return true;
+}
 bool PacsClient::findStudies(const Endpoint &endpoint, QList<QVariantMap> *studies, QString *err)
 {
     if (!studies) return false;

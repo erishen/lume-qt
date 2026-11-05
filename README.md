@@ -545,6 +545,62 @@ storescu -aet QTRS -aec QTRSQR 127.0.0.1 11112 resources/dicom/brain-t1/N2D_0001
 没有 TLS 与 AE 白名单，没有断线重连与退避；C-FIND 目前是全量 STUDY，未按病人/日期过滤。
 这几项都属于接入真实 PACS 时必须补的，但现在这条链已经能回答「通不通」与「有没有」。
 
+### 10. 把「库里有」变成「屏幕上能看到」：C-GET 取回整例并重建体积
+
+C-ECHO / C-FIND 只解决「通不通、有没有」。术中真正需要的是：选中的这例检查，
+影像要在几秒内出现在体渲染面板上。本批实现了 C-GET 取回整例，
+并直接复用本地样例那一条解析链路（含重采样与 `app://` 二进制供数），不另起一套。
+
+- **`PacsClient::retrieveStudy()`**：同一个关联上发 C-GET、收对方推来的 C-STORE，
+  存储模式 `DCMSCU_STORAGE_DISK` + `setStorageDir(destDir)`；
+  落盘目录 `~/Library/Application Support/research/qt-react-shell/pacs/<StudyInstanceUID>/`。
+- **`Bridge::pacsRetrieveStudy()`**：C-GET 完成后自动 `loadDicomVolume(destDir)`，
+  后台解析、不阻塞 UI；单次 DIMSE 超时 15 s。
+- **前端**：看板头部 PACS chip 旁一枚「取回该例」按钮（取回按钮用的 StudyInstanceUID 来自
+  `pacsState()` 快照）；`QTRS_PACS_AUTO_GET=1` 让 C-FIND 命中第一例后自动取回，
+  现场联调时「连上就看到」，不用先点按钮。
+- **台账**：`pacs.retrieve`（files / ms / studyUid / dir）+ `pacs.retrieveFailed`，
+  与随后那条 `dicom.volumeReady`（bytes / dims / source）按时间对齐，
+  事后可以回答「这台机器的这一屏，影像是从哪来的」。
+
+三个串联的坑，都是「协议对了、文件名对了、逻辑却还在丢数据」这一类：
+
+1. **存储类必须申请 SCP 角色。** C-GET 里同一关联上角色是反的——我们发检索请求是 SCU，
+   同时接收对方推来的 C-STORE 是 SCP。只申请默认角色时，服务端每个子操作都报
+   `No presentation context with requestor SCP role`，60 个子操作全失败。
+   用 DCMTK 自带的 `getscu` 复现同样的错误，才确认这是协议协商问题、不是代码 bug：
+   `addPresentationContext(uid, syntaxes, ASC_SC_ROLE_SCP)` 加上后立刻通。
+2. **落盘文件名没有扩展名。** `DcmSCU` 写成 `MR.<SOPInstanceUID>`，而下游解析器
+   只认 `*.dcm / *.dicom / *.DCM`——取回成功、文件都在、解析器却一张都不认。
+   在取回这一层统一补 `.dcm` 后缀，不让调用方去猜。
+3. **体积解析重入被丢弃，样例又反过来覆盖。** `loadDicomVolume` 早期遇到在途解析直接
+   `return`（取回了但画面还是样例）；改为记 `m_pendingDicomDir` 排队，当前解析收尾后接手。
+   接着暴露第二个问题：前端启动会自动加载 `DICOM_SAMPLE_PATH`，取回成功后几秒被演示数据
+   打回。加 `m_authoritativeVolumeDir`——一旦 PACS 取回被解析，样例自动加载直接忽略。
+   术中屏幕上必须是这个病人的影像，不是 demo。
+
+实测（本机 `dcmqrscp`，60 层 MR 入库）：
+
+```
+[PACS] C-ECHO 成功：43 ms
+[PACS] C-FIND 返回 1 例
+[PACS] C-GET 完成：60 个对象，354 ms → …/pacs/1.2.826.0.1.3680043.2.11…
+[Bridge] 开始后台解析 DICOM： …/pacs/1.2.826.0.1.3680043.2.11…
+[DicomReader] 解析完成： 60 张切片 274 × 384 → 重采样到 128 ³
+[Bridge] 当前体数据来自 PACS 取回，忽略样例自动加载： …/resources/dicom/brain-t1
+```
+
+台账两条对齐（同一 session）：
+
+```json
+{"type":"pacs.retrieve","files":60,"ms":354,"studyUid":"1.2.826…","dir":"…/pacs/1.2.826…"}
+{"type":"dicom.volumeReady","bytes":2097152,"dims":[128,128,128],"source":"…/pacs/1.2.826…"}
+```
+
+已知边界：只做 C-GET，未做 C-MOVE（跨网段/需第三方存储时 C-MOVE 更常见）；
+没有 TLS 与 AE 白名单，没有断线重连与退避；C-FIND 仍是全量 STUDY、取回只取第一例，
+未按病人/日期过滤；体积固定重采样到 128³，层数更多的检查会丢细节。
+
 ## 🧪 测试基础设施
 
 ### C++ 单元测试
