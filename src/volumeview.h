@@ -42,6 +42,11 @@ public:
 
     /// 临床窗预设：0 软组织 W80/L40，1 骨 W1500/L300，2 血管 W400/L100，3 数据自适应
     void setPreset(int preset);
+    /// 手动窗（W/L）：Alt+左键拖动也走这里；单位为 HU（CT）或 a.u.（非 CT）
+    void setManualWindow(double width, double level);
+    double windowWidth() const;
+    double windowLevel() const;
+    bool isCtVolume() const;
     int preset() const { return m_preset; }
 
     /// 伪彩叠加：默认关闭，按诊断惯例走灰阶。
@@ -55,6 +60,8 @@ public:
     int firstFrameMs() const { return m_firstFrameMs; }
 
 signals:
+    /// 窗发生变化；manual=true 表示来自手动调窗（用于把下拉切到「自定义」）
+    void windowChanged(double width, double level, bool manual);
     /// 原生侧首帧完成，供台账记录「采集 → 原生上屏」的时间。
     void firstFrameRendered(int ms, const QString &dims);
 
@@ -121,4 +128,5 @@ private:
     bool m_isCt = false;
     QPoint m_lastPos;
     bool m_dragging = false;
+    bool m_windowing = false;
 };

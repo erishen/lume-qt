@@ -23,6 +23,7 @@
 | QRS-T-006 | 三维体积绘制必须能在不依赖 WebView 的情况下独立出图 | `src/volumeview.cpp` `src/mainwindow.cpp` | 离屏 OpenGL 3.3：首帧 241–261ms（含上下文与着色器），稳态 60 帧均值 2.9–7.3ms（404×558）；`dicom.volumeNativeFrame` 入账 | 已验证 |
 | QRS-T-007 | 体积显示必须保住 HU、按临床窗位/窗宽预设呈现，默认灰阶 | `src/dicomreader.cpp` `src/volumeview.cpp` `src/mainwindow.cpp` | 合成 CT（HU −1000…1200）：软组织窗 W80/L40 出颅骨与脑实质、骨窗 W1500/L300 只剩骨；MR 四个档位仍可切换（按组织强度近似映射）并使用 a.u. 文案；CT 默认灰阶、非 CT 默认伪彩且均标注非诊断 | 部分验证 |
 | QRS-T-008 | 事件型通道（体积）的延迟必须按单次耗时计量，且原生接管时不得重复拉取体数据 | `src/bridge.cpp` `src/mainwindow.cpp` `frontend/src/latency.ts` `frontend/src/MedicalMonitor.tsx` | 看板体积行由 `530282.0 ms` 假值变为 到达 1849 ms / 上屏 273 ms；RSS 519→408 MB；`QTRS_NATIVE_VOLUME=0` 时解析只发生 1 次、原生首帧为 0 条 | 已验证 |
+| QRS-T-009 | 体积必须支持术中的手动窗位/窗宽调整，且预设与手动值不得互相错位 | `src/volumeview.cpp` `src/mainwindow.cpp` | Alt+左键拖动改窗；W/L 输入框单位随模态切 HU/a.u.；手动后下拉切「自定义」、选回预设数值同步；`QTRS_VOLUME_WL=800,150` 实测 W800/L150，预设 1 实测 W1500/L300 且输入框同步；体积不再误触 100 ms 链路预算 | 已验证 |
 | QRS-T-005 | 关键通路的设计必须在「WebView 投递不可靠」这一实测结论上成立 | `src/vitalstrip.cpp` | 原生 P50 0.24ms vs 前端 291–367ms（约 1000 倍量级差） | 已验证 |
 
 > QRS-T-004 标为部分验证：开关确实生效，但挡不住 macOS 窗口非前台时 QWebChannel 批量迟发。
@@ -106,6 +107,7 @@
 | 本批（单实例） | QRS-A-003 |
 | 本批（HU 窗预设） | QRS-T-007 |
 | 本批（体积耗时口径与原生接管） | QRS-T-008 |
+| 本批（手动调窗） | QRS-T-009 |
 
 统计不手写：`make trace` 每次重新数一遍，缺口或引用失效会直接报错。
 

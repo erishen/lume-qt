@@ -45,6 +45,11 @@ const STALE_AFTER_MS: Record<Channel, number> = {
 /** 到达延迟预算：超过即视为「慢」，与看板标红阈值保持一致 */
 const SLOW_BUDGET_MS = 100
 
+/** 体积是一次性解析，2 s 量级是正常的；不能套波形那 100 ms 的链路预算 */
+const SLOW_BUDGET_BY_CHANNEL: Partial<Record<Channel, number>> = {
+  volume: 15000,
+}
+
 /** 健康判定只看最近这么多个样本（看板统计仍用完整窗口） */
 const RECENT_WINDOW = 30
 
@@ -230,10 +235,13 @@ export function channelHealth(): ChannelHealth[] {
     const last = lastReceiptUs[channel]
     const ageMs = last > 0 ? (now - last) / 1000 : Number.POSITIVE_INFINITY
     const staleAfterMs = STALE_AFTER_MS[channel]
+    const budgetMs = SLOW_BUDGET_BY_CHANNEL[channel] ?? SLOW_BUDGET_MS
     let state: SignalState = 'pending'
     if (last > 0) {
-      if (ageMs > staleAfterMs) state = 'stale'
-      else if (r.p50 > SLOW_BUDGET_MS) state = 'slow'
+      // 体积没有「持续更新」语义：一次加载完成后停在原地是正常的，
+      // 用年龄判 stale 会每隔 30 s 就报一次假中断。
+      if (channel !== 'volume' && ageMs > staleAfterMs) state = 'stale'
+      else if (r.p50 > budgetMs) state = 'slow'
       else state = 'ok'
     }
     return { channel, ageMs, staleAfterMs, receiptP50: r.p50, receiptP99: r.p99, state }

@@ -10,6 +10,7 @@
 #include <QCheckBox>
 #include <QStandardItemModel>
 #include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QShortcut>
@@ -168,7 +169,8 @@ MainWindow::MainWindow(QWidget *parent)
     m_volumePreset->addItems({QStringLiteral("软组织窗 W80/L40"),
                               QStringLiteral("骨窗 W1500/L300"),
                               QStringLiteral("血管窗 W400/L100"),
-                              QStringLiteral("数据自适应")});
+                              QStringLiteral("数据自适应"),
+                              QStringLiteral("自定义（手动调窗）")});
     m_volumePreset->setStyleSheet(QStringLiteral("font-size:11px;"));
     m_volumeOverlay = new QCheckBox(QStringLiteral("伪彩（非诊断）"), volumePanel);
     m_volumeOverlay->setStyleSheet(QStringLiteral("color:#9fb2c9;font-size:11px;"));
@@ -180,15 +182,42 @@ MainWindow::MainWindow(QWidget *parent)
     m_volumeLegendText->setWordWrap(true);
     m_volumeLegendText->setText(QStringLiteral("灰阶显示 · 亮度 = 窗内位置（伪彩关闭）"));
 
+    // 手动窗：ALT+左键在图上拖也能调，但需要能看到具体数值、也需要能精确输入。
+    auto *windowRow = new QHBoxLayout;
+    windowRow->setSpacing(4);
+    auto *wLabel = new QLabel(QStringLiteral("W"), volumePanel);
+    auto *lLabel = new QLabel(QStringLiteral("L"), volumePanel);
+    wLabel->setStyleSheet(QStringLiteral("color:#9fb2c9;font-size:11px;"));
+    lLabel->setStyleSheet(QStringLiteral("color:#9fb2c9;font-size:11px;"));
+    m_windowWidthBox = new QDoubleSpinBox(volumePanel);
+    m_windowLevelBox = new QDoubleSpinBox(volumePanel);
+    for (auto *box : {m_windowWidthBox, m_windowLevelBox}) {
+        box->setDecimals(0);
+        box->setKeyboardTracking(false);
+        box->setStyleSheet(QStringLiteral("font-size:11px;"));
+        box->setFixedWidth(78);
+    }
+    m_windowWidthBox->setRange(1, 4000);
+    m_windowWidthBox->setSuffix(QStringLiteral(" HU"));
+    m_windowLevelBox->setRange(-2000, 4000);
+    m_windowLevelBox->setSuffix(QStringLiteral(" HU"));
+    windowRow->addWidget(wLabel, 0);
+    windowRow->addWidget(m_windowWidthBox, 1);
+    windowRow->addWidget(lLabel, 0);
+    windowRow->addWidget(m_windowLevelBox, 1);
+    windowRow->addStretch(0);
+
     volumeLayout->addWidget(volumeTitle);
     volumeLayout->addWidget(m_volumeView, 1);
     volumeLayout->addLayout(controls);
+    volumeLayout->addLayout(windowRow);
     volumeLayout->addWidget(volumeLegend);
     volumeLayout->addWidget(m_volumeLegendText);
     volumeLayout->addWidget(m_volumeStatus);
 
     connect(m_volumePreset, &QComboBox::currentIndexChanged, this, [this](int idx) {
         if (m_volumeView == nullptr) return;
+        if (idx >= 4) return; // 「自定义」不重置窗，保留当前 W/L
         m_volumeView->setPreset(idx);
         if (m_volumeStatus && !m_volumeSourceText.isEmpty()) {
             m_volumeStatus->setText(QStringLiteral("%1 · %2")
@@ -204,6 +233,28 @@ MainWindow::MainWindow(QWidget *parent)
         if (qgetenv("QTRS_VOLUME_COLOR") == "1") {
             m_volumeOverlay->setChecked(true);
         }
+    }
+
+    auto applyManualWindow = [this]() {
+        if (m_syncingWindow || m_volumeView == nullptr) return;
+        if (m_windowWidthBox == nullptr || m_windowLevelBox == nullptr) return;
+        m_volumeView->setManualWindow(m_windowWidthBox->value(), m_windowLevelBox->value());
+    };
+    connect(m_windowWidthBox, &QDoubleSpinBox::editingFinished, this, applyManualWindow);
+    connect(m_windowLevelBox, &QDoubleSpinBox::editingFinished, this, applyManualWindow);
+    if (m_volumeView) {
+        connect(m_volumeView, &VolumeView::windowChanged, this,
+                [this](double w, double l, bool manual) {
+            m_syncingWindow = true;
+            if (m_windowWidthBox) m_windowWidthBox->setValue(w);
+            if (m_windowLevelBox) m_windowLevelBox->setValue(l);
+            m_syncingWindow = false;
+            if (manual && m_volumePreset) m_volumePreset->setCurrentIndex(4);
+            if (m_volumeStatus && !m_volumeSourceText.isEmpty()) {
+                m_volumeStatus->setText(QStringLiteral("%1 · %2")
+                                            .arg(m_volumeSourceText, m_volumeView->windowText()));
+            }
+        });
     }
 
     connect(m_volumeOverlay, &QCheckBox::toggled, this, [this](bool on) {
@@ -334,9 +385,21 @@ void MainWindow::setupNativeVolume()
                 m_volumeOverlay->setChecked(!isCt);
             }
         }
+        if (m_windowWidthBox && m_windowLevelBox) {
+            const QString suffix = isCt ? QStringLiteral(" HU") : QStringLiteral(" a.u.");
+            m_windowWidthBox->setSuffix(suffix);
+            m_windowLevelBox->setSuffix(suffix);
+        }
         if (m_volumeStatus) {
             m_volumeStatus->setText(QStringLiteral("%1 · %2")
                                         .arg(m_volumeSourceText, m_volumeView->windowText()));
+        }
+        // 自动化/标定用：QTRS_VOLUME_WL=窗宽,窗位
+        if (const QByteArray wl = qgetenv("QTRS_VOLUME_WL"); !wl.isEmpty()) {
+            const QStringList parts = QString::fromLocal8Bit(wl).split(QLatin1Char(','));
+            if (parts.size() == 2) {
+                m_volumeView->setManualWindow(parts.at(0).toDouble(), parts.at(1).toDouble());
+            }
         }
     });
     connect(m_bridge, &Bridge::dicomVolumeError, this, [this](const QString &message) {

@@ -260,6 +260,8 @@ void VolumeView::setPreset(int preset)
         }
         qInfo().noquote() << "[Volume] 非 CT：按组织强度近似应用预设" << windowText();
         if (m_hasData) renderFrame();
+        emit windowChanged(static_cast<double>(m_windowWidthHu),
+                           static_cast<double>(m_windowCenterHu), false);
         return;
     }
     switch (m_preset) {
@@ -290,6 +292,37 @@ void VolumeView::setPreset(int preset)
     }
     qInfo().noquote() << "[Volume] 窗预设切换：" << windowText();
     if (m_hasData) renderFrame();
+    emit windowChanged(static_cast<double>(m_windowWidthHu),
+                       static_cast<double>(m_windowCenterHu), false);
+}
+
+void VolumeView::setManualWindow(double width, double level)
+{
+    if (!m_hasData) return;
+    const double span = std::max(1.0, static_cast<double>(m_huMax - m_huMin));
+    // 窗宽下限 1，避免除零/全噪声；上下限按数据值域留一倍余量
+    m_windowWidthHu = static_cast<float>(std::clamp(width, 1.0, std::max(4000.0, span * 2.0)));
+    m_windowCenterHu = static_cast<float>(
+        std::clamp(level, static_cast<double>(m_huMin) - span, static_cast<double>(m_huMax) + span));
+    qInfo().noquote() << "[Volume] 手动调窗：" << windowText();
+    renderFrame();
+    emit windowChanged(static_cast<double>(m_windowWidthHu),
+                       static_cast<double>(m_windowCenterHu), true);
+}
+
+double VolumeView::windowWidth() const
+{
+    return static_cast<double>(m_windowWidthHu);
+}
+
+double VolumeView::windowLevel() const
+{
+    return static_cast<double>(m_windowCenterHu);
+}
+
+bool VolumeView::isCtVolume() const
+{
+    return m_isCt;
 }
 
 void VolumeView::setColorOverlay(bool on)
@@ -564,7 +597,10 @@ void VolumeView::resizeEvent(QResizeEvent *event)
 void VolumeView::mousePressEvent(QMouseEvent *event)
 {
     if (event->button() == Qt::LeftButton) {
-        m_dragging = true;
+        // Alt+左键 = 调窗（水平改窗宽、垂直改窗位），普通左键仍是旋转。
+        // 术中不想为了调窗把整块面板换成滑块，直接按在图上拖最省事。
+        m_windowing = (event->modifiers() & Qt::AltModifier) != 0;
+        m_dragging = !m_windowing;
         m_lastPos = event->pos();
     }
     QWidget::mousePressEvent(event);
@@ -572,6 +608,16 @@ void VolumeView::mousePressEvent(QMouseEvent *event)
 
 void VolumeView::mouseMoveEvent(QMouseEvent *event)
 {
+    if (m_windowing && (event->buttons() & Qt::LeftButton)) {
+        const QPoint delta = event->pos() - m_lastPos;
+        m_lastPos = event->pos();
+        const double k = m_isCt
+                             ? 2.0
+                             : std::max(1.0, static_cast<double>(m_tissueHiHu - m_tissueLoHu) / 200.0);
+        setManualWindow(static_cast<double>(m_windowWidthHu) + static_cast<double>(delta.x()) * k,
+                        static_cast<double>(m_windowCenterHu) - static_cast<double>(delta.y()) * k);
+        return;
+    }
     if (m_dragging) {
         const QPoint delta = event->pos() - m_lastPos;
         m_lastPos = event->pos();
@@ -585,6 +631,7 @@ void VolumeView::mouseMoveEvent(QMouseEvent *event)
 void VolumeView::mouseReleaseEvent(QMouseEvent *event)
 {
     m_dragging = false;
+    m_windowing = false;
     QWidget::mouseReleaseEvent(event);
 }
 
