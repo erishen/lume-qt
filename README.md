@@ -696,10 +696,20 @@ C-MOVE 完成：60 个对象，3137 ms
   `OFTrue` 让超时后退出），没有 `setStopAfterConnectionTimeout()`；`stopAfterCurrentAssociation()`
   是 protected，要在自己类里包一层 `requestStop()`；C-MOVE 的成功常量是 `STATUS_MOVE_Success`。
 
-已知边界：回落路径（服务端明确拒绝 C-GET）没有在现场服务端上复现——本地 dcmqrscp
-两种检索都支持，只验证了 `QTRS_PACS_MODE=move` 的直连路径与判据本身；
-接收端目前只登记四个存储类，遇到超声、内镜等其它 SOP 类需要补配置；
-C-MOVE 同样只取第一例，没有多例选择。
+回落路径用 `dcmqrscp --disable-get` 造了一次「服务端不会 C-GET」：
+
+```
+C-GET（第 1/3 次）→ C-GET 不被支持，回落 C-MOVE（AE=QTRSSTORE:11113）
+                 C-GET 失败：DIMSE No valid Presentation Context ID
+C-MOVE（第 1/3 次）→ C-MOVE 完成：60 个对象，3226 ms
+```
+
+台账先记 `pacs.retrieveFallback`（from=get, to=move, storeAe/storePort），
+再记 `pacs.retrieve(method=move)`，两条能对上。
+
+已知边界：接收端目前只登记四个存储类，遇到超声、内镜等其它 SOP 类需要补配置；
+C-MOVE 同样只取第一例，没有多例选择；回落只在「明确不支持」时触发，
+若服务端是「能协商但一张也取不回」的软失败，仍按普通重试处理。
 
 ## 🧪 测试基础设施
 
