@@ -41,6 +41,7 @@ uniform vec2 uHuRange;   // x = huMin, y = huMax - huMin
 uniform vec2 uWindow;    // x = 窗位(HU), y = 窗宽(HU)
 uniform int uColorMode;  // 0 = 灰阶（诊断惯例）, 1 = 伪彩叠加（非诊断）
 uniform int uSteps;
+uniform float uTexDim;
 
 const vec3 kBoxMin = vec3(-0.5);
 const vec3 kBoxMax = vec3(0.5);
@@ -76,7 +77,7 @@ void main()
     t0 = max(t0, 0.0);
     float dt = (t1 - t0) / float(uSteps);
     vec3 p = uCamPos + rd * t0;
-    vec3 texel = vec3(1.0 / 128.0);
+    vec3 texel = vec3(1.0 / uTexDim);
 
     // 窗位/窗宽直接作用在 HU 上（临床惯例：W/L，而不是先压缩成 0-255 再猜）。
     // 等值面取窗中心，落到窗外的体素透明；这样换预设就等于换「看哪一层组织」。
@@ -426,12 +427,15 @@ void VolumeView::renderFrame()
     m_frameTimer.start();
     if (!ensureGl()) return;
 
-    // 离屏尺寸跟控件走，但按 0.5 比例降采样：128³ 体数据在 400px 上下
-    // 已经看不出差别，省下来的都是每帧的采样与回读带宽。
+    // 离屏按设备像素 1:1 渲染：曾经按 dpr/2 降采样，Retina 上等于把 808px 的画面
+    // 用 404px 渲染再拉大，边界全部糊掉——这是「不清晰」的主要来源。
+    // 1.5x 超采样再缩回控件尺寸：384px 上的等值面轮廓原本是锯齿，直接 1:1
+    // 只是不糊，边缘仍然毛；超采样把轮廓磨平，代价约 2.2 倍像素。
+    const double superSample = 1.5;
     const int targetW = std::clamp(
-        static_cast<int>(width() * devicePixelRatioF() / 2.0), 160, 720);
+        static_cast<int>(width() * devicePixelRatioF() * superSample), 320, 2400);
     const int targetH = std::clamp(
-        static_cast<int>(height() * devicePixelRatioF() / 2.0), 160, 720);
+        static_cast<int>(height() * devicePixelRatioF() * superSample), 320, 2400);
 
     if (!m_ctx->makeCurrent(m_surface)) return;
 
@@ -475,7 +479,10 @@ void VolumeView::renderFrame()
     m_program.setUniformValue("uHuRange", QVector2D(m_huMin, m_huMax - m_huMin));
     m_program.setUniformValue("uWindow", QVector2D(m_windowCenterHu, m_windowWidthHu));
     m_program.setUniformValue("uColorMode", m_colorOverlay ? 1 : 0);
-    m_program.setUniformValue("uSteps", 192);
+    // 128³ 体数据、相机距离 1.35 时，160 步足够让等值面跨越点被采到；
+    // 分辨率翻倍后继续堆步数只会拖慢帧，对清晰度没有帮助。
+    m_program.setUniformValue("uSteps", 160);
+    m_program.setUniformValue("uTexDim", static_cast<float>(m_texDim));
 
     m_gl->glActiveTexture(GL_TEXTURE0);
     m_gl->glBindTexture(GL_TEXTURE_3D, m_texture);

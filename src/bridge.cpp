@@ -796,7 +796,8 @@ void Bridge::loadDicomVolume(const QString &directory)
         QByteArray huData;
         QVariantMap meta;
         QString err;
-        const bool ok = DicomReader::loadVolume(directory, data, meta, err, 128,
+        // 0 = 自动网格（最长边，128–256）
+        const bool ok = DicomReader::loadVolume(directory, data, meta, err, 0,
                                               &holder->cancel, &huData);
 
         // 结果必须回到 Qt 主线程再发射信号（QWebChannel 依赖所在线程）。

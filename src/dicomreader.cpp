@@ -246,7 +246,7 @@ bool DicomReader::loadVolume(const QString &directory,
         err = QString("目录不存在：%1").arg(directory);
         return false;
     }
-    if (targetDim < 2) {
+    if (targetDim == 1) {
         err = QString("targetDim 过小：%1（至少为 2）").arg(targetDim);
         return false;
     }
@@ -336,6 +336,11 @@ bool DicomReader::loadVolume(const QString &directory,
     }
 
     const int slicesN = static_cast<int>(slices.size());
+    // targetDim <= 0 表示按源数据自动定网格：取最长边、上限 256。
+    // 以前固定 128³，真实 512²×数百层的序列被压到 128，细节先丢一半，后面再怎么渲都补不回来。
+    if (targetDim <= 0) {
+        targetDim = std::clamp(std::max({cols, rows, slicesN}), 128, 256);
+    }
     qInfo() << "[DicomReader] 解析完成：" << slicesN << "张切片"
             << cols << "×" << rows
             << "→ 重采样到" << targetDim << "³";
