@@ -328,6 +328,39 @@ bridge.dataFromCpp.connect((payload) => {
 > 结论：**实时通路不能建立在这套 WebView 投递上**——这正是路线图第 3 步「关键波形原生化」的依据，
 > 看门狗的作用是让这种劣化不可能被静默忽略。
 
+### 5. 关键通路原生化（ECG + SpO₂ 双通道）
+
+上一节实测已经说明：WebView 那条路在窗口失焦/被遮挡时中位数 250–325ms、偶发十几秒，
+**不能作为术中关键波形的显示与报警通路**。这一步把两路关键波形搬到原生条上：
+
+- **新增通道**：`Bridge::spo2Sample(double value, double tsUs)`，40ms 一个样本（stress 时 5ms），
+  波形是带重搏切迹的体积描记波；与 ECG 一样遵循「每样本带 epoch 微秒时间戳」的契约
+  （`tests/bridge_test.cpp::Spo2WaveSharesTimestampContract` 守着这条）。
+- **只连原生**：`MainWindow::setupNativeStrip()` 里把 `ecgSample` / `spo2Sample` 直连
+  `NativeVitalStrip`，**WebView 侧不订阅 SpO₂**——关键通路的显示与判定不经过 IPC。
+  WebView 仍保留同一路 ECG 画布，作为「原生 vs WebView」的同机对照。
+- **原生条结构**：上下两条 lane（ECG 绿 / SpO₂ 蓝），右侧列 HR/SpO₂/NIBP、两条 lane 各自的
+  采集→绘制 P50/P99、报警判定结果。
+- **原生看门狗**：每条 lane 自己判中断（ECG 250ms / SpO₂ 400ms），超时就在波形上盖
+  `信号中断 XXXX ms · 冻结帧` 的红条，并落 `[VitalStrip] <通道> 信号中断` / `信号恢复` 日志。
+  与前端看门狗是**两套独立判定**，任一侧失效另一侧仍能报警。
+- **报警判定原生化**：SpO₂ < 90 或 HR < 50 在 `paintEvent` 里直接判、直接画，不依赖前端渲染成功。
+
+实测（Apple M3，单实例）：
+
+- 稳态：`[VitalStrip] ECG P50 0.24 P99 21.34 ms · SpO2 P50 0.13 P99 17.91 ms（n=239）`
+- 同一时刻前端看板：到达 P50 291–367ms（窗口未激活时），量级差约 1000 倍
+- 中断验证（`QTRS_FAULT=spo2,ecg`，启动 3 秒后停掉这两个定时器）：
+  - 原生：`[VitalStrip] ECG 信号中断：699 ms 无样本（画面为冻结帧）`、`SpO2 信号中断：699 ms`
+  - 前端：`[Watchdog] ecg=stale(age=619ms, ...)`
+  - 画面：两条 lane 同时盖红条 `信号中断 2507 ms · 冻结帧`
+
+故障注入开关（演示/回归都用得上）：
+
+```bash
+QTRS_FAULT=spo2,ecg ./build/qt-react-shell   # 启动 3 秒后停掉指定通道
+```
+
 ## 🧪 测试基础设施
 
 ### C++ 单元测试

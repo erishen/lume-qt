@@ -87,6 +87,7 @@ public slots:
 
 private slots:
     void emitEcgSample();
+    void emitSpo2Sample();
     void emitVitals();
     void emitEegSample();
     void emitEmgSample();
@@ -98,6 +99,9 @@ signals:
     void dataFromCpp(const QVariant &data);
     // 医疗实时数据信号（tsUs = 采集时刻，epoch 微秒）
     void ecgSample(double value, double tsUs);
+    // SpO₂ 体积描记波形（pleth）。与 ECG 一样是「关键波形」：原生条直连这条信号，
+    // WebView 侧不订阅它——关键通路的显示与报警判定都不依赖 IPC。
+    void spo2Sample(double value, double tsUs);
     void vitalsReady(const QVariantMap &vitals);
     // 神经内科实时数据信号
     void eegSample(double value, double tsUs);
@@ -114,6 +118,7 @@ private:
     /// 当前时刻（epoch 微秒）。给所有实时载荷打采集时间戳。
     static double nowMicros();
     static double synthesizeEcg(double phase);
+    static double synthesizePleth(double phase);
     static double clampTo(double v, double lo, double hi);
     static double randomUnit();          // [0,1) 均匀随机数
     static double randomRange(double lo, double hi);
@@ -125,7 +130,9 @@ private:
 
     // 医疗模拟状态
     QTimer *m_ecgTimer = nullptr;
+    QTimer *m_spo2Timer = nullptr;
     QTimer *m_vitalsTimer = nullptr;
+    double m_spo2Phase = 0.0;
     double m_ecgPhase = 0.0;
     double m_hr = 72.0;
     double m_spo2 = 98.0;

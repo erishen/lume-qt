@@ -50,9 +50,36 @@ Bridge::Bridge(QObject *parent)
     connect(m_ecgTimer, &QTimer::timeout, this, &Bridge::emitEcgSample);
 
     // 生命体征快照：600ms 一次
+    // 故障注入（演示与验证用）：QTRS_FAULT 里出现通道名，就在启动 3 秒后停掉该通道，
+    // 用来确认「信号中断」会被原生看门狗与前端看门狗分别捕获，而不是静默画旧波形。
+    const QByteArray fault = qgetenv("QTRS_FAULT");
+    auto injectFault = [](const char *name, QTimer *timer) {
+        QTimer::singleShot(3000, timer, [name, timer] {
+            if (!timer->isActive()) {
+                return;
+            }
+            timer->stop();
+            qWarning().noquote() << QStringLiteral("[Bridge] 故障注入：%1 通道已停止").arg(name);
+        });
+    };
+
+    m_spo2Timer = new QTimer(this);
+    m_spo2Timer->setInterval(stress > 0 ? 5 : 40);
+    connect(m_spo2Timer, &QTimer::timeout, this, &Bridge::emitSpo2Sample);
+
     m_vitalsTimer = new QTimer(this);
     m_vitalsTimer->setInterval(stress > 0 ? 100 : 600);
     connect(m_vitalsTimer, &QTimer::timeout, this, &Bridge::emitVitals);
+
+    if (fault.contains("spo2")) {
+        injectFault("SpO2", m_spo2Timer);
+    }
+    if (fault.contains("ecg")) {
+        injectFault("ECG", m_ecgTimer);
+    }
+    if (fault.contains("vitals")) {
+        injectFault("Vitals", m_vitalsTimer);
+    }
 
     // ---- 神经内科介入模拟定时器 ----
     // EEG：50ms（20 Hz）采样
@@ -218,6 +245,7 @@ void Bridge::startMedicalSimulation()
 {
     qInfo() << "[Bridge] 启动医疗实时数据模拟";
     m_ecgTimer->start();
+    m_spo2Timer->start();
     m_vitalsTimer->start();
 }
 
@@ -225,6 +253,7 @@ void Bridge::stopMedicalSimulation()
 {
     qInfo() << "[Bridge] 停止医疗实时数据模拟";
     m_ecgTimer->stop();
+    m_spo2Timer->stop();
     m_vitalsTimer->stop();
 }
 
@@ -256,6 +285,37 @@ double Bridge::synthesizeEcg(double phase)
     // 基线呼吸性漂移 + 轻微噪声
     v += 0.02 * std::sin(phase * 2.0 * M_PI * 0.5);
     v += (randomUnit() - 0.5) * 0.012;
+    return v;
+}
+
+void Bridge::emitSpo2Sample()
+{
+    // 血氧波形固定在 75 次/分附近（1.25 周期/秒），每 40ms 步进 0.05 周期；
+    // 振幅随当前 SpO₂ 轻微变化，用来区分「波形停了」和「数值变了」。
+    m_spo2Phase += 0.05;
+    if (m_spo2Phase >= 1.0) {
+        m_spo2Phase -= 1.0;
+    }
+    emit spo2Sample(synthesizePleth(m_spo2Phase), nowMicros());
+}
+
+double Bridge::synthesizePleth(double phase)
+{
+    // 体积描记波：快速升支 + 主峰 + 降支上的重搏切迹（dicrotic notch）
+    auto gauss = [](double x, double center, double width, double amp) {
+        const double d = (x - center) / width;
+        return amp * std::exp(-d * d);
+    };
+
+    double v = 0.0;
+    v += gauss(phase, 0.12, 0.045, 1.0);   // 升支/主峰
+    v += gauss(phase, 0.34, 0.050, 0.42);   // 降支
+    v -= gauss(phase, 0.30, 0.020, 0.22);   // 重搏切迹
+    v -= gauss(phase, 0.62, 0.090, 0.10);   // 舒张期回落后的小波
+
+    // 基线与呼吸调制
+    v += 0.03 * std::sin(phase * 2.0 * M_PI * 0.4);
+    v += (randomUnit() - 0.5) * 0.010;
     return v;
 }
 

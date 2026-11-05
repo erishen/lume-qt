@@ -190,6 +190,8 @@ void MainWindow::setupNativeStrip()
     // 关键波形直连 Bridge 信号：不经过 QWebChannel，因此这里同时也是
     // 「原生通道 vs WebView 通道」延迟对照的基准。
     connect(m_bridge, &Bridge::ecgSample, m_strip, &NativeVitalStrip::pushEcgSample);
+    // SpO₂ 波形只走原生：WebView 侧不订阅这条通道，关键通路的显示与判定不依赖 IPC
+    connect(m_bridge, &Bridge::spo2Sample, m_strip, &NativeVitalStrip::pushSpo2Sample);
     connect(m_bridge, &Bridge::vitalsReady, m_strip, &NativeVitalStrip::setVitals);
 }
 

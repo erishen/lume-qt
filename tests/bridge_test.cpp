@@ -379,6 +379,29 @@ TEST(DicomReaderRobustness, CancelReturnsWithoutParsingWholeSeries)
     EXPECT_LT(timer.elapsed(), 1000) << "取消应在读盘前返回，实测耗时 " << timer.elapsed() << "ms";
 }
 
+TEST_F(BridgeTest, Spo2WaveSharesTimestampContract)
+{
+    // SpO₂ 波形是「关键通路原生化」的一部分：原生条直连这条信号，
+    // 所以它必须遵守与 ECG 相同的契约——每个样本带 epoch 微秒采集时间戳。
+    QSignalSpy spo2Spy(bridge, SIGNAL(spo2Sample(double, double)));
+    QSignalSpy ecgSpy(bridge, SIGNAL(ecgSample(double, double)));
+    bridge->startMedicalSimulation();
+
+    ASSERT_TRUE(spo2Spy.wait(500)) << "启动后 500ms 内应有 SpO₂ 样本";
+    bridge->stopMedicalSimulation();
+
+    ASSERT_GT(spo2Spy.count(), 0);
+    const QList<QVariant> args = spo2Spy.at(0);
+    const double value = args.at(0).toDouble();
+    const double tsUs = args.at(1).toDouble();
+    EXPECT_GT(tsUs, 0.0) << "必须带采集时间戳";
+    EXPECT_GT(value, -0.5);
+    EXPECT_LT(value, 2.0);
+
+    // 两个波形通道独立计时，互不阻塞
+    EXPECT_GT(ecgSpy.count(), 0);
+}
+
 int main(int argc, char **argv) {
     // 为 DICOM 异步回调（QMetaObject::invokeMethod → 主线程事件循环）提供环境
     QCoreApplication app(argc, argv);
