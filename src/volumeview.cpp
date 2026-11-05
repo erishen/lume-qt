@@ -70,10 +70,13 @@ void main()
     float dt = (t1 - t0) / float(uSteps);
     vec3 p = uCamPos + rd * t0;
     vec3 texel = vec3(1.0 / 128.0);
-    const float iso = 0.55;
+    const float iso = 0.52;
 
-    // 等值面 + 梯度光照：非增强 CT 的半透明累积会糊成一团白，
-    // 术中要的是「边界在哪」——先打到等值面，再用中心差分求法向做明暗。
+    // 等值面 + 梯度光照 + 双色编码。
+    // 不用半透明累积：非增强 CT 累积出来是一团雾，脑沟脑回全糊掉。
+    // 颜色区分分两层意思：
+    //   1) 按命中处强度——软组织琥珀、骨/对比剂冷白；
+    //   2) 按命中深度——近处偏暖、深处偏冷，给出前后关系。
     for (int i = 0; i < uSteps; ++i) {
         vec3 q = p + 0.5;
         if (all(greaterThanEqual(q, vec3(0.0))) && all(lessThanEqual(q, vec3(1.0)))) {
@@ -88,7 +91,16 @@ void main()
                                 texture(uVolume, q - vec3(0.0, 0.0, texel.z)).r);
                 vec3 n = normalize(gx0 - gx);
                 float diff = max(abs(dot(n, normalize(-rd))), 0.0);
-                vec3 base = mix(vec3(0.52, 0.50, 0.47), vec3(1.0, 0.98, 0.94), diff);
+
+                // 强度色：琥珀（软组织）→ 冷白（骨/对比剂）
+                float k = clamp((v - iso) / (1.0 - iso), 0.0, 1.0);
+                vec3 byValue = mix(vec3(1.0, 0.56, 0.22), vec3(0.88, 0.94, 1.0), k);
+                // 深度色：命中越深越偏冷
+                float depthT = clamp(float(i) / float(uSteps) * 2.2, 0.0, 1.0);
+                vec3 byDepth = mix(vec3(1.0, 0.80, 0.52), vec3(0.45, 0.68, 1.0), depthT);
+                vec3 base = mix(byValue, byDepth, 0.42);
+                base *= (0.50 + 0.50 * diff);
+
                 fragColor = vec4(base, 1.0);
                 return;
             }

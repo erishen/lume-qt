@@ -150,8 +150,19 @@ MainWindow::MainWindow(QWidget *parent)
     m_volumeStatus = new QLabel(QStringLiteral("等待体数据…"), volumePanel);
     m_volumeStatus->setStyleSheet(QStringLiteral("color:#7b8798;font-size:11px;"));
     m_volumeStatus->setWordWrap(true);
+    auto *volumeLegend = new QLabel(volumePanel);
+    volumeLegend->setFixedHeight(10);
+    volumeLegend->setStyleSheet(QStringLiteral(
+        "background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+        "stop:0 #f2a24f, stop:0.5 #efd3a8, stop:1 #9fc4ea);"
+        "border-radius:3px;"));
+    auto *legendText = new QLabel(
+        QStringLiteral("近处/软组织（暖）　→　深处/骨·对比剂（冷）"), volumePanel);
+    legendText->setStyleSheet(QStringLiteral("color:#7b8798;font-size:10px;"));
     volumeLayout->addWidget(volumeTitle);
     volumeLayout->addWidget(m_volumeView, 1);
+    volumeLayout->addWidget(volumeLegend);
+    volumeLayout->addWidget(legendText);
     volumeLayout->addWidget(m_volumeStatus);
     centerSplit->addWidget(volumePanel);
     centerSplit->setStretchFactor(0, 1);
