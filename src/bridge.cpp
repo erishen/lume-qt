@@ -685,6 +685,9 @@ void Bridge::restoreLastVolume()
             {QStringLiteral("savedAtUs"), obj.value(QStringLiteral("tsUs")).toDouble()},
         });
     }
+    // 恢复出来的真实数据同样是权威来源：不能被几百毫秒后的样例自动加载覆盖。
+    // 没有这一行，重启后原生面板会先画出上次那一例，随即被演示样例顶掉。
+    m_authoritativeVolumeDir = dir;
     loadDicomVolume(dir);
 }
 

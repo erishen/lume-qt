@@ -23,6 +23,9 @@ class NativeVitalStrip;
  * 诊断：自定义 QWebEnginePage 把前端 console.log / JS 异常 / WebGL 错误
  *       转发到 Qt 日志（stderr），避免“前端全黑但终端毫无线索”。
  */
+class QLabel;
+class VolumeView;
+
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -33,6 +36,7 @@ public:
 
 private:
     void setupWebChannel();
+    void setupNativeVolume();
     void setupConsoleBridge();
     void setupNativeStrip();
 
@@ -42,4 +46,6 @@ private:
     AppSchemeHandler *m_schemeHandler = nullptr;
     Bridge *m_bridge = nullptr;
     NativeVitalStrip *m_strip = nullptr;
+    VolumeView *m_volumeView = nullptr;
+    QLabel *m_volumeStatus = nullptr;
 };

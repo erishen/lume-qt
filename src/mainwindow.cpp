@@ -7,7 +7,9 @@
 #include <QWebEngineScript>
 #include <QWebEngineScriptCollection>
 #include <QWebEngineSettings>
+#include <QLabel>
 #include <QShortcut>
+#include <QSplitter>
 #include <QWebEngineView>
 #include <QTimer>
 #include <QUrl>
@@ -22,6 +24,7 @@
 #include "bridge.h"
 #include "consolepage.h"
 #include "vitalstrip.h"
+#include "volumeview.h"
 
 namespace {
 /// 前端诊断探针脚本：捕获 WebGL 上下文创建失败与着色器编译/链接错误。
@@ -124,14 +127,38 @@ MainWindow::MainWindow(QWidget *parent)
     m_profile->settings()->setAttribute(
         QWebEngineSettings::JavascriptCanOpenWindows, true);
 
-    // 中央区 = WebView（弹性）+ 底部原生波形条（固定高度）。
+    // 中央区 = WebView（弹性）+ 右侧原生体渲染（固定宽度）+ 底部原生波形条。
+    // 体渲染放在 WebView 外面是刻意的：同一份 128³ 数据同时走两条路径，
+    // 哪条在遮挡/后台时停更，一眼就能对比出来。
     auto *central = new QWidget(this);
     auto *centralLayout = new QVBoxLayout(central);
     centralLayout->setContentsMargins(0, 0, 0, 0);
     centralLayout->setSpacing(0);
 
-    m_view = new QWebEngineView(m_profile, central);
-    centralLayout->addWidget(m_view, 1);
+    auto *centerSplit = new QSplitter(Qt::Horizontal, central);
+    m_view = new QWebEngineView(m_profile, centerSplit);
+    centerSplit->addWidget(m_view);
+
+    auto *volumePanel = new QWidget(centerSplit);
+    auto *volumeLayout = new QVBoxLayout(volumePanel);
+    volumeLayout->setContentsMargins(8, 8, 8, 8);
+    volumeLayout->setSpacing(4);
+    auto *volumeTitle = new QLabel(QStringLiteral("DICOM 体渲染 · 原生 OpenGL（不经 WebView）"),
+                                   volumePanel);
+    volumeTitle->setStyleSheet(QStringLiteral("color:#8fa6c8;font-size:12px;"));
+    m_volumeView = new VolumeView(volumePanel);
+    m_volumeStatus = new QLabel(QStringLiteral("等待体数据…"), volumePanel);
+    m_volumeStatus->setStyleSheet(QStringLiteral("color:#7b8798;font-size:11px;"));
+    m_volumeStatus->setWordWrap(true);
+    volumeLayout->addWidget(volumeTitle);
+    volumeLayout->addWidget(m_volumeView, 1);
+    volumeLayout->addWidget(m_volumeStatus);
+    centerSplit->addWidget(volumePanel);
+    centerSplit->setStretchFactor(0, 1);
+    centerSplit->setStretchFactor(1, 0);
+    centerSplit->setSizes({840, 420});
+
+    centralLayout->addWidget(centerSplit, 1);
 
     m_strip = new NativeVitalStrip(central);
     centralLayout->addWidget(m_strip, 0);
@@ -143,6 +170,7 @@ MainWindow::MainWindow(QWidget *parent)
     setupConsoleBridge();
     setupWebChannel();
     setupNativeStrip();
+    setupNativeVolume();
 
     // 加载前端（React 构建产物）
     // 若设置了 QTRS_DEV_URL（如 http://localhost:5173），则加载 Vite 开发服务器，
@@ -185,6 +213,49 @@ void MainWindow::setupWebChannel()
     QWebChannel *channel = new QWebChannel(this);
     channel->registerObject(QStringLiteral("bridge"), m_bridge);
     m_page->setWebChannel(channel);
+}
+
+void MainWindow::setupNativeVolume()
+{
+    // QTRS_NATIVE_VOLUME=0 可关掉右侧面板（只保留网页侧体渲染，用于对照）。
+    const QByteArray enable = qgetenv("QTRS_NATIVE_VOLUME");
+    if (enable == "0") {
+        if (m_volumeView) {
+            if (auto *panel = m_volumeView->parentWidget()) panel->setVisible(false);
+        }
+        qInfo() << "[Volume] 原生体渲染面板已按 QTRS_NATIVE_VOLUME=0 关闭";
+        return;
+    }
+    if (m_bridge == nullptr || m_volumeView == nullptr) return;
+
+    connect(m_bridge, &Bridge::dicomVolumeReady, this,
+            [this](const QVariantMap &meta, const QString &volumeUrl) {
+        Q_UNUSED(volumeUrl);
+        const QVariantList dims = meta.value(QStringLiteral("dims")).toList();
+        const int dim = dims.isEmpty() ? 128 : dims.at(0).toInt();
+        m_volumeView->setVolume(m_bridge->volumeBytes(), dim, meta);
+        if (m_volumeStatus) {
+            m_volumeStatus->setText(
+                QStringLiteral("%1³ · %2 KB · 来源 %3")
+                    .arg(dim)
+                    .arg(m_bridge->volumeBytes().size() / 1024)
+                    .arg(meta.value(QStringLiteral("source")).toString()));
+        }
+    });
+    connect(m_bridge, &Bridge::dicomVolumeError, this, [this](const QString &message) {
+        if (m_volumeStatus) m_volumeStatus->setText(QStringLiteral("解析失败：%1").arg(message));
+    });
+    connect(m_volumeView, &VolumeView::firstFrameRendered, this,
+            [this](int ms, const QString &dims) {
+        if (m_bridge) {
+            m_bridge->logAuditEvent(QVariantMap{
+                {QStringLiteral("type"), QStringLiteral("dicom.volumeNativeFrame")},
+                {QStringLiteral("ms"), ms},
+                {QStringLiteral("dims"), dims},
+                {QStringLiteral("source"), QStringLiteral("native-opengl")},
+            });
+        }
+    });
 }
 
 void MainWindow::setupNativeStrip()

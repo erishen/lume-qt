@@ -19,6 +19,7 @@ find_package(Qt6 REQUIRED COMPONENTS
     Core
     Positioning
     Multimedia
+    OpenGLWidgets
 )
 
 # DICOM 解析（DCMTK 3.7.x，brew install dcmtk）
@@ -95,6 +96,8 @@ qt_add_executable(qt-react-shell
     src/consolepage.h
     src/vitalstrip.cpp
     src/vitalstrip.h
+    src/volumeview.cpp
+    src/volumeview.h
 )
 
 # 设置编译器警告（目标定义后设置）
@@ -127,6 +130,7 @@ target_link_libraries(qt-react-shell PRIVATE
     Qt6::WebChannel
     Qt6::Network
     Qt6::Multimedia
+    Qt6::OpenGLWidgets
     DCMTK::dcmdata
     DCMTK::dcmnet
     DCMTK::oflog
