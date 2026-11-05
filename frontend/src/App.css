@@ -566,6 +566,10 @@ button:disabled {
 .pacs-chip.idle {
   color: #94a3b8;
 }
+/* 上次会话异常结束：琥珀色，区别于「连通失败」的红与「正常」的绿 */
+.pacs-chip.warn {
+  color: #f5b04b;
+}
 
 /* PACS 取回：一个动作按钮，取回后由 dicomVolumeReady 触发体数据重解析 */
 .pacs-retrieve {

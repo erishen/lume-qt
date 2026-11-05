@@ -100,6 +100,9 @@ public:
     /// 最近一次 PACS 状态快照。信号可能在前端订阅之前就发过（启动即探测），
     /// 只靠信号会让界面永远停在「未配置」——和时钟口径一样，必须能拉一次当前值。
     Q_INVOKABLE QVariantMap pacsState() const;
+
+    /// 上一次运行是否异常结束（没有 session.end）：{previousSession, previousStart, gapSeconds, events}
+    Q_INVOKABLE QVariantMap lastRecovery() const;
     /// C-GET 取回整例检查到本地目录，成功后自动重解析并替换当前体数据。
     /// 这是把「PACS 上有」变成「屏幕上能看到」的那一步。
     Q_INVOKABLE void pacsRetrieveStudy(const QString &host, int port,
@@ -150,12 +153,23 @@ signals:
     void dicomVolumeError(const QString &message);
     // PACS 结果：{ok, host, port, calledAe, roundTripMs, message, tsUs}
     void pacsStatus(const QVariantMap &status);
+    /// 启动时发现上次会话未正常关闭（进程被杀/崩溃）：恢复到「有明确状态」而不是静默空白
+    void sessionRecovered(const QVariantMap &info);
+
     // C-FIND 结果：studies 列表 + {count, host, calledAe, tsUs}
     void pacsStudies(const QVariantList &studies, const QVariantMap &meta);
     // 取回结果：{ok, studyUid, files, dir, ms, message, detail}
     void pacsRetrieve(const QVariantMap &status);
 
 private:
+    /// 扫描台账找出未闭合的会话（进程被杀/崩溃时没有 session.end）
+    void recoverLastSession();
+    /// 恢复上次的体数据来源：重启后先看到上次那一例，而不是空白或样例
+    void restoreLastVolume();
+    /// 记录「当前显示的体数据来自哪个目录」，供下次启动恢复
+    void saveVolumeState(const QString &directory);
+    QString stateFilePath() const;
+
     /// 当前时刻（epoch 微秒）。给 DICOM 等非设备来源的载荷打时间戳。
     static double nowMicros();
 
@@ -167,6 +181,8 @@ private:
 
     /// 事件台账（JSON Lines）。一行一条，按天切分。
     class AuditSink *m_audit = nullptr;
+    /// 上次运行异常结束的摘要（空表示上次是正常退出或没有历史）
+    QVariantMap m_recovery;
 
     /// PACS 后台请求（单飞：上一次没回来就不再发，避免网络卡住时堆线程）
     /// 解析在途时的排队目录：PACS 取回与前端样例加载会撞在一起，

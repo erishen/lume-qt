@@ -68,7 +68,7 @@
 | --- | --- | --- | --- | --- |
 | QRS-F-001 | 前端崩溃或卡死时，关键波形与报警仍可用 | `src/vitalstrip.cpp` | 原生条独立于 WebView；`QTRS_FAULT` 下仍显示冻结帧与时长 | 已验证 |
 | QRS-F-002 | 静音有时限（≤5 分钟），到期自动恢复提示并留痕 | `src/vitalstrip.cpp` | 6 秒静音到期后边框回红，`alarm.unmute(reason=expired)` | 已验证 |
-| QRS-F-003 | 主进程异常退出后，重启能恢复到「有明确状态」而不是静默空白 | — | — | 缺口 |
+| QRS-F-003 | 主进程异常退出后，重启能恢复到「有明确状态」而不是静默空白 | `src/bridge.cpp` `frontend/src/MedicalMonitor.tsx` | `kill -9` 后重启：`session.recovered(gapSeconds=4, events=8)` + 看板琥珀提示 + 上次体数据自动重建 60 层 | 已验证 |
 | QRS-F-004 | 手术室内无外网时，功能不得依赖任何在线服务 | `src/pacsclient.cpp` `src/bridge.cpp` | PACS 全部为本机/院内地址；断网时进入未连通态而非崩溃 | 部分验证 |
 
 ## G. 法规与流程
@@ -97,6 +97,7 @@
 | `20e7385` | QRS-N-004、QRS-F-002 |
 | 本批（报警分级） | QRS-N-005、QRS-N-006 |
 | 本批（多例选择） | QRS-I-005 |
+| 本批（重启恢复） | QRS-F-003 |
 
 统计不手写：`make trace` 每次重新数一遍，缺口或引用失效会直接报错。
 

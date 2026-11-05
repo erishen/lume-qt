@@ -80,6 +80,8 @@ export interface Bridge {
   pacsFindStudies(host: string, port: number, calledAe: string): void
   /** 最近一次 PACS 状态快照（空对象表示从未配置/探测过） */
   pacsState(): Promise<Partial<PacsStatus> & { count?: number; studyUid?: string; studies?: PacsStudy[] }>
+  /** 上次运行是否异常结束：空对象表示上次正常退出或没有历史 */
+  lastRecovery(): Promise<SessionRecovery>
   /** C-GET 取回整例检查；成功后 C++ 侧自动重解析并替换当前体数据 */
   pacsRetrieveStudy(host: string, port: number, calledAe: string, studyUid: string): void
 
@@ -100,6 +102,7 @@ export interface Bridge {
   dicomVolumeError: QtSignal<(message: string) => void>
   pacsStatus: QtSignal<(status: PacsStatus) => void>
   pacsStudies: QtSignal<(studies: PacsStudy[], meta: PacsQueryMeta) => void>
+  sessionRecovered: QtSignal<(info: SessionRecovery) => void>
   pacsRetrieve: QtSignal<(status: PacsRetrieveStatus) => void>
 }
 
@@ -120,6 +123,15 @@ export interface PacsStatus {
 }
 
 /** C-FIND 返回的一例检查 */
+/** 上次会话异常结束（进程被杀/崩溃）的摘要 */
+export interface SessionRecovery {
+  previousSession?: string
+  previousStart?: string
+  previousLastEvent?: string
+  gapSeconds?: number
+  events?: number
+}
+
 export interface PacsStudy {
   patientName?: string
   patientId?: string

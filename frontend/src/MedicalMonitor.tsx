@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Bridge, DicomVolumeMeta, Intervention, PacsQueryMeta, PacsRetrieveStatus, PacsStatus, PacsStudy, Vitals } from './qwebchannel'
+import type { Bridge, DicomVolumeMeta, Intervention, PacsQueryMeta, PacsRetrieveStatus, PacsStatus, PacsStudy, SessionRecovery, Vitals } from './qwebchannel'
 import Neuro3D from './Neuro3D'
 import Volume3D from './Volume3D'
 import { createSyntheticBrain } from './syntheticVolume'
@@ -562,6 +562,8 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
   // PACS 状态：接入现场第一句要问的就是「连上了吗、库里有几例」，
   // 它和延迟指标同屏，免得再去翻日志。
   const [pacs, setPacs] = useState<{ ok: boolean; rttMs: number; count: number; ae: string; message: string } | null>(null)
+  // 上次进程被杀/崩溃后留下的摘要：术中重启必须一眼看到「上次没正常收尾」
+  const [recovery, setRecovery] = useState<SessionRecovery | null>(null)
   // C-FIND 命中多例时，取回哪一例不能默认「第一例」；这里保留整份列表并允许切换。
   const [studies, setStudies] = useState<PacsStudy[]>([])
   const [studyUid, setStudyUid] = useState('')
@@ -632,6 +634,13 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
           : prev,
       )
     }
+    const onRecovered = (info: SessionRecovery) => {
+      if (info && info.previousSession) setRecovery(info)
+    }
+    bridge.sessionRecovered?.connect?.(onRecovered)
+    void bridge.lastRecovery?.().then((info) => {
+      if (info && info.previousSession) setRecovery(info)
+    })
     bridge.pacsStatus.connect(onStatus)
     bridge.pacsStudies.connect(onStudies)
     bridge.pacsRetrieve.connect(onRetrieve)
@@ -649,6 +658,7 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
       if (st.studyUid) setStudyUid(st.studyUid)
     })
     return () => {
+      bridge.sessionRecovered?.disconnect?.(onRecovered)
       bridge.pacsStatus.disconnect(onStatus)
       bridge.pacsStudies.disconnect(onStudies)
       bridge.pacsRetrieve.disconnect(onRetrieve)
@@ -688,6 +698,15 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
           ) : (
             <span className="pacs-chip idle">{' · PACS 未配置'}</span>
           )}
+          {recovery ? (
+            <span
+              className="pacs-chip warn"
+              title={`上次会话 ${recovery.previousSession} 于 ${recovery.previousStart ?? '?'} 开始，最后一条事件 ${recovery.previousLastEvent ?? '?'}，距今 ${recovery.gapSeconds ?? 0} s，共 ${recovery.events ?? 0} 条`}
+            >
+              {' · 上次异常结束 '}
+              {(recovery.previousStart ?? '').slice(11, 16)}
+            </span>
+          ) : null}
           {pacs?.ok && studies.length > 0 ? (
             <select
               className="pacs-study"

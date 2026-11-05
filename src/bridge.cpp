@@ -4,7 +4,12 @@
 #include "dicomreader.h"
 #include "pacsclient.h"
 
+#include <QCoreApplication>
+#include <QDir>
 #include <QElapsedTimer>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QStandardPaths>
 
 namespace {
@@ -83,6 +88,27 @@ Bridge::Bridge(QObject *parent)
         {QStringLiteral("platform"), m_audit->filePath().isEmpty() ? QStringLiteral("unknown")
                                                                    : QSysInfo::productType()},
     });
+
+    // 崩溃/被杀之后的重启：先回答「上次是怎么结束的」，再恢复上次看的那一例。
+    // 术中重启最怕的不是空白，而是「看起来正常、但不知道之前发生了什么」。
+    recoverLastSession();
+    if (!m_recovery.isEmpty()) {
+        const QVariantMap info = m_recovery;
+        m_audit->record(QStringLiteral("session.recovered"), info);
+        qWarning().noquote() << QStringLiteral("[Recovery] 上次会话未正常结束：%1（距今 %2 s，%3 条事件）")
+                                    .arg(info.value(QStringLiteral("previousSession")).toString())
+                                    .arg(info.value(QStringLiteral("gapSeconds")).toInt())
+                                    .arg(info.value(QStringLiteral("events")).toInt());
+    }
+    connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, this, [this]() {
+        if (m_audit) {
+            m_audit->record(QStringLiteral("session.end"), {
+                {QStringLiteral("reason"), QStringLiteral("quit")},
+                {QStringLiteral("events"), m_audit->count()},
+            });
+        }
+    });
+    QTimer::singleShot(900, this, [this]() { restoreLastVolume(); });
 
     // QTRS_PACS=host:port:calledAE 时启动后自动做一次 C-ECHO：
     // 接入现场第一步永远是「能不能连上」，让它自己先答一次，而不是等人点按钮。
@@ -601,6 +627,116 @@ QVariantMap Bridge::providerInfo() const
     return info;
 }
 
+QVariantMap Bridge::lastRecovery() const
+{
+    return m_recovery;
+}
+
+QString Bridge::stateFilePath() const
+{
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                        + QStringLiteral("/state");
+    QDir().mkpath(dir);
+    return dir + QStringLiteral("/last-volume.json");
+}
+
+void Bridge::saveVolumeState(const QString &directory)
+{
+    // 样例目录不记：下次启动仍会走样例自动加载，记下来只会让状态文件说谎。
+    if (directory.isEmpty() || directory == QStringLiteral(DICOM_SAMPLE_PATH)) return;
+    QJsonObject obj;
+    obj.insert(QStringLiteral("dir"), directory);
+    obj.insert(QStringLiteral("tsUs"), nowMicros());
+    QFile f(stateFilePath());
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        qWarning().noquote() << "[Recovery] 无法写入状态文件：" << f.errorString();
+        return;
+    }
+    f.write(QJsonDocument(obj).toJson(QJsonDocument::Compact));
+}
+
+void Bridge::restoreLastVolume()
+{
+    if (qEnvironmentVariableIsSet("QTRS_NO_RESTORE")) return;
+    QFile f(stateFilePath());
+    if (!f.open(QIODevice::ReadOnly)) return;
+    const QJsonObject obj = QJsonDocument::fromJson(f.readAll()).object();
+    const QString dir = obj.value(QStringLiteral("dir")).toString();
+    if (dir.isEmpty() || !QDir(dir).exists()) {
+        qInfo().noquote() << "[Recovery] 上次的体数据目录已不存在，跳过恢复：" << dir;
+        return;
+    }
+    qInfo().noquote() << "[Recovery] 恢复上次体数据来源：" << dir;
+    if (m_audit) {
+        m_audit->record(QStringLiteral("volume.restore"), {
+            {QStringLiteral("dir"), dir},
+            {QStringLiteral("savedAtUs"), obj.value(QStringLiteral("tsUs")).toDouble()},
+        });
+    }
+    loadDicomVolume(dir);
+}
+
+void Bridge::recoverLastSession()
+{
+    // 台账按天切分：崩溃可能跨零点，因此今天与昨天都要看。
+    const QString auditDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                             + QStringLiteral("/audit");
+    const QDate today = QDate::currentDate();
+    QStringList files;
+    for (int back = 1; back >= 0; --back) {
+        files << QStringLiteral("%1/audit-%2.jsonl")
+                     .arg(auditDir, today.addDays(-back).toString(QStringLiteral("yyyyMMdd")));
+    }
+
+    QMap<QString, QJsonObject> starts;   // session -> session.start 事件
+    QSet<QString> ended;
+    QMap<QString, QJsonObject> lastOf;   // session -> 最后一条事件
+    QMap<QString, int> counts;           // session -> 事件条数
+    for (const QString &path : files) {
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly)) continue;
+        while (!f.atEnd()) {
+            const QByteArray line = f.readLine().trimmed();
+            if (line.isEmpty()) continue;
+            const QJsonObject ev = QJsonDocument::fromJson(line).object();
+            const QString type = ev.value(QStringLiteral("type")).toString();
+            const QString session = ev.value(QStringLiteral("session")).toString();
+            if (session.isEmpty()) continue;
+            lastOf.insert(session, ev);
+            counts[session] += 1;
+            if (type == QStringLiteral("session.start")) starts.insert(session, ev);
+            else if (type == QStringLiteral("session.end")) ended.insert(session);
+        }
+    }
+
+    // 只看「最近一次运行」：它没写 session.end 才算异常结束。
+    // 更早的未闭合会话是历史，已经在当时的重启里报过；否则告警会一直挂着不走。
+    const QString current = m_audit ? m_audit->sessionId() : QString();
+    QString latest;
+    double latestTs = 0.0;
+    for (auto it = starts.cbegin(); it != starts.cend(); ++it) {
+        if (it.key() == current) continue;
+        const double ts = it.value().value(QStringLiteral("tsUs")).toDouble();
+        if (ts > latestTs) {
+            latestTs = ts;
+            latest = it.key();
+        }
+    }
+    if (latest.isEmpty() || ended.contains(latest)) return;
+    const QString candidate = latest;
+
+    const double lastTs = lastOf.value(candidate).value(QStringLiteral("tsUs")).toDouble();
+    m_recovery.insert(QStringLiteral("previousSession"), candidate);
+    m_recovery.insert(QStringLiteral("previousStart"),
+                      starts.value(candidate).value(QStringLiteral("ts")).toString());
+    m_recovery.insert(QStringLiteral("previousLastEvent"),
+                      lastOf.value(candidate).value(QStringLiteral("type")).toString());
+    m_recovery.insert(QStringLiteral("tsUs"), lastTs);
+    m_recovery.insert(QStringLiteral("events"), counts.value(candidate));
+    m_recovery.insert(QStringLiteral("gapSeconds"),
+                      static_cast<int>(qRound((nowMicros() - lastTs) / 1000000.0)));
+}
+
 void Bridge::loadDicomVolume(const QString &directory)
 {
     // 重入保护：只允许一个在途 DICOM 解析（UI 实际只触发一次，此处仅为
@@ -651,6 +787,8 @@ void Bridge::loadDicomVolume(const QString &directory)
                     {QStringLiteral("bytes"), static_cast<double>(data.size())},
                     {QStringLiteral("dims"), meta.value(QStringLiteral("dims"))},
                 });
+                // 记住来源：进程被杀后重启，先把上次这一例恢复出来
+                saveVolumeState(meta.value(QStringLiteral("source")).toString());
                 emit dicomVolumeReady(meta, QStringLiteral("app://app/__volume/current.bin"));
             });
         } else {
