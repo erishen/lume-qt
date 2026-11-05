@@ -429,9 +429,10 @@ void VolumeView::renderFrame()
 
     // 离屏按设备像素 1:1 渲染：曾经按 dpr/2 降采样，Retina 上等于把 808px 的画面
     // 用 404px 渲染再拉大，边界全部糊掉——这是「不清晰」的主要来源。
-    // 1.5x 超采样再缩回控件尺寸：384px 上的等值面轮廓原本是锯齿，直接 1:1
-    // 只是不糊，边缘仍然毛；超采样把轮廓磨平，代价约 2.2 倍像素。
-    const double superSample = 1.5;
+    // 1:1 设备像素。试过 1.5× 超采样再缩回控件尺寸，轮廓确实更平滑，但每像素
+    // 平均掉 2.25 个样本，脑沟那种高频明暗被抹成一片——观感上反而「不如以前清楚」。
+    // 保留 1:1，抗锯齿交给体数据本身的线性插值与轮廓光。
+    const double superSample = 1.0;
     const int targetW = std::clamp(
         static_cast<int>(width() * devicePixelRatioF() * superSample), 320, 2400);
     const int targetH = std::clamp(
