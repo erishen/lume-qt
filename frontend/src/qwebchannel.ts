@@ -79,7 +79,7 @@ export interface Bridge {
   /** STUDY 级 C-FIND，枚举该 AE 上的检查 */
   pacsFindStudies(host: string, port: number, calledAe: string): void
   /** 最近一次 PACS 状态快照（空对象表示从未配置/探测过） */
-  pacsState(): Promise<Partial<PacsStatus> & { count?: number; studyUid?: string }>
+  pacsState(): Promise<Partial<PacsStatus> & { count?: number; studyUid?: string; studies?: PacsStudy[] }>
   /** C-GET 取回整例检查；成功后 C++ 侧自动重解析并替换当前体数据 */
   pacsRetrieveStudy(host: string, port: number, calledAe: string, studyUid: string): void
 

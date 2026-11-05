@@ -562,7 +562,8 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
   // PACS 状态：接入现场第一句要问的就是「连上了吗、库里有几例」，
   // 它和延迟指标同屏，免得再去翻日志。
   const [pacs, setPacs] = useState<{ ok: boolean; rttMs: number; count: number; ae: string; message: string } | null>(null)
-  // 取回按钮需要 StudyInstanceUID；这里记第一例，够用且不需要另建病人浏览器
+  // C-FIND 命中多例时，取回哪一例不能默认「第一例」；这里保留整份列表并允许切换。
+  const [studies, setStudies] = useState<PacsStudy[]>([])
   const [studyUid, setStudyUid] = useState('')
   const [retrieving, setRetrieving] = useState(false)
   // 取回失败会按退避自动重试；这里把「第几次 / 为什么」写在按钮上，
@@ -604,8 +605,12 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
         ae: meta.calledAe,
         message: meta.message,
       }))
-      const uid = studies.find((s) => s.studyInstanceUid)?.studyInstanceUid
-      setStudyUid(uid ?? '')
+      setStudies(studies)
+      // 已选的那一例还在就保留选择，否则退回第一例（不要每次查询都把用户的选择顶掉）
+      setStudyUid((prev) => {
+        if (prev && studies.some((s) => s.studyInstanceUid === prev)) return prev
+        return studies.find((s) => s.studyInstanceUid)?.studyInstanceUid ?? ''
+      })
     }
     const onRetrieve = (st: PacsRetrieveStatus) => {
       if (st.method === 'get' || st.method === 'move') setRetrieveMethod(st.method)
@@ -640,6 +645,7 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
         ae: st.calledAe ?? '',
         message: st.message ?? '',
       })
+      if (st.studies?.length) setStudies(st.studies)
       if (st.studyUid) setStudyUid(st.studyUid)
     })
     return () => {
@@ -682,6 +688,22 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
           ) : (
             <span className="pacs-chip idle">{' · PACS 未配置'}</span>
           )}
+          {pacs?.ok && studies.length > 0 ? (
+            <select
+              className="pacs-study"
+              value={studyUid}
+              aria-label="选择检查"
+              onChange={(e) => setStudyUid(e.target.value)}
+            >
+              {studies.map((s) => (
+                <option key={s.studyInstanceUid} value={s.studyInstanceUid}>
+                  {[s.patientName, s.studyDate, s.modality, s.series ? `${s.series} 序列` : '']
+                    .filter(Boolean)
+                    .join(' · ')}
+                </option>
+              ))}
+            </select>
+          ) : null}
           {pacs?.ok && studyUid && pacsRef.current ? (
             <button
               type="button"
@@ -691,7 +713,6 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
               onClick={() => {
                 const target = pacsRef.current
                 if (!target) return
-                setRetrieving(true)
                 setRetrieving(true)
                 setRetrieveNote('')
                 bridge?.pacsRetrieveStudy(target.host, target.port, target.ae, studyUid)

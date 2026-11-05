@@ -538,6 +538,9 @@ void Bridge::pacsFindStudies(const QString &host, int port, const QString &calle
                 });
             }
             m_pacsState.insert(QStringLiteral("count"), list.size());
+            // 整份列表进快照：前端刷新或晚订阅时仍能在多例之间切换，
+            // 而不是只认「第一例」。
+            m_pacsState.insert(QStringLiteral("studies"), list);
             // 第一例的 StudyInstanceUID 一并进快照：取回按钮依赖它，
             // 前端晚订阅就会拿不到 studies 信号。
             m_pacsState.insert(QStringLiteral("studyUid"),

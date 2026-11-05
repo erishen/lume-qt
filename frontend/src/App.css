@@ -586,3 +586,18 @@ button:disabled {
   opacity: 0.55;
   cursor: default;
 }
+
+/* 多例选择：现场常有多例检查，选择器要窄到能和「取回」挤在同一行 */
+.pacs-study {
+  margin-left: 10px;
+  max-width: 260px;
+  padding: 2px 6px;
+  font-size: 11px;
+  color: #cbd5e1;
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 6px;
+}
+.pacs-study:focus {
+  outline: 1px solid #64748b;
+}
