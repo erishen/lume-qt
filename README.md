@@ -194,7 +194,14 @@ bridge.dataFromCpp.connect((payload) => {
 除实时监护数据外，C++ 侧还集成了 DICOM 解析能力，用于加载真实医学影像序列并在前端做三维体积渲染：
 
 - **解析**：`DicomReader`（基于 DCMTK）扫描目录下所有 `.dcm`，按空间 Z（无 Z 时按 `InstanceNumber`）排序，最近邻重采样到 `128³`，灰度归一化为 `uint8`，经 `std::thread` 后台线程解析避免阻塞 UI。
-- **桥接**：`bridge.loadDicomVolume(directory)` 触发解析，结果通过 `dicomVolumeReady(meta, base64Pixels)` 信号回传 JS（base64 编码的 `uint8` 体积 + `dims`/`spacing`/`slices` 元数据）；失败发 `dicomVolumeError`。
+- **健壮性**（均由 `tests/bridge_test.cpp` 的 `DicomReaderRobustness.*` 覆盖）：
+  - 矩阵尺寸不一致的切片（如序列里混入不同 Rows/Columns）按出现次数最多的尺寸为基准剔除，计入 `meta.skipped`；不再按首张切片的步长索引全部切片（那会越界读）；
+  - Z 位置缺失用独立标记判断，`z == 0` 不再被当作"没有位置"（否则居中采集的中间层会排到最前，串层）；
+  - 缺少 `RescaleSlope` / `RescaleIntercept` 的序列按 1/0 处理。DCMTK 的 `findAndGetFloat64` 在标签缺失时会把出参写成 0，曾导致 MR 序列整卷全零、前端黑屏（样例脑部 T1 恰好显式写了 1/0，掩盖了这个坑）；
+  - 像素以 `uint16` 原始样本保存，符号与 rescale 在采样时应用：384 张 384×274 的序列常驻约 77MB，此前用 `double` 存是约 308MB；
+  - `meta.spacing[2]` 取相邻层间距的中位数，缺失 Z 时退回 `SliceThickness`（层厚 ≠ 层间距，有 gap 时差异明显）。
+- **取消**：解析支持协作式取消（每个文件 / 每个 Z 层检查一次）。`~Bridge` 先置 `alive=false` 再置 `cancel=true` 后 join，因此关窗不会被整卷解析拖住数秒。
+- **桥接**：`bridge.loadDicomVolume(directory)` 触发解析，结果通过 `dicomVolumeReady(meta, base64Pixels)` 信号回传 JS（base64 编码的 `uint8` 体积 + `dims`/`spacing`/`slices`/`skipped` 元数据）；失败发 `dicomVolumeError`。
 - **样例数据**：`bridge.dicomSamplePath()` 返回内置脑部 T1 MRI 序列目录 `resources/dicom/brain-t1`（约 384 张切片）。
 - **渲染**：前端 `Volume3D.tsx` 用 Three.js 体绘制/切片渲染该体积；脱离 Qt 时由 `syntheticVolume.ts` 程序化合成一个合成脑体，保证纯浏览器预览也能看到体积效果。
 
@@ -206,7 +213,7 @@ bridge.dataFromCpp.connect((payload) => {
 
 我们集成了 **Google Test** 框架，用于 C++ 核心模块测试：
 
-- **测试范围**：Bridge 类的基本功能、医疗模拟控制、错误处理、类型安全
+- **测试范围**：Bridge 类的基本功能、医疗模拟控制、错误处理、类型安全；DICOM 后台加载的竞态 / 析构安全 / 载荷可渲染性，以及 `DicomReaderRobustness.*`（z=0 排序、混合矩阵剔除、协作式取消）
 - **测试目标**：`make run-tests` → 运行所有 C++ 单元测试
 - **测试框架**：使用 Google Test，提供丰富的断言和测试生命周期管理
 
@@ -252,7 +259,12 @@ test('handles ecg updates', () => {
 
 ### CI/CD 集成
 
-所有测试通过 **GitHub Actions** 自动集成：
+> **状态：尚未接入。** 仓库目前没有 `.github/workflows/`，也没有配置远端，质量门就是本地的
+> `make run-tests`。下面的 workflow 只是**预期模板**：落地前需先在 Ubuntu 侧确认
+> `qt6-webengine-dev` / `libdcmtk-dev` 的可安装性（Qt WebEngine 在部分发行版仓库里缺包），
+> 再把模板写进 `.github/workflows/ci.yml`。
+
+预期配置如下：
 
 ```yaml
 name: CI
@@ -300,8 +312,8 @@ make test-all
 
 ### 测试质量保证
 
-- **自动化测试**：所有测试通过 CI/CD 自动运行
-- **质量门**：测试失败会阻止合并
+- **自动化测试**：本地 `make run-tests`（C++ Google Test）为质量门；CI 尚未接入（见上节）
+- **质量门**：主目标与 `bridge_test` 共用同一套 `-Wall -Wextra -Werror -Wconversion` 编译选项，测试代码不比产品代码宽松；测试失败即以非零码退出
 - **测试数据**：为每个测试提供可重现的数据
 - **错误处理测试**：验证错误场景的处理
 - **性能测试**：验证关键路径的性能指标

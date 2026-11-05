@@ -57,11 +57,18 @@ frontend: deps
 	cd $(ROOT)/frontend && $(NPM) run build
 
 ## 配置 CMake（仅在需要时重新生成）
+# 已有 build.ninja 时跳过：全量 configure 约 13s，而 CMakeLists / tests/CMakeLists
+# 变更时 ninja 自己会 regenerate（build.ninja 依赖这些文件），没必要每次 make 都跑。
+# 需要强制重新 configure 时：rm -rf build（或 make clean）后重跑。
 configure:
-	@echo "==> [cmake] configure -G $(GENERATOR)"
-	$(CMAKE) -S $(ROOT) -B $(BUILD_DIR) \
-		-DCMAKE_PREFIX_PATH=$(PREFIX_PATH) \
-		-G $(GENERATOR)
+	@if [ -f "$(BUILD_DIR)/build.ninja" ]; then \
+		echo "==> [cmake] 已有 build.ninja，跳过 configure（改动 CMakeLists 时 ninja 自动 regenerate）"; \
+	else \
+		echo "==> [cmake] configure -G $(GENERATOR)"; \
+		$(CMAKE) -S $(ROOT) -B $(BUILD_DIR) \
+			-DCMAKE_PREFIX_PATH=$(PREFIX_PATH) \
+			-G $(GENERATOR); \
+	fi
 
 ## 编译 C++（CMake 的 frontend-build 目标会自动同步前端）
 cpp: configure deps
