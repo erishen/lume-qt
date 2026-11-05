@@ -125,13 +125,41 @@ Bridge::~Bridge()
     }
 }
 
+namespace {
+
+/// 心跳间隔：默认 30 s，`QTRS_PACS_HEARTBEAT_MS=0` 可关闭。
+/// 术中 PACS 掉线必须由自己发现，不能等下一次有人点「取回」才知道。
+int pacsHeartbeatIntervalMs()
+{
+    const QByteArray raw = qgetenv("QTRS_PACS_HEARTBEAT_MS");
+    if (raw.isEmpty()) return 30000;
+    bool ok = false;
+    const int ms = raw.toInt(&ok);
+    if (!ok || ms < 0) return 30000;
+    return ms;
+}
+
+constexpr int kPacsRetrieveMaxAttempts = 3;
+
+} // namespace
+
 void Bridge::pacsProbe(const QString &host, int port, const QString &calledAe)
 {
+    probePacs(host, port, calledAe, false);
+}
+
+void Bridge::probePacs(const QString &host, int port, const QString &calledAe, bool heartbeat)
+{
     if (m_pacsBusy) {
+        // 心跳撞上正在跑的取回时直接跳过：网络卡住时堆探测只会让两边都超时。
         qInfo() << "[PACS] 上一次请求尚未返回，跳过本次探测";
         return;
     }
     m_pacsBusy = true;
+
+    m_pacsHost = host;
+    m_pacsPort = port;
+    m_pacsAe = calledAe;
 
     PacsClient::Endpoint ep;
     ep.host = host;
@@ -142,16 +170,23 @@ void Bridge::pacsProbe(const QString &host, int port, const QString &calledAe)
     holder->alive = true;
     m_pacsHolder = holder;
 
-    qInfo().noquote() << QStringLiteral("[PACS] C-ECHO → %1:%2 AE=%3")
-                             .arg(host).arg(port).arg(calledAe);
-    holder->thread = std::make_unique<std::thread>([this, holder, ep]() {
+    if (!heartbeat) {
+        qInfo().noquote() << QStringLiteral("[PACS] C-ECHO → %1:%2 AE=%3")
+                                 .arg(host).arg(port).arg(calledAe);
+    }
+    holder->thread = std::make_unique<std::thread>([this, holder, ep, heartbeat]() {
         QString err;
         int roundTripMs = -1;
         const bool ok = PacsClient::echo(ep, &err, &roundTripMs);
 
-        QMetaObject::invokeMethod(this, [this, holder, ep, ok, err, roundTripMs]() {
+        QMetaObject::invokeMethod(this, [this, holder, ep, ok, err, roundTripMs, heartbeat]() {
             if (!holder->alive) return;
             m_pacsBusy = false;
+
+            const bool hadState = m_pacsProbed;
+            const bool wasOnline = m_pacsOnline;
+            m_pacsProbed = true;
+            m_pacsOnline = ok;
 
             QVariantMap status;
             status.insert(QStringLiteral("ok"), ok);
@@ -161,32 +196,75 @@ void Bridge::pacsProbe(const QString &host, int port, const QString &calledAe)
             status.insert(QStringLiteral("roundTripMs"), roundTripMs);
             status.insert(QStringLiteral("message"), humanPacsError(err));
             status.insert(QStringLiteral("detail"), err);
+            status.insert(QStringLiteral("heartbeat"), heartbeat);
             status.insert(QStringLiteral("tsUs"), nowMicros());
+            // 心跳不重新枚举，病例数沿用上一次结果，别在看板上闪成 0。
+            const QVariant count = m_pacsState.value(QStringLiteral("count"));
+            if (count.isValid()) status.insert(QStringLiteral("count"), count);
 
-            if (ok) {
-                qInfo().noquote() << QStringLiteral("[PACS] C-ECHO 成功：%1 ms").arg(roundTripMs);
-            } else {
-                qWarning().noquote() << "[PACS] C-ECHO 失败：" << err;
+            if (!heartbeat) {
+                if (ok) {
+                    qInfo().noquote() << QStringLiteral("[PACS] C-ECHO 成功：%1 ms").arg(roundTripMs);
+                } else {
+                    qWarning().noquote() << "[PACS] C-ECHO 失败：" << err;
+                }
+                if (m_audit) {
+                    m_audit->record(ok ? QStringLiteral("pacs.echo")
+                                       : QStringLiteral("pacs.echoFailed"), {
+                        {QStringLiteral("host"), ep.host},
+                        {QStringLiteral("port"), ep.port},
+                        {QStringLiteral("calledAe"), ep.calledAe},
+                        {QStringLiteral("roundTripMs"), roundTripMs},
+                        {QStringLiteral("message"), err},
+                    });
+                }
+            } else if (!hadState || wasOnline != ok) {
+                // 心跳只在「翻转」时留痕：接通 / 掉线各一行，稳态不写。
+                if (ok) {
+                    qInfo().noquote() << QStringLiteral("[PACS] 心跳恢复：%1 ms").arg(roundTripMs);
+                } else {
+                    qWarning().noquote() << "[PACS] 心跳失败：" << err;
+                }
+                if (m_audit) {
+                    m_audit->record(ok ? QStringLiteral("pacs.online")
+                                       : QStringLiteral("pacs.offline"), {
+                        {QStringLiteral("host"), ep.host},
+                        {QStringLiteral("port"), ep.port},
+                        {QStringLiteral("calledAe"), ep.calledAe},
+                        {QStringLiteral("roundTripMs"), roundTripMs},
+                        {QStringLiteral("message"), err},
+                    });
+                }
             }
-            if (m_audit) {
-                m_audit->record(ok ? QStringLiteral("pacs.echo")
-                                   : QStringLiteral("pacs.echoFailed"), {
-                    {QStringLiteral("host"), ep.host},
-                    {QStringLiteral("port"), ep.port},
-                    {QStringLiteral("calledAe"), ep.calledAe},
-                    {QStringLiteral("roundTripMs"), roundTripMs},
-                    {QStringLiteral("message"), err},
-                });
-            }
+
             m_pacsState = status;
-            emit pacsStatus(status);
+
+            // 心跳若每 30 s 推一次状态，前端会把「已连通 N ms」整行刷新；
+            // 只在翻转时推，稳态的往返毫秒变化不值得打扰。
+            if (!heartbeat || !hadState || wasOnline != ok) {
+                emit pacsStatus(status);
+            }
+
             // 连通性确认后立刻枚举一次：接入现场的真实顺序就是「先 echo 再找病人」，
             // 分两步手动触发只会让人忘记第二步。
-            if (ok) {
+            if (ok && !heartbeat) {
                 pacsFindStudies(ep.host, ep.port, ep.calledAe);
             }
         });
     });
+
+    // 只要配了端点就把心跳挂上（失败也挂：掉线后要能自己发现恢复）。
+    if (!heartbeat && m_pacsHeartbeat == nullptr) {
+        const int interval = pacsHeartbeatIntervalMs();
+        if (interval > 0) {
+            m_pacsHeartbeat = new QTimer(this);
+            m_pacsHeartbeat->setInterval(interval);
+            connect(m_pacsHeartbeat, &QTimer::timeout, this, [this]() {
+                if (m_pacsPort > 0) probePacs(m_pacsHost, m_pacsPort, m_pacsAe, true);
+            });
+            m_pacsHeartbeat->start();
+        }
+    }
 }
 
 void Bridge::pacsRetrieveStudy(const QString &host, int port, const QString &calledAe,
@@ -194,6 +272,27 @@ void Bridge::pacsRetrieveStudy(const QString &host, int port, const QString &cal
 {
     if (m_pacsBusy) {
         qInfo() << "[PACS] 上一次请求尚未返回，跳过本次取回";
+        return;
+    }
+
+    m_pacsHost = host;
+    m_pacsPort = port;
+    m_pacsAe = calledAe;
+
+    // 路径里的点号是 DICOM UID 的一部分，文件系统允许。
+    const QString destDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                            + QStringLiteral("/pacs/") + studyUid;
+    startRetrieveAttempt(host, port, calledAe, studyUid, destDir, 1);
+}
+
+void Bridge::startRetrieveAttempt(const QString &host, int port, const QString &calledAe,
+                                  const QString &studyUid, const QString &destDir, int attempt)
+{
+    if (m_pacsBusy) {
+        qInfo() << "[PACS] 上一次请求尚未返回，本次取回尝试推迟";
+        QTimer::singleShot(500, this, [this, host, port, calledAe, studyUid, destDir, attempt]() {
+            startRetrieveAttempt(host, port, calledAe, studyUid, destDir, attempt);
+        });
         return;
     }
     m_pacsBusy = true;
@@ -206,19 +305,15 @@ void Bridge::pacsRetrieveStudy(const QString &host, int port, const QString &cal
     // 给 15 s 容错；真断流时由服务端最终响应失败暴露出来。
     ep.timeoutMs = 15000;
 
-    // 落盘目录按 UID 分：同一例重复取回可覆盖，不同病人不会串。
-    // 路径里的点号是 DICOM UID 的一部分，文件系统允许。
-    const QString destDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
-                            + QStringLiteral("/pacs/") + studyUid;
-
     auto holder = std::make_shared<PacsThreadHolder>();
     holder->alive = true;
     m_pacsHolder = holder;
 
-    qInfo().noquote() << QStringLiteral("[PACS] C-GET %1 → %2:%3 AE=%4")
+    qInfo().noquote() << QStringLiteral("[PACS] C-GET %1 → %2:%3 AE=%4（第 %5/%6 次）")
                              .arg(studyUid.left(24) + QStringLiteral("…"))
-                             .arg(host).arg(port).arg(calledAe);
-    holder->thread = std::make_unique<std::thread>([this, holder, ep, studyUid, destDir]() {
+                             .arg(host).arg(port).arg(calledAe)
+                             .arg(attempt).arg(kPacsRetrieveMaxAttempts);
+    holder->thread = std::make_unique<std::thread>([this, holder, ep, studyUid, destDir, attempt]() {
         QElapsedTimer timer;
         timer.start();
         QString err;
@@ -226,9 +321,12 @@ void Bridge::pacsRetrieveStudy(const QString &host, int port, const QString &cal
         const bool ok = PacsClient::retrieveStudy(ep, studyUid, destDir, &files, &err);
         const int ms = static_cast<int>(timer.elapsed());
 
-        QMetaObject::invokeMethod(this, [this, holder, ep, studyUid, destDir, ok, files, err, ms]() {
+        QMetaObject::invokeMethod(this, [this, holder, ep, studyUid, destDir, ok, files, err, ms, attempt]() {
             if (!holder->alive) return;
             m_pacsBusy = false;
+
+            const bool willRetry = !ok && attempt < kPacsRetrieveMaxAttempts
+                                   && PacsClient::isRetryableError(err);
 
             QVariantMap status;
             status.insert(QStringLiteral("ok"), ok);
@@ -236,7 +334,13 @@ void Bridge::pacsRetrieveStudy(const QString &host, int port, const QString &cal
             status.insert(QStringLiteral("files"), files);
             status.insert(QStringLiteral("dir"), destDir);
             status.insert(QStringLiteral("ms"), ms);
-            status.insert(QStringLiteral("message"), humanPacsError(err));
+            status.insert(QStringLiteral("attempt"), attempt);
+            status.insert(QStringLiteral("maxAttempts"), kPacsRetrieveMaxAttempts);
+            status.insert(QStringLiteral("retrying"), willRetry);
+            status.insert(QStringLiteral("message"),
+                          willRetry ? QStringLiteral("取回失败，正在重试（第 %1 次）：%2")
+                                          .arg(attempt + 1).arg(humanPacsError(err))
+                                    : humanPacsError(err));
             status.insert(QStringLiteral("detail"), err);
             status.insert(QStringLiteral("tsUs"), nowMicros());
 
@@ -248,6 +352,7 @@ void Bridge::pacsRetrieveStudy(const QString &host, int port, const QString &cal
                         {QStringLiteral("studyUid"), studyUid},
                         {QStringLiteral("files"), files},
                         {QStringLiteral("ms"), ms},
+                        {QStringLiteral("attempt"), attempt},
                         {QStringLiteral("dir"), destDir},
                     });
                 }
@@ -257,12 +362,32 @@ void Bridge::pacsRetrieveStudy(const QString &host, int port, const QString &cal
                 // 取回的是一堆 DICOM 文件而不是体数据：交给既有解析链路，
                 // 走的是和本地样例完全同一条路径（含重采样与 app:// 二进制供数）。
                 loadDicomVolume(destDir);
+            } else if (willRetry) {
+                // 退避 0.6 s / 1.8 s：术中网络抖动通常是亚秒级，
+                // 重试太快只会撞在同一段抖动上，太慢则让等待变得不可忍受。
+                const int backoffMs = attempt == 1 ? 600 : 1800;
+                qWarning().noquote() << QStringLiteral("[PACS] C-GET 第 %1 次失败（%2 ms），%3 ms 后重试：")
+                                            .arg(attempt).arg(ms).arg(backoffMs)
+                                     << err;
+                if (m_audit) {
+                    m_audit->record(QStringLiteral("pacs.retrieveRetry"), {
+                        {QStringLiteral("studyUid"), studyUid},
+                        {QStringLiteral("attempt"), attempt},
+                        {QStringLiteral("backoffMs"), backoffMs},
+                        {QStringLiteral("message"), err},
+                    });
+                }
+                QTimer::singleShot(backoffMs, this, [this, ep, studyUid, destDir, attempt]() {
+                    startRetrieveAttempt(ep.host, ep.port, ep.calledAe, studyUid, destDir,
+                                         attempt + 1);
+                });
             } else {
                 qWarning().noquote() << "[PACS] C-GET 失败：" << err;
                 if (m_audit) {
                     m_audit->record(QStringLiteral("pacs.retrieveFailed"), {
                         {QStringLiteral("studyUid"), studyUid},
                         {QStringLiteral("ms"), ms},
+                        {QStringLiteral("attempt"), attempt},
                         {QStringLiteral("message"), err},
                     });
                 }
@@ -343,12 +468,19 @@ void Bridge::pacsFindStudies(const QString &host, int port, const QString &calle
 
             // 自动取回开关：现场联调时希望「连上就看到」而不是先点按钮，
             // QTRS_PACS_AUTO_GET=1 让 C-FIND 命中第一例后直接 C-GET。
+            // 取回开关：`1` 命中即取；给毫秒数则延时取回（现场可用它模拟
+            // 「C-FIND 之后网络抖了一下」，也让重试与退避有可复现的验证路径）。
             const QByteArray autoGet = qgetenv("QTRS_PACS_AUTO_GET");
             if (!autoGet.isEmpty() && autoGet != "0" && !list.isEmpty()) {
                 const QString uid = list.first().toMap()
                                         .value(QStringLiteral("studyInstanceUid")).toString();
                 if (!uid.isEmpty()) {
-                    pacsRetrieveStudy(ep.host, ep.port, ep.calledAe, uid);
+                    bool numeric = false;
+                    int delayMs = autoGet.toInt(&numeric);
+                    if (!numeric || delayMs <= 1) delayMs = 0;
+                    QTimer::singleShot(delayMs, this, [this, ep, uid]() {
+                        pacsRetrieveStudy(ep.host, ep.port, ep.calledAe, uid);
+                    });
                 }
             }
         });

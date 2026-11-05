@@ -509,6 +509,22 @@ TEST(PacsClientTest, ParsesEndpointSpec)
 }
 
 
+TEST(PacsClientTest, ClassifiesRetryableErrors)
+{
+    // 瞬时故障：值得按退避再试
+    EXPECT_TRUE(PacsClient::isRetryableError(
+        QStringLiteral("C-GET 失败： TCP Initialization Error: Connection refused")));
+    EXPECT_TRUE(PacsClient::isRetryableError(
+        QStringLiteral("DIMSE timeout: no response within 15000 ms")));
+    EXPECT_TRUE(PacsClient::isRetryableError(
+        QStringLiteral("关联协商失败： TCP Initialization Error: Operation now in progress")));
+
+    // 确定性失败：重试没有意义，只会让看板多转十几秒
+    EXPECT_FALSE(PacsClient::isRetryableError(
+        QStringLiteral("C-GET 部分失败： 找不到该检查（0xA900）")));
+    EXPECT_FALSE(PacsClient::isRetryableError(QStringLiteral("")));
+}
+
 int main(int argc, char **argv) {
     // 为 DICOM 异步回调（QMetaObject::invokeMethod → 主线程事件循环）提供环境
     QCoreApplication app(argc, argv);

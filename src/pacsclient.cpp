@@ -103,6 +103,21 @@ bool PacsClient::echo(const Endpoint &endpoint, QString *err, int *roundTripMs)
     return true;
 }
 
+bool PacsClient::isRetryableError(const QString &message)
+{
+    if (message.isEmpty()) return false;
+    const QString lower = message.toLower();
+    // 确定性失败：不存在 / 无匹配，重试没有意义
+    if (lower.contains(QStringLiteral("no such")) || lower.contains(QStringLiteral("找不到"))
+        || lower.contains(QStringLiteral("不存在")) || lower.contains(QStringLiteral("0xa900"))) {
+        return false;
+    }
+    return lower.contains(QStringLiteral("tcp")) || lower.contains(QStringLiteral("timeout"))
+        || lower.contains(QStringLiteral("超时")) || lower.contains(QStringLiteral("association"))
+        || lower.contains(QStringLiteral("关联")) || lower.contains(QStringLiteral("dimse"))
+        || lower.contains(QStringLiteral("connection")) || lower.contains(QStringLiteral("连接"));
+}
+
 bool PacsClient::retrieveStudy(const Endpoint &endpoint, const QString &studyUid,
                                const QString &destDir, int *fileCount, QString *err)
 {

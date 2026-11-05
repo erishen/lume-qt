@@ -565,6 +565,9 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
   // 取回按钮需要 StudyInstanceUID；这里记第一例，够用且不需要另建病人浏览器
   const [studyUid, setStudyUid] = useState('')
   const [retrieving, setRetrieving] = useState(false)
+  // 取回失败会按退避自动重试；这里把「第几次 / 为什么」写在按钮上，
+  // 否则术中只能看到一个转圈，不知道是在重试还是卡死。
+  const [retrieveNote, setRetrieveNote] = useState('')
   const pacsRef = useRef<{ host: string; port: number; ae: string } | null>(null)
 
   // 时间戳到底来自宿主时钟还是设备时钟，由 C++ 侧 provider 如实声明。
@@ -604,7 +607,14 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
       setStudyUid(uid ?? '')
     }
     const onRetrieve = (st: PacsRetrieveStatus) => {
-      setRetrieving(false)
+      setRetrieving(Boolean(st.retrying))
+      setRetrieveNote(
+        st.ok
+          ? ''
+          : st.retrying
+            ? `重试中（第 ${(st.attempt ?? 1) + 1}/${st.maxAttempts ?? 3} 次）`
+            : st.message,
+      )
       setPacs((prev) =>
         prev
           ? {
@@ -674,15 +684,22 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
             <button
               type="button"
               className="pacs-retrieve"
+              title={retrieveNote}
               disabled={retrieving}
               onClick={() => {
                 const target = pacsRef.current
                 if (!target) return
                 setRetrieving(true)
+                setRetrieving(true)
+                setRetrieveNote('')
                 bridge?.pacsRetrieveStudy(target.host, target.port, target.ae, studyUid)
               }}
             >
-              {retrieving ? '取回中…' : '取回该例'}
+              {retrieving
+                ? retrieveNote
+                  ? `重试中…`
+                  : '取回中…'
+                : '取回该例'}
             </button>
           ) : null}
         </span>

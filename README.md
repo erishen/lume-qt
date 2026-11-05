@@ -601,6 +601,56 @@ C-ECHO / C-FIND 只解决「通不通、有没有」。术中真正需要的是�
 没有 TLS 与 AE 白名单，没有断线重连与退避；C-FIND 仍是全量 STUDY、取回只取第一例，
 未按病人/日期过滤；体积固定重采样到 128³，层数更多的检查会丢细节。
 
+### 11. 网络抖动下的韧性：取回重试 + 在线心跳
+
+取回能跑通一次不等于能用。术中真正会遇到的是：C-FIND 刚返回、按下去取回的那一刻
+网络抖了一下；或者手术做到一半 PACS 掉线，而没人有空去点一下探测。
+这一批把这两件事都交给程序自己判断。
+
+- **取回重试**：失败后最多重试 3 次，退避 0.6 s / 1.8 s。
+  只有瞬时故障才重试——`PacsClient::isRetryableError()` 把「连不上 / 超时 / 关联被打断」
+  与「库里没有这例（0xA900）」分开，后者重试三次只会让看板多转十几秒还给不出答案。
+  这条判据是纯函数，直接进单测（`PacsClientTest.ClassifiesRetryableErrors`）。
+- **重试可见**：按钮上直接写「重试中…」并在 `title` 里带原因，状态经 `pacsRetrieve`
+  带回 `attempt / maxAttempts / retrying`；台账每次失败记一行 `pacs.retrieveRetry`。
+- **在线心跳**：`QTRS_PACS_HEARTBEAT_MS`（默认 30000，0 关闭）只做 C-ECHO、不重新枚举。
+  发现掉线才是目的，所以**只在状态翻转时**记台账（`pacs.offline` / `pacs.online`）
+  与推信号，稳态不写——否则每 30 s 一行心跳会很快把台账淹掉。
+  心跳撞上正在进行的取回时直接跳过：网络卡住时堆探测只会让两边都超时。
+- **可复现的验证手段**：`QTRS_PACS_AUTO_GET` 现在接受毫秒数（`1` 仍表示命中即取），
+  把取回推迟到 C-FIND 之后若干秒，就能在「C-FIND 成功、C-GET 之前」精确制造一次断网。
+
+实测三种情形（同一台 dcmqrscp，手动 kill / 重启）：
+
+```
+# 1) 断网 → 三次重试后放弃
+C-GET（第 1/3 次）→ 第 1 次失败（1 ms），600 ms 后重试：TCP Initialization Error
+C-GET（第 2/3 次）→ 第 2 次失败（1 ms），1800 ms 后重试：TCP Initialization Error
+C-GET（第 3/3 次）→ 失败：TCP Initialization Error: Operation now in progress
+
+# 2) 重试途中服务端恢复 → 第 2 次成功
+C-GET（第 1/3 次）→ 第 1 次失败（0 ms），600 ms 后重试
+C-GET（第 2/3 次）→ C-GET 完成：60 个对象，97 ms
+[DicomReader] 解析完成：60 张切片 274 × 384 → 重采样到 128 ³
+
+# 3) 心跳（3 s 间隔，便于观察）
+心跳失败： 关联协商失败：TCP Initialization Error
+心跳恢复： 4 ms
+```
+
+台账对应：
+
+```json
+{"type":"pacs.retrieveRetry","attempt":1,"backoffMs":600,"message":"…TCP Initialization Error…"}
+{"type":"pacs.retrieve","attempt":2,"files":60,"ms":97,"studyUid":"1.2.826…"}
+{"type":"pacs.offline","roundTripMs":-1,"message":"关联协商失败：TCP Initialization Error…"}
+{"type":"pacs.online","roundTripMs":4,"message":""}
+```
+
+已知边界：重试没有抖动（jitter），多实例同时重试仍可能同步撞车；心跳与取回互斥，
+所以长取回期间的掉线只能在取回失败时暴露；仍没有 C-MOVE 回退，
+遇到只支持 C-MOVE 的 PACS 还需要一轮改造。
+
 ## 🧪 测试基础设施
 
 ### C++ 单元测试

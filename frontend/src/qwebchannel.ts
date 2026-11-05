@@ -113,6 +113,10 @@ export interface PacsStatus {
   roundTripMs: number
   message: string
   tsUs: number
+  /** 是否由在线心跳触发（心跳只做 C-ECHO，不重新枚举病例） */
+  heartbeat?: boolean
+  /** 最近一次 C-FIND 的病例数，心跳时沿用 */
+  count?: number
 }
 
 /** C-FIND 返回的一例检查 */
@@ -147,6 +151,11 @@ export interface PacsRetrieveStatus {
   message: string
   detail: string
   tsUs: number
+  /** 第几次尝试（从 1 开始） */
+  attempt?: number
+  maxAttempts?: number
+  /** 失败但可重试：随后会自动按退避再试一次 */
+  retrying?: boolean
 }
 
 /** DICOM 体积元数据（与 C++ DicomReader 输出对应） */

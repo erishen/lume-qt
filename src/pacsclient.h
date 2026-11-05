@@ -39,6 +39,14 @@ public:
 
     /// STUDY 级 C-GET：把整例检查取回本地目录（同关联 C-STORE，无需另开监听端口）。
     /// 成功后 fileCount 为落地文件数；失败时 err 带 DCMTK 原始原因。
+    /**
+     * 判断一次失败是否值得重试。
+     *
+     * 只有「连不上 / 超时 / 关联被打断」这类瞬时故障才重试；「库里没有这例」
+     * 是确定性结论，重试只会让看板多转十几秒还给不出答案。
+     */
+    static bool isRetryableError(const QString &message);
+
     static bool retrieveStudy(const Endpoint &endpoint, const QString &studyUid,
                               const QString &destDir, int *fileCount, QString *err);
 };

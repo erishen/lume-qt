@@ -181,6 +181,24 @@ private:
     bool m_pacsBusy = false;
     QVariantMap m_pacsState;
 
+    /// 最近一次 PACS 端点：心跳与重试都复用它，免得各处再解析一遍配置。
+    QString m_pacsHost;
+    int m_pacsPort = -1;
+    QString m_pacsAe;
+
+    /// 在线心跳：只做 C-ECHO，不重新枚举。发现掉线才是目的，
+    /// 状态翻转时才记台账（否则每 30 s 一行心跳会把台账淹掉）。
+    class QTimer *m_pacsHeartbeat = nullptr;
+    bool m_pacsOnline = false;
+    bool m_pacsProbed = false;
+
+    /// 单次探测（heartbeat=false 时成功后接着 C-FIND）。
+    void probePacs(const QString &host, int port, const QString &calledAe, bool heartbeat);
+
+    /// 单次取回尝试；失败且可重试时由调用方按退避再排一次。
+    void startRetrieveAttempt(const QString &host, int port, const QString &calledAe,
+                              const QString &studyUid, const QString &destDir, int attempt);
+
     // DICOM 后台加载线程的持有结构（堆上、shared_ptr 管理）。
     // 使 worker 收尾闭包能精确删除“本线程”、并在 Bridge 析构后安全
     // 跳过已入队的回调（详见 bridge.cpp 的 loadDicomVolume / ~Bridge）。
