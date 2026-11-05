@@ -202,7 +202,7 @@ bridge.dataFromCpp.connect((payload) => {
   - `meta.spacing[2]` 取相邻层间距的中位数，缺失 Z 时退回 `SliceThickness`（层厚 ≠ 层间距，有 gap 时差异明显）。
 - **取消**：解析支持协作式取消（每个文件 / 每个 Z 层检查一次）。`~Bridge` 先置 `alive=false` 再置 `cancel=true` 后 join，因此关窗不会被整卷解析拖住数秒。
 - **桥接**：`bridge.loadDicomVolume(directory)` 触发解析，结果通过 `dicomVolumeReady(meta, base64Pixels)` 信号回传 JS（base64 编码的 `uint8` 体积 + `dims`/`spacing`/`slices`/`skipped` 元数据）；失败发 `dicomVolumeError`。
-- **样例数据**：`bridge.dicomSamplePath()` 返回内置脑部 T1 MRI 序列目录 `resources/dicom/brain-t1`（约 384 张切片）。
+- **样例数据（本地自备，不入库）**：`bridge.dicomSamplePath()` 返回 `resources/dicom/brain-t1`（约 384 张脑部 T1 切片）。该序列约 78MB，已从版本库移出并加入 `.gitignore`，需要自己放一份到该路径，否则 DICOM 演示面板会报“目录不存在”，相关单测会自动 skip。
 - **渲染**：前端 `Volume3D.tsx` 用 Three.js 体绘制/切片渲染该体积；脱离 Qt 时由 `syntheticVolume.ts` 程序化合成一个合成脑体，保证纯浏览器预览也能看到体积效果。
 
 > 注意：CMake 配置阶段即 `find_package(DCMTK REQUIRED)`，未安装 DCMTK 会直接配置失败——这是本项目的硬依赖，不同于 Qt 可可选模块。
@@ -257,39 +257,18 @@ test('handles ecg updates', () => {
 });
 ```
 
-### CI/CD 集成
+### CI
 
-> **状态：尚未接入。** 仓库目前没有 `.github/workflows/`，也没有配置远端，质量门就是本地的
-> `make run-tests`。下面的 workflow 只是**预期模板**：落地前需先在 Ubuntu 侧确认
-> `qt6-webengine-dev` / `libdcmtk-dev` 的可安装性（Qt WebEngine 在部分发行版仓库里缺包），
-> 再把模板写进 `.github/workflows/ci.yml`。
+**不接入 CI。** 这个项目的质量门就是本地两条命令：
 
-预期配置如下：
-
-```yaml
-name: CI
-on: [push, pull_request]
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup environment
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake ninja-build \
-            qt6-base-dev qt6-webengine-dev qt6-webchannel-dev \
-            libgl1-mesa-dev libdcmtk-dev libgtest-dev
-      - name: Configure CMake
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-      - name: Build
-        run: cmake --build build
-      - name: Run C++ tests
-        run: cd build && ctest --output-on-failure
-      # 前端 Jest/RTL 测试目前尚未接入（见“测试基础设施”说明），
-      # 接入后在下方追加 npm ci / npm test 步骤。
+```bash
+make run-tests                      # C++ 单测（Google Test，经 ctest）
+cd frontend && npm run typecheck    # 前端类型检查
 ```
+
+Qt WebEngine + DCMTK 在 CI 镜像里装包成本高（部分 Ubuntu 仓库缺 `qt6-webengine-dev`），
+为这点体量的研究项目维护一套远端流水线不划算。如果以后要上 CI，先在目标镜像里确认
+`qt6-webengine-dev` / `libdcmtk-dev` 可安装，再补 workflow。
 
 ### 构建目标
 
@@ -312,7 +291,7 @@ make test-all
 
 ### 测试质量保证
 
-- **自动化测试**：本地 `make run-tests`（C++ Google Test）为质量门；CI 尚未接入（见上节）
+- **自动化测试**：本地 `make run-tests`（C++ Google Test）为质量门；本项目不接入 CI（见上节）
 - **质量门**：主目标与 `bridge_test` 共用同一套 `-Wall -Wextra -Werror -Wconversion` 编译选项，测试代码不比产品代码宽松；测试失败即以非零码退出
 - **测试数据**：为每个测试提供可重现的数据
 - **错误处理测试**：验证错误场景的处理

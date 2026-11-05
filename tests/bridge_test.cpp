@@ -4,6 +4,7 @@
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 
@@ -126,6 +127,20 @@ bool waitForDicomSignal(Bridge *bridge, int timeoutMs)
     return !readySpy.isEmpty() || !errorSpy.isEmpty();
 }
 
+// 样例 DICOM 序列不在版本库中（约 78MB，见 .gitignore）：缺失时跳过依赖它的用例，
+// 让「克隆后直接 make run-tests」不会因为样例数据缺席而变红。
+bool sampleSeriesAvailable()
+{
+    return QFileInfo(QStringLiteral(DICOM_SAMPLE_PATH)).isDir();
+}
+
+#define SKIP_IF_NO_SAMPLE_SERIES()                                            \
+    do {                                                                      \
+        if (!sampleSeriesAvailable())                                         \
+            GTEST_SKIP() << "样例 DICOM 序列缺失："                            \
+                            "resources/dicom 不入库，需本地自备一份到 " DICOM_SAMPLE_PATH; \
+    } while (0)
+
 // 泵事件直到收到“成功”信号（dicomVolumeReady）。
 // 注意：不能复用 waitForDicomSignal —— 它把 dicomVolumeError 也算作“有信号”，
 // 会让“解析彻底失败”的场景伪装成测试通过（曾导致 DICOM 面板黑屏却显示绿灯）。
@@ -141,6 +156,7 @@ bool waitForDicomReady(QSignalSpy &readySpy, int timeoutMs)
 } // namespace
 
 TEST_F(BridgeTest, DicomVolumeLoadsAndCleansUp) {
+    SKIP_IF_NO_SAMPLE_SERIES();
     QSignalSpy readySpy(bridge, SIGNAL(dicomVolumeReady(QVariantMap, QString)));
     QSignalSpy errorSpy(bridge, SIGNAL(dicomVolumeError(QString)));
     bridge->loadDicomVolume(bridge->dicomSamplePath());
@@ -158,6 +174,7 @@ TEST_F(BridgeTest, DicomVolumeLoadsAndCleansUp) {
 // 这一用例曾因“只看信号是否到达”而漏判：着色器编译失败时前端全黑，
 // 而 C++ 侧一切正常，测试却显示绿灯。
 TEST_F(BridgeTest, DicomVolumePayloadIsRenderable) {
+    SKIP_IF_NO_SAMPLE_SERIES();
     QSignalSpy readySpy(bridge, SIGNAL(dicomVolumeReady(QVariantMap, QString)));
     QSignalSpy errorSpy(bridge, SIGNAL(dicomVolumeError(QString)));
 
@@ -206,6 +223,7 @@ TEST_F(BridgeTest, DicomVolumePayloadIsRenderable) {
 }
 
 TEST_F(BridgeTest, DicomVolumeRejectsReentrantLoad) {
+    SKIP_IF_NO_SAMPLE_SERIES();
     bridge->loadDicomVolume(bridge->dicomSamplePath());
     // 立即再次调用：应被重入保护忽略，且不崩溃、不误伤在途线程
     EXPECT_NO_THROW(bridge->loadDicomVolume(bridge->dicomSamplePath()));
@@ -214,6 +232,7 @@ TEST_F(BridgeTest, DicomVolumeRejectsReentrantLoad) {
 }
 
 TEST_F(BridgeTest, DicomVolumeDestructorWhileInFlightIsSafe) {
+    SKIP_IF_NO_SAMPLE_SERIES();
     Bridge *b = new Bridge();
     QObject::connect(b, &Bridge::dicomVolumeReady, []() {});
     QObject::connect(b, &Bridge::dicomVolumeError, []() {});
@@ -341,6 +360,7 @@ TEST(DicomReaderRobustness, InconsistentMatrixSlicesAreSkipped)
 
 TEST(DicomReaderRobustness, CancelReturnsWithoutParsingWholeSeries)
 {
+    SKIP_IF_NO_SAMPLE_SERIES();
     std::atomic<bool> cancel{true};
     QByteArray data;
     QVariantMap meta;
