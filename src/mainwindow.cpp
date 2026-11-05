@@ -309,6 +309,19 @@ void MainWindow::setupNativeVolume()
                                  .arg(meta.value(QStringLiteral("source")).toString());
         if (m_volumePreset) {
             // CT 才有 HU 窗预设；MR/其他只有「数据自适应」。
+            // 预设文案跟着数据走：CT 才是 HU 窗；非 CT 用强度档，别让人以为在套 HU。
+            const QStringList ctLabels = {QStringLiteral("软组织窗 W80/L40"),
+                                          QStringLiteral("骨窗 W1500/L300"),
+                                          QStringLiteral("血管窗 W400/L100"),
+                                          QStringLiteral("数据自适应")};
+            const QStringList auLabels = {QStringLiteral("低强度窗（软组织近似）"),
+                                          QStringLiteral("高强度窗（骨近似）"),
+                                          QStringLiteral("中强度窗（血管近似）"),
+                                          QStringLiteral("数据自适应")};
+            const QStringList &labels = isCt ? ctLabels : auLabels;
+            for (int i = 0; i < labels.size(); ++i) {
+                m_volumePreset->setItemText(i, labels.at(i));
+            }
             if (isCt) {
                 // 切到 CT 后重新应用一次预设（环境变量或用户上次选择），别留存 MR 的自适应档
                 if (const QByteArray p = qgetenv("QTRS_VOLUME_PRESET"); !p.isEmpty()) {
@@ -319,14 +332,6 @@ void MainWindow::setupNativeVolume()
             // 默认开伪彩只作定位演示，勾选框里仍标「非诊断」。
             if (m_volumeOverlay && qgetenv("QTRS_VOLUME_COLOR").isEmpty()) {
                 m_volumeOverlay->setChecked(!isCt);
-            }
-            if (auto *model = m_volumePreset->model()) {
-                for (int i = 0; i < 3; ++i) {
-                    model->setData(model->index(i, 0), isCt, Qt::UserRole - 1); // 禁用项
-                }
-            }
-            if (!isCt && m_volumePreset->currentIndex() != 3) {
-                m_volumePreset->setCurrentIndex(3);
             }
         }
         if (m_volumeStatus) {

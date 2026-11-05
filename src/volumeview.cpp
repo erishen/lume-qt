@@ -199,6 +199,8 @@ void VolumeView::setVolume(const QByteArray &data, int dim, const QVariantMap &m
             + static_cast<float>(percentileBin(m_isCt ? 50 : 5, 100)) * binToHu;
         const float hiHu = m_huMin
             + static_cast<float>(percentileBin(999, 1000)) * binToHu;
+        m_tissueLoHu = loHu;
+        m_tissueHiHu = hiHu;
         m_autoCenterHu = (loHu + hiHu) / 2.0f;
         m_autoWidthHu = std::max(20.0f, hiHu - loHu);
         qInfo().noquote() << QStringLiteral("[Volume] 自适应窗分位：低 %1 高 %2 → W%3 / L%4")
@@ -236,8 +238,27 @@ void VolumeView::setPreset(int preset)
 {
     m_preset = std::clamp(preset, 0, 3);
     if (!m_isCt && m_preset != 3) {
-        qWarning().noquote() << "[Volume] 非 CT 数据不支持 HU 窗预设，回退到数据自适应强度窗";
-        m_preset = 3;
+        // 非 CT 没有 HU，但预设仍应「切得动」：把 CT 的四个档换算成组织强度区间，
+        // 让它在 a.u. 数据上也有可区分的窗，而不是把选项禁死。
+        const float lo = m_tissueLoHu;
+        const float span = std::max(20.0f, m_tissueHiHu - m_tissueLoHu);
+        switch (m_preset) {
+        case 0:  // 软组织窗 → 组织低段
+            m_windowCenterHu = lo + 0.20f * span;
+            m_windowWidthHu = 0.40f * span;
+            break;
+        case 1:  // 骨窗 → 组织高段
+            m_windowCenterHu = lo + 0.75f * span;
+            m_windowWidthHu = 0.30f * span;
+            break;
+        default: // 血管窗 → 组织中段
+            m_windowCenterHu = lo + 0.50f * span;
+            m_windowWidthHu = 0.35f * span;
+            break;
+        }
+        qInfo().noquote() << "[Volume] 非 CT：按组织强度近似应用预设" << windowText();
+        if (m_hasData) renderFrame();
+        return;
     }
     switch (m_preset) {
     case 1: // 骨窗

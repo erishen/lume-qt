@@ -112,6 +112,8 @@ private:
     float m_huMax = 1000.0f;
     float m_autoCenterHu = 40.0f;
     float m_autoWidthHu = 80.0f;
+    float m_tissueLoHu = 0.0f;   // 自适应窗统计出来的组织下限/上限
+    float m_tissueHiHu = 0.0f;
     int m_preset = 0;
     bool m_colorOverlay = false;
     bool m_isCt = false;
