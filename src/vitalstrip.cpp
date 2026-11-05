@@ -15,6 +15,7 @@
 namespace {
 constexpr int kTraceCapacity = 600;   // 40ms 采样 → 24 秒窗口
 constexpr int kAgeCapacity = 240;     // 约 10 秒的延迟样本
+constexpr int kDeltaCapacity = 240;   // 估时钟偏移用的原始差值窗口（约 10 秒样本）
 constexpr int kInfoWidth = 300;       // 右侧数值/延迟区宽度
 constexpr double kStripHeight = 176.0;
 constexpr double kLaneHeader = 18.0;
@@ -62,6 +63,22 @@ double NativeVitalStrip::percentile(QVector<double> sorted, double q)
     return sorted.at(std::max<qsizetype>(0, idx));
 }
 
+double NativeVitalStrip::residualUs(Lane &lane, double rawUs)
+{
+    // 时间戳可能来自设备时钟（与宿主有未知常量偏移）。最近窗口内的最小差值
+    // 就是偏移的下界估计，扣掉它剩下的才是链路延迟。断流时没有新样本进窗口，
+    // 偏移估计不会漂移，中断判定仍然成立。
+    lane.deltas.append(rawUs);
+    if (lane.deltas.size() > kDeltaCapacity) {
+        lane.deltas.remove(0, lane.deltas.size() - kDeltaCapacity);
+    }
+    double min = lane.deltas.at(0);
+    for (double v : lane.deltas) {
+        if (v < min) min = v;
+    }
+    return rawUs - min;
+}
+
 void NativeVitalStrip::recordAge(Lane &lane, double ageMs)
 {
     lane.ages.append(ageMs);
@@ -77,6 +94,9 @@ void NativeVitalStrip::push(Lane &lane, double value, double tsUs)
         lane.trace.remove(0, lane.trace.size() - kTraceCapacity);
     }
     lane.lastTsUs = tsUs;
+    const double receiveUs = nowMicros();
+    lane.lastReceiptUs = receiveUs;
+    lane.lastResidualUs = residualUs(lane, receiveUs - tsUs);
     lane.has = true;
     update();
 }
@@ -107,8 +127,12 @@ void NativeVitalStrip::paintEvent(QPaintEvent *event)
 
     const double now = nowMicros();
     // 「采集 → 本次绘制」的实测延迟：信号直连，无 IPC。
-    const double ecgAgeMs = m_ecg.has ? (now - m_ecg.lastTsUs) / 1000.0 : -1.0;
-    const double spo2AgeMs = m_spo2.has ? (now - m_spo2.lastTsUs) / 1000.0 : -1.0;
+    // 拆成「到达时的残差」+「到达后到本帧的排队时间」，这样与时间戳来源无关：
+    // 时间戳是设备时钟、与宿主有常量偏移时，残差已把偏移扣掉，不会出现负值或虚高。
+    const double ecgAgeMs = m_ecg.has
+        ? (now - m_ecg.lastReceiptUs + m_ecg.lastResidualUs) / 1000.0 : -1.0;
+    const double spo2AgeMs = m_spo2.has
+        ? (now - m_spo2.lastReceiptUs + m_spo2.lastResidualUs) / 1000.0 : -1.0;
     if (m_ecg.has) recordAge(m_ecg, ecgAgeMs);
     if (m_spo2.has) recordAge(m_spo2, spo2AgeMs);
 

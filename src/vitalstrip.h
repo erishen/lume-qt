@@ -47,6 +47,13 @@ private:
         QVector<double> trace;
         QVector<double> ages;      // 「采集 → 本次绘制」延迟样本（ms）
         double lastTsUs = 0.0;
+        /// 最近一个样本到达本进程的宿主时刻（epoch 微秒）。
+        /// 年龄 = (now − lastReceiptUs) + lastResidualUs，与时间戳来自哪个时钟无关。
+        double lastReceiptUs = 0.0;
+        /// 样本到达时的「扣掉时钟偏移后的延迟」（微秒）
+        double lastResidualUs = 0.0;
+        /// 最近若干「宿主时刻 − 采样时刻」原始差值，用于估计设备时钟偏移
+        QVector<double> deltas;
         bool has = false;
         bool wasStale = false;
         double staleMs = 250.0;    // 超过即判「中断」
@@ -54,6 +61,9 @@ private:
         QString title;
     };
 
+    /// 单侧测量只能得到「时钟偏移 + 延迟」之和：用最近窗口的最小差值作偏移下界估计，
+    /// 残差即链路延迟。时间戳来自宿主墙钟时偏移≈0，同样适用。
+    static double residualUs(Lane &lane, double rawUs);
     static double nowMicros();
     static void recordAge(Lane &lane, double ageMs);
     static double percentile(QVector<double> sorted, double q);

@@ -63,6 +63,21 @@ Bridge::~Bridge()
     }
 }
 
+QVariantMap Bridge::providerInfo() const
+{
+    QVariantMap info;
+    if (!m_provider) {
+        info.insert(QStringLiteral("kind"), QStringLiteral("none"));
+        info.insert(QStringLiteral("description"), QStringLiteral("无数据源"));
+        info.insert(QStringLiteral("hasHardwareClock"), false);
+        return info;
+    }
+    info.insert(QStringLiteral("kind"), m_provider->kind());
+    info.insert(QStringLiteral("description"), m_provider->description());
+    info.insert(QStringLiteral("hasHardwareClock"), m_provider->hasHardwareClock());
+    return info;
+}
+
 void Bridge::loadDicomVolume(const QString &directory)
 {
     // 重入保护：只允许一个在途 DICOM 解析（UI 实际只触发一次，此处仅为

@@ -12,12 +12,14 @@
 #include <dcmtk/dcmdata/dctk.h>
 
 #include <algorithm>
+#include <chrono>
 #include <atomic>
 #include <cstdio>
 #include <iostream>
 #include <vector>
 
 #include "../src/bridge.h"
+#include "../src/simulatorprovider.h"
 #include "../src/dicomreader.h"
 
 class BridgeTest : public ::testing::Test {
@@ -400,6 +402,37 @@ TEST_F(BridgeTest, Spo2WaveSharesTimestampContract)
 
     // 两个波形通道独立计时，互不阻塞
     EXPECT_GT(ecgSpy.count(), 0);
+}
+
+/**
+ * 设备时钟打戳：接真实设备后 tsUs 来自设备时钟，与宿主墙钟有未知常量偏移。
+ * 这里用 QTRS_CLOCK_OFFSET_MS 注入 5 s，断言两件事：
+ *  1) 样本时间戳确实按该偏移打；2) hasHardwareClock() 如实声明为 true，
+ *     否则上层会把「时钟差」当成「延迟」。
+ */
+TEST(SimulatorClockTest, DeviceClockOffsetIsAppliedToSamples)
+{
+    constexpr double kOffsetUs = 5000.0 * 1000.0;
+    qputenv("QTRS_CLOCK_OFFSET_MS", "5000");
+
+    SimulatorProvider provider;
+    EXPECT_TRUE(provider.hasHardwareClock());
+
+    QSignalSpy spy(&provider, SIGNAL(ecgSample(double, double)));
+    ASSERT_TRUE(provider.startMedical());
+    ASSERT_TRUE(spy.wait(500)) << "启动后 500ms 内应有 ECG 样本";
+    provider.stopMedical();
+    ASSERT_GT(spy.count(), 0);
+
+    const double tsUs = spy.at(0).at(1).toDouble();
+    const double hostNowUs = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+
+    // 设备时钟比宿主快 5 s：宿主时刻 − 样本时刻 ≈ −5 000 000 us（留 200ms 容差）
+    EXPECT_NEAR(hostNowUs - tsUs, -kOffsetUs, 200.0 * 1000.0);
+
+    qunsetenv("QTRS_CLOCK_OFFSET_MS");
 }
 
 int main(int argc, char **argv) {

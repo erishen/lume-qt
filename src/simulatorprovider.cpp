@@ -35,6 +35,11 @@ double SimulatorProvider::randomRange(double lo, double hi)
 SimulatorProvider::SimulatorProvider(QObject *parent)
     : DeviceProvider(parent)
 {
+    // 模拟「设备时钟与宿主时钟不同源」：QTRS_CLOCK_OFFSET_MS 表示设备时基相对
+    // 宿主快/慢多少毫秒。接真实设备后这个偏移是真实存在的（未知且恒定），
+    // 前端必须能把它与真实延迟区分开，否则延迟看板全是假值。
+    m_clockOffsetUs = qEnvironmentVariableIntValue("QTRS_CLOCK_OFFSET_MS") * 1000.0;
+
     const int stress = stressLevel();
 
     // ECG 波形样本：40ms 采样（25 Hz），模拟监护仪刷新率
@@ -95,6 +100,10 @@ SimulatorProvider::SimulatorProvider(QObject *parent)
     m_interventionTimer->setInterval(stress > 0 ? 50 : 500);
     connect(m_interventionTimer, &QTimer::timeout, this, &SimulatorProvider::emitIntervention);
 
+    if (m_clockOffsetUs != 0.0) {
+        qInfo().noquote() << QStringLiteral("[Simulator] 设备时钟偏移注入：%1 ms（此时基与宿主不同源）")
+                                 .arg(m_clockOffsetUs / 1000.0);
+    }
     if (stress > 0) {
         qInfo() << "[Simulator] 压力模式 QT_STRESS_LEVEL =" << stress
                 << "— ECG" << m_ecgTimer->interval() << "ms"
@@ -130,7 +139,7 @@ void SimulatorProvider::emitEcgSample()
     if (m_ecgPhase >= 1.0) {
         m_ecgPhase -= 1.0;
     }
-    emit ecgSample(synthesizeEcg(m_ecgPhase), nowMicros());
+    emit ecgSample(synthesizeEcg(m_ecgPhase), stampMicros());
 }
 
 double SimulatorProvider::synthesizeEcg(double phase)
@@ -162,7 +171,7 @@ void SimulatorProvider::emitSpo2Sample()
     if (m_spo2Phase >= 1.0) {
         m_spo2Phase -= 1.0;
     }
-    emit spo2Sample(synthesizePleth(m_spo2Phase), nowMicros());
+    emit spo2Sample(synthesizePleth(m_spo2Phase), stampMicros());
 }
 
 double SimulatorProvider::synthesizePleth(double phase)
@@ -209,7 +218,7 @@ void SimulatorProvider::emitVitals()
     vitals.insert(QStringLiteral("temp"), std::round(m_temp * 10.0) / 10.0);
     vitals.insert(QStringLiteral("time"),
                   QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss")));
-    vitals.insert(QStringLiteral("tsUs"), nowMicros());
+    vitals.insert(QStringLiteral("tsUs"), stampMicros());
 
     // 诊断：仅记录前 3 条推送，验证实时数据通道
     if (m_vitalsCount < 3) {
@@ -309,17 +318,17 @@ double SimulatorProvider::synthesizeNeural()
 
 void SimulatorProvider::emitEegSample()
 {
-    emit eegSample(synthesizeEeg(), nowMicros());
+    emit eegSample(synthesizeEeg(), stampMicros());
 }
 
 void SimulatorProvider::emitEmgSample()
 {
-    emit emgSample(synthesizeEmg(), nowMicros());
+    emit emgSample(synthesizeEmg(), stampMicros());
 }
 
 void SimulatorProvider::emitNeuralSpike()
 {
-    emit neuralSpike(synthesizeNeural(), nowMicros());
+    emit neuralSpike(synthesizeNeural(), stampMicros());
 }
 
 void SimulatorProvider::emitIntervention()
@@ -345,7 +354,7 @@ void SimulatorProvider::emitIntervention()
         ++m_interventionCount;
     }
 
-    iv.insert(QStringLiteral("tsUs"), nowMicros());
+    iv.insert(QStringLiteral("tsUs"), stampMicros());
     emit interventionReady(iv);
 }
 
@@ -358,8 +367,12 @@ double SimulatorProvider::clampTo(double v, double lo, double hi)
 
 QString SimulatorProvider::description() const
 {
-    return QStringLiteral("内置生理信号模拟器（ECG %1ms / SpO₂ %2ms / vitals %3ms，宿主墙钟时基）")
+    const QString clock = m_clockOffsetUs != 0.0
+        ? QStringLiteral("设备时钟时基，偏移 %1ms").arg(m_clockOffsetUs / 1000.0)
+        : QStringLiteral("宿主墙钟时基");
+    return QStringLiteral("内置生理信号模拟器（ECG %1ms / SpO₂ %2ms / vitals %3ms，%4）")
         .arg(m_ecgTimer ? m_ecgTimer->interval() : 0)
         .arg(m_spo2Timer ? m_spo2Timer->interval() : 0)
-        .arg(m_vitalsTimer ? m_vitalsTimer->interval() : 0);
+        .arg(m_vitalsTimer ? m_vitalsTimer->interval() : 0)
+        .arg(clock);
 }

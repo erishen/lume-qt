@@ -74,6 +74,12 @@ public:
     Q_INVOKABLE void startNeurologySimulation();
     Q_INVOKABLE void stopNeurologySimulation();
 
+    // ---- 当前设备数据源（前端据此判断时间戳时基） ----
+    // 返回 {kind, description, hasHardwareClock}。hasHardwareClock=true 时 tsUs 来自
+    // 设备时钟，与宿主墙钟存在未知常量偏移：前端必须先估偏移再算延迟，否则看到的
+    // 是把「时钟差」当成「延迟」的假值。
+    Q_INVOKABLE QVariantMap providerInfo() const;
+
     // ---- DICOM 体积加载（后台线程解析，结果经信号回传） ----
     Q_INVOKABLE void loadDicomVolume(const QString &directory);
     // 返回内置 DICOM 样例序列目录（脑部 T1 MRI）

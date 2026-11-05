@@ -6,10 +6,12 @@ import { createSyntheticBrain } from './syntheticVolume'
 import { createFrameLimiter, observeInViewport } from './framePacing'
 import {
   channelHealth,
+  clockStatus,
   frameStats,
   recordFrame,
   recordPainted,
   recordReceipt,
+  setClockSource,
   snapshot,
   type ChannelHealth,
   type ChannelLatency,
@@ -154,7 +156,7 @@ export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
                alert={vitals ? vitals.temp > 37.5 : false} />
       </div>
 
-      <LatencyBoard hasBridge={bridge !== null} />
+      <LatencyBoard hasBridge={bridge !== null} bridge={bridge} />
 
       <WatchdogStrip hasBridge={bridge !== null} />
 
@@ -545,11 +547,34 @@ function WatchdogStrip({ hasBridge }: { hasBridge: boolean }) {
   )
 }
 
-function LatencyBoard({ hasBridge }: { hasBridge: boolean }) {
+function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridge | null }) {
   const [rows, setRows] = useState<ChannelLatency[]>([])
+  const [clock, setClock] = useState(clockStatus())
+
+  // 时间戳到底来自宿主时钟还是设备时钟，由 C++ 侧 provider 如实声明。
+  // 设备时钟与宿主存在未知常量偏移，不先扣掉就会把「时钟差」当成「延迟」。
+  useEffect(() => {
+    if (!bridge) {
+      setClockSource(false)
+      setClock(clockStatus())
+      return
+    }
+    let alive = true
+    void bridge.providerInfo().then((info) => {
+      if (!alive) return
+      setClockSource(Boolean(info?.hasHardwareClock))
+      setClock(clockStatus())
+    })
+    return () => {
+      alive = false
+    }
+  }, [bridge])
 
   useEffect(() => {
-    const tick = () => setRows(snapshot())
+    const tick = () => {
+      setRows(snapshot())
+      setClock(clockStatus())
+    }
     tick()
     const timer = window.setInterval(tick, 1000)
 
@@ -563,7 +588,11 @@ function LatencyBoard({ hasBridge }: { hasBridge: boolean }) {
       <div className="latency-head">
         <span>链路延迟 · 采集 → 上屏</span>
         <span className="panel-meta">
-          {hasBridge ? 'C++ 打时间戳 · 同一时基' : '无桥接，纯浏览器演示'}
+          {!hasBridge
+            ? '无桥接，纯浏览器演示'
+            : clock.mode === 'device'
+              ? `设备时钟${clock.offsetMs < 0 ? `快 ${(-clock.offsetMs / 1000).toFixed(1)} s` : `慢 ${(clock.offsetMs / 1000).toFixed(1)} s`} · 偏移已扣除`
+              : 'C++ 打时间戳 · 宿主同源'}
         </span>
       </div>
       {active.length === 0 ? (
@@ -597,6 +626,9 @@ function LatencyBoard({ hasBridge }: { hasBridge: boolean }) {
       <p className="latency-note">
         「到达」= 采集 → JS 回调；「上屏」= 采集 → 该帧真正绘制。原生通道（窗口底部波形条）
         走 Qt 信号直连 + QPainter，不经 WebView，可作同机对照。
+        {clock.mode === 'device' &&
+          ' 时间戳来自设备时钟：单侧测量只能得到「时钟偏移 + 延迟」之和，' +
+          '这里用最近 120 个样本的最小值估偏移并扣除，表中数值是扣偏移后的残差（略小于真实延迟，不会虚高）。'}
       </p>
     </div>
   )

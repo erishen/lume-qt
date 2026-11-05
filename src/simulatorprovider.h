@@ -25,6 +25,10 @@ public:
     QString kind() const override { return QStringLiteral("simulator"); }
     QString description() const override;
 
+    /// 时间戳来自「设备侧」时返回 true。模拟器默认为宿主墙钟（false）；
+    /// 用 QTRS_CLOCK_OFFSET_MS 模拟设备时钟后即为 true。
+    bool hasHardwareClock() const override { return m_clockOffsetUs != 0.0; }
+
     bool startMedical() override;
     void stopMedical() override;
     bool startNeurology() override;
@@ -32,6 +36,8 @@ public:
 
 private:
     static double nowMicros();
+    /// 采集时刻：宿主墙钟 + 设备时钟偏移（模拟真实设备时基与宿主不同源）
+    double stampMicros() const { return nowMicros() + m_clockOffsetUs; }
     static double clampTo(double v, double lo, double hi);
     static double randomUnit();
     static double randomRange(double lo, double hi);
@@ -48,6 +54,9 @@ private:
     void emitEmgSample();
     void emitNeuralSpike();
     void emitIntervention();
+
+    /// 设备时钟与宿主时钟的偏移（微秒）。0 表示与宿主同源。
+    double m_clockOffsetUs = 0.0;
 
     // 医疗模拟状态
     QTimer *m_ecgTimer = nullptr;

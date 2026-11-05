@@ -6,8 +6,9 @@
  * 渲染进程、合成与排队。为此 C++ 侧给每个实时载荷打了采集时刻 tsUs
  * （epoch 微秒，system_clock），这里用同一时基换算成年龄。
  *
- * 时基：performance.timeOrigin + performance.now() = epoch 毫秒，精度亚毫秒，
- * 与 C++ 的 system_clock 同源（都是系统墙钟），差值即链路年龄。
+ * 时基：performance.timeOrigin + performance.now() = epoch 毫秒，精度亚毫秒。
+ * 时间戳分两种：来自宿主墙钟（与上面同源，直接相减即年龄）；来自设备时钟
+ * （与宿主有未知常量偏移，必须先估偏移再算，见 setClockSource）。
  */
 
 export type Channel = 'ecg' | 'eeg' | 'emg' | 'neural' | 'vitals' | 'volume'
@@ -54,6 +55,70 @@ export function nowMicros(): number {
 
 const CAPACITY = 512
 
+// ---------------------------------------------------------------------------
+// 时基：宿主时钟 / 设备时钟
+// ---------------------------------------------------------------------------
+/**
+ * 单侧测量拿不到「时钟偏移」和「真实延迟」各自的值，只能拿到二者之和：
+ *   raw = 宿主now − tsUs = 偏移 + 真实延迟
+ * 偏移短期恒定、真实延迟有下界，所以最近窗口内 raw 的最小值就是偏移的下界估计。
+ * 扣掉它，剩下的残差才是链路延迟（相对值，比真实延迟略小）。
+ * 时间戳本来就来自宿主墙钟时（hasHardwareClock = false），偏移≈0，直接相减即可。
+ */
+export type ClockMode = 'host' | 'device'
+
+let clockMode: ClockMode = 'host'
+let clockSamples = 0
+let clockOffsetUs = 0
+const OFFSET_WINDOW = 120
+const offsetRing: number[] = []
+
+export interface ClockStatus {
+  mode: ClockMode
+  /** 估计出的「宿主 − 设备」时钟偏移（ms）；host 模式恒为 0 */
+  offsetMs: number
+  /** 参与偏移估计的样本数 */
+  samples: number
+}
+
+/** 由 C++ 侧 providerInfo().hasHardwareClock 决定；切换时丢弃旧样本 */
+export function setClockSource(hasHardwareClock: boolean) {
+  const mode: ClockMode = hasHardwareClock ? 'device' : 'host'
+  if (clockMode === mode) return
+  clockMode = mode
+  offsetRing.length = 0
+  clockSamples = 0
+  clockOffsetUs = 0
+}
+
+export function clockStatus(): ClockStatus {
+  return { mode: clockMode, offsetMs: clockOffsetUs / 1000, samples: clockSamples }
+}
+
+/**
+ * 时间戳固定来自宿主时钟的通道。DICOM 体积的 tsUs 是 C++ 侧解析完成时刻
+ * （Bridge::nowMicros，宿主墙钟），不随设备时基变化——按设备时钟去扣偏移会得到
+ * 5 000 000 ms 这种假值。
+ */
+const HOST_STAMPED_CHANNELS: Channel[] = ['volume']
+
+function isHostStamped(channel: Channel): boolean {
+  return HOST_STAMPED_CHANNELS.includes(channel)
+}
+
+/** 把原始差值换算成「扣掉时钟偏移后的链路延迟」 */
+function residualUs(channel: Channel, raw: number): number {
+  if (clockMode === 'host' || isHostStamped(channel)) return raw
+  push(offsetRing, raw, OFFSET_WINDOW)
+  clockSamples += 1
+  let min = offsetRing[0]
+  for (const v of offsetRing) {
+    if (v < min) min = v
+  }
+  clockOffsetUs = min
+  return raw - min
+}
+
 interface Series {
   /** 样本到达 JS 回调时的年龄（ms） */
   receipt: number[]
@@ -89,13 +154,13 @@ export function recordReceipt(channel: Channel, tsUs: number | undefined) {
   if (typeof tsUs !== 'number' || !Number.isFinite(tsUs) || tsUs <= 0) return
   const now = nowMicros()
   lastReceiptUs[channel] = now
-  push(series[channel].receipt, now - tsUs)
+  push(series[channel].receipt, residualUs(channel, now - tsUs))
 }
 
 /** 记录一次「采集 → 本帧绘制」的年龄；在真正 draw 的那一帧调用 */
 export function recordPainted(channel: Channel, tsUs: number | undefined) {
   if (typeof tsUs !== 'number' || !Number.isFinite(tsUs) || tsUs <= 0) return
-  push(series[channel].painted, nowMicros() - tsUs)
+  push(series[channel].painted, residualUs(channel, nowMicros() - tsUs))
 }
 
 export interface ChannelLatency {

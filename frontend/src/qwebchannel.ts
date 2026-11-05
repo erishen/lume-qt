@@ -42,6 +42,14 @@ export interface Intervention {
   tsUs?: number
 }
 
+/** 当前设备数据源信息（与 C++ Bridge::providerInfo 对应） */
+export interface ProviderInfo {
+  kind: string
+  description: string
+  /** true = 时间戳来自设备时钟（与宿主墙钟有未知常量偏移） */
+  hasHardwareClock: boolean
+}
+
 export interface Bridge {
   appName: string
   platform: string
@@ -58,6 +66,9 @@ export interface Bridge {
   // ---- 神经内科介入模拟控制 ----
   startNeurologySimulation(): void
   stopNeurologySimulation(): void
+
+  /** 当前设备数据源与时基信息 */
+  providerInfo(): Promise<ProviderInfo>
 
   // ---- DICOM 体积加载 ----
   loadDicomVolume(directory: string): void
