@@ -3,6 +3,7 @@ import type { Bridge, DicomVolumeMeta, Intervention, Vitals } from './qwebchanne
 import Neuro3D from './Neuro3D'
 import Volume3D from './Volume3D'
 import { createSyntheticBrain } from './syntheticVolume'
+import { createFrameLimiter, observeInViewport } from './framePacing'
 
 // ECG 波形缓冲长度（点），对应画布横向采样
 const ECG_BUFFER = 600
@@ -21,10 +22,13 @@ const ECG_BUFFER = 600
  */
 export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
   const [vitals, setVitals] = useState<Vitals | null>(null)
+  const rootRef = useRef<HTMLElement | null>(null)
   const ecgRef = useRef<HTMLCanvasElement | null>(null)
   const usRef = useRef<HTMLCanvasElement | null>(null)
   // ECG 样本缓冲（ref 避免频繁 setState）
   const ecgBuf = useRef<number[]>([])
+  // 只有新样本到达才重绘 ECG（样本 25Hz，无需按 60Hz 空转）
+  const ecgDirty = useRef(true)
 
   useEffect(() => {
     // 订阅实时数据（Qt 桥接或纯浏览器演示）
@@ -32,6 +36,7 @@ export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
       const buf = ecgBuf.current
       buf.push(value)
       if (buf.length > ECG_BUFFER) buf.splice(0, buf.length - ECG_BUFFER)
+      ecgDirty.current = true
     }
     const onVitals = (v: Vitals) => setVitals(v)
 
@@ -87,20 +92,32 @@ export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
   useEffect(() => {
     let raf = 0
     let lastT = 0
+    let stopObserve: (() => void) | null = null
+
+    const usLimiter = createFrameLimiter(30)
+    let inView = true
+    if (rootRef.current) stopObserve = observeInViewport(rootRef.current, (v) => { inView = v })
 
     const draw = (t: number) => {
+      raf = requestAnimationFrame(draw)
       const dt = Math.min(t - lastT, 100) / 1000
       lastT = t
-      drawEcg(ecgRef.current, ecgBuf.current, t)
-      drawUltrasound(usRef.current, t, dt)
-      raf = requestAnimationFrame(draw)
+      if (!inView || document.hidden) return
+      if (ecgDirty.current) {
+        ecgDirty.current = false
+        drawEcg(ecgRef.current, ecgBuf.current, t)
+      }
+      if (usLimiter(t)) drawUltrasound(usRef.current, t, dt)
     }
     raf = requestAnimationFrame(draw)
-    return () => cancelAnimationFrame(raf)
+    return () => {
+      cancelAnimationFrame(raf)
+      stopObserve?.()
+    }
   }, [])
 
   return (
-    <section className="card monitor">
+    <section className="card monitor" ref={rootRef}>
       <h2>医疗影像实时数据模拟</h2>
       <p className="monitor-note">数据由 C++ 侧实时生成并经 QWebChannel 推送 · Canvas 渲染</p>
 
@@ -161,11 +178,15 @@ function NeurologyPanel({ bridge }: { bridge: Bridge | null }) {
   const eegBuf = useRef<number[]>([])
   const emgBuf = useRef<number[]>([])
   const neuralBuf = useRef<number[]>([])
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  // 任一波形有新样本才重绘，避免 60Hz 空转
+  const waveDirty = useRef(true)
 
   useEffect(() => {
     const push = (buf: number[], v: number) => {
       buf.push(v)
       if (buf.length > NEURO_BUFFER) buf.splice(0, buf.length - NEURO_BUFFER)
+      waveDirty.current = true
     }
     const onEeg = (v: number) => push(eegBuf.current, v)
     const onEmg = (v: number) => push(emgBuf.current, v)
@@ -243,18 +264,27 @@ function NeurologyPanel({ bridge }: { bridge: Bridge | null }) {
   // 渲染循环：三条神经波形
   useEffect(() => {
     let raf = 0
+    let inView = true
+    let stopObserve: (() => void) | null = null
+    if (rootRef.current) stopObserve = observeInViewport(rootRef.current, (v) => { inView = v })
+
     const draw = () => {
+      raf = requestAnimationFrame(draw)
+      if (!inView || document.hidden || !waveDirty.current) return
+      waveDirty.current = false
       drawWave(eegRef.current, eegBuf.current, '#5ee7df', -2, 2)
       drawWave(emgRef.current, emgBuf.current, '#ff8a65', 0, 1)
       drawWave(neuralRef.current, neuralBuf.current, '#ffd166', -1, 1)
-      raf = requestAnimationFrame(draw)
     }
     raf = requestAnimationFrame(draw)
-    return () => cancelAnimationFrame(raf)
+    return () => {
+      cancelAnimationFrame(raf)
+      stopObserve?.()
+    }
   }, [])
 
   return (
-    <div className="neuro">
+    <div className="neuro" ref={rootRef}>
       <h3 className="neuro-title">🧠 神经内科介入监测</h3>
       <div className="neuro-grid">
         <NeuroPanel title="脑电图 EEG · 10μV/格" refCb={eegRef} color="#5ee7df" />
@@ -319,14 +349,7 @@ function drawWave(canvas: HTMLCanvasElement | null, data: number[], color: strin
   if (!ctx) return
   const { width: w, height: h } = canvas
 
-  ctx.fillStyle = '#08121a'
-  ctx.fillRect(0, 0, w, h)
-  ctx.strokeStyle = 'rgba(40,80,110,0.2)'
-  ctx.lineWidth = 1
-  for (let x = 0; x < w; x += 20) {
-    ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, h); ctx.stroke()
-  }
-  ctx.beginPath(); ctx.moveTo(0, h / 2 + 0.5); ctx.lineTo(w, h / 2 + 0.5); ctx.stroke()
+  ctx.drawImage(gridLayer(canvas, '#08121a', 'rgba(40,80,110,0.2)', 20, false), 0, 0)
 
   const n = data.length
   if (n < 2) return
@@ -406,6 +429,54 @@ function Vital({ label, value, unit, color, alert }: {
 // Canvas 渲染
 // ---------------------------------------------------------------------------
 
+/**
+ * 背景 + 网格是静态的，但原先每帧都重画一遍（十几个 beginPath/stroke）。
+ * 尺寸与配色不变时缓存成一张离屏图，每帧只做一次 drawImage。
+ */
+const gridLayerCache = new WeakMap<HTMLCanvasElement, { key: string; layer: HTMLCanvasElement }>()
+
+function gridLayer(
+  canvas: HTMLCanvasElement,
+  bg: string,
+  grid: string,
+  step: number,
+  horizontal: boolean,
+): HTMLCanvasElement {
+  const key = `${canvas.width}x${canvas.height}|${bg}|${grid}|${step}|${horizontal}`
+  const hit = gridLayerCache.get(canvas)
+  if (hit && hit.key === key) return hit.layer
+
+  const layer = document.createElement('canvas')
+  layer.width = canvas.width
+  layer.height = canvas.height
+  const ctx = layer.getContext('2d')!
+  ctx.fillStyle = bg
+  ctx.fillRect(0, 0, layer.width, layer.height)
+  ctx.strokeStyle = grid
+  ctx.lineWidth = 1
+  for (let x = 0; x < layer.width; x += step) {
+    ctx.beginPath()
+    ctx.moveTo(x + 0.5, 0)
+    ctx.lineTo(x + 0.5, layer.height)
+    ctx.stroke()
+  }
+  if (horizontal) {
+    for (let y = 0; y < layer.height; y += step) {
+      ctx.beginPath()
+      ctx.moveTo(0, y + 0.5)
+      ctx.lineTo(layer.width, y + 0.5)
+      ctx.stroke()
+    }
+  } else {
+    ctx.beginPath()
+    ctx.moveTo(0, layer.height / 2 + 0.5)
+    ctx.lineTo(layer.width, layer.height / 2 + 0.5)
+    ctx.stroke()
+  }
+  gridLayerCache.set(canvas, { key, layer })
+  return layer
+}
+
 /** 滚动 ECG 波形 */
 function drawEcg(canvas: HTMLCanvasElement | null, data: number[], t: number) {
   if (!canvas) return
@@ -413,18 +484,8 @@ function drawEcg(canvas: HTMLCanvasElement | null, data: number[], t: number) {
   if (!ctx) return
   const { width: w, height: h } = canvas
 
-  // 背景 + 网格
-  ctx.fillStyle = '#060a10'
-  ctx.fillRect(0, 0, w, h)
-  ctx.strokeStyle = 'rgba(40,80,110,0.25)'
-  ctx.lineWidth = 1
-  const grid = 20
-  for (let x = 0; x < w; x += grid) {
-    ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, h); ctx.stroke()
-  }
-  for (let y = 0; y < h; y += grid) {
-    ctx.beginPath(); ctx.moveTo(0, y + 0.5); ctx.lineTo(w, y + 0.5); ctx.stroke()
-  }
+  // 背景 + 网格（静态层，缓存后一次 drawImage 贴上）
+  ctx.drawImage(gridLayer(canvas, '#060a10', 'rgba(40,80,110,0.25)', 20, true), 0, 0)
 
   const mid = h / 2
   const amp = h * 0.38
@@ -458,6 +519,24 @@ function drawEcg(canvas: HTMLCanvasElement | null, data: number[], t: number) {
   void t
 }
 
+/** 按画布尺寸缓存径向渐变（createRadialGradient 每帧重建是纯浪费） */
+const backdropCache = new WeakMap<HTMLCanvasElement, { w: number; h: number; g: CanvasGradient }>()
+function backdropGradient(
+  canvas: HTMLCanvasElement,
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  radius: number,
+): CanvasGradient {
+  const hit = backdropCache.get(canvas)
+  if (hit && hit.w === canvas.width && hit.h === canvas.height) return hit.g
+  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius)
+  g.addColorStop(0, '#0d141c')
+  g.addColorStop(1, '#05080c')
+  backdropCache.set(canvas, { w: canvas.width, h: canvas.height, g })
+  return g
+}
+
 /** 模拟超声实时扫描影像 */
 function drawUltrasound(canvas: HTMLCanvasElement | null, t: number, dt: number) {
   if (!canvas) return
@@ -474,6 +553,7 @@ function drawUltrasound(canvas: HTMLCanvasElement | null, t: number, dt: number)
   const radius = Math.min(w, h) * 0.82
   const spread = 0.55 // 半张角（弧度）
 
+  ctx.fillStyle = '#96c3dc'
   ctx.save()
   ctx.beginPath()
   ctx.moveTo(cx, cy)
@@ -481,12 +561,11 @@ function drawUltrasound(canvas: HTMLCanvasElement | null, t: number, dt: number)
   ctx.closePath()
   ctx.clip()
 
-  // 组织底色（径向渐变，近场亮、远场暗）
-  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius)
-  g.addColorStop(0, '#0d141c')
-  g.addColorStop(1, '#05080c')
-  ctx.fillStyle = g
+  // 组织底色（径向渐变）：渐变对象按画布尺寸缓存，不必每帧重建
+  ctx.fillStyle = backdropGradient(canvas, ctx, cx, cy, radius)
   ctx.fillRect(0, 0, w, h)
+  // 组织斑点用固定色 + globalAlpha 控制透明度（不每帧拼 rgba 字符串）
+  ctx.fillStyle = '#96c3dc'
 
   // 组织界面（伪随机斑点，缓慢漂移模拟呼吸/搏动）
   for (let i = 0; i < 70; i++) {
@@ -497,7 +576,7 @@ function drawUltrasound(canvas: HTMLCanvasElement | null, t: number, dt: number)
     const y = cy + Math.sin(angle) * r
     const a = 0.10 + 0.35 * (Math.sin(seed * 2.73 + t * 0.9) * 0.5 + 0.5)
     const s = 1 + (Math.sin(seed + t * 0.6) * 0.5 + 0.5) * 2.4
-    ctx.fillStyle = `rgba(150,195,220,${a.toFixed(3)})`
+    ctx.globalAlpha = a
     ctx.beginPath()
     ctx.arc(x, y, s, 0, Math.PI * 2)
     ctx.fill()
@@ -513,13 +592,15 @@ function drawUltrasound(canvas: HTMLCanvasElement | null, t: number, dt: number)
     const y = cy + Math.sin(angle) * r
     const a = 0.5 * (1 - r / radius)
     const red = (i % 2) === 0
-    ctx.fillStyle = red ? `rgba(255,90,90,${a.toFixed(3)})` : `rgba(90,150,255,${a.toFixed(3)})`
+    ctx.fillStyle = red ? '#ff5a5a' : '#5a96ff'
+    ctx.globalAlpha = a
     ctx.beginPath()
     ctx.arc(x, y, 1.6, 0, Math.PI * 2)
     ctx.fill()
   }
 
   // 扫描线（往复摆动）
+  ctx.globalAlpha = 1
   const sweep = -Math.PI / 2 + Math.sin(t * 1.4) * spread * 0.9
   const grad = ctx.createLinearGradient(cx, cy,
     cx + Math.cos(sweep) * radius, cy + Math.sin(sweep) * radius)
@@ -532,6 +613,7 @@ function drawUltrasound(canvas: HTMLCanvasElement | null, t: number, dt: number)
   ctx.lineTo(cx + Math.cos(sweep) * radius, cy + Math.sin(sweep) * radius)
   ctx.stroke()
 
+  ctx.globalAlpha = 1
   ctx.restore()
 
   // 扇区边界弧

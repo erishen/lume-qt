@@ -207,6 +207,24 @@ bridge.dataFromCpp.connect((payload) => {
 
 > 注意：CMake 配置阶段即 `find_package(DCMTK REQUIRED)`，未安装 DCMTK 会直接配置失败——这是本项目的硬依赖，不同于 Qt 可可选模块。
 
+## 渲染性能
+
+页面上同时跑着两个 WebGL 场景（神经脉络、DICOM 体渲染）加 5 个 2D canvas。原先它们各自按
+`requestAnimationFrame` 全速重绘，即使整块面板滚出视口也不停——这是"整页卡顿"的主因。现在的约定：
+
+- **离屏暂停**：每个渲染循环用 `IntersectionObserver` 判断宿主元素是否在视口内，配合
+  `document.hidden`，滚出视口或窗口切后台时整条循环直接跳过更新与绘制（`framePacing.ts`）。
+- **帧率分级**：DICOM 体渲染按 30fps 刷新（`autoRotate` 观感几乎无差别，GPU 开销减半）；
+  超声扫描 30fps；ECG / EEG / EMG 波形改为"有新样本才重绘"（样本本身只有 10–25Hz）。
+- **体绘制成本控制**：像素比限制到 1.5（Retina 下按 2 倍渲染等于 4 倍片元），关闭 MSAA
+  （全屏 ray-marching 没有几何边缘，MSAA 纯烧带宽），采样数 140 → 96。
+- **2D 绘制去冗余**：背景网格改成离屏层缓存后 `drawImage` 贴上；超声的径向渐变按画布尺寸
+  缓存；粒子不再每帧拼 `rgba(...)` 字符串，改用 `globalAlpha`。
+
+实测（Apple M3 / Qt WebEngine ANGLE Metal，单实例）：优化前首屏约 52fps、最差帧 100ms+；
+优化后首屏 60fps、滚到体渲染面板 55–60fps。注意同时开多个实例会争抢 GPU，帧率会明显下降，
+测的时候只留一个。
+
 ## 🧪 测试基础设施
 
 ### C++ 单元测试

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { DicomVolumeMeta } from './qwebchannel'
+import { createFrameLimiter, observeInViewport } from './framePacing'
 
 /**
  * Volume3D — DICOM 体积体渲染（Three.js / WebGL2）。
@@ -150,15 +151,17 @@ export default function Volume3D({ volume }: { volume: VolumeInput | null }) {
     mount.appendChild(canvas)
 
     // 显式请求 WebGL2 以使用 sampler3D / in-out 语法
-    const glContext = canvas.getContext('webgl2', { antialias: true }) as WebGL2RenderingContext
+    const glContext = canvas.getContext('webgl2', { antialias: false }) as WebGL2RenderingContext
     // Three.js WebGLRenderer 依据 context.version >= 2 判定是否 WebGL2，
     // 故需在创建 renderer 前标记 version，否则会按 GLSL ES 1.00（WebGL1）编译着色器
     if (glContext) {
       ;(glContext as any).version = 2
       ;(glContext as any).isWebGL2 = true
     }
-    const renderer = new THREE.WebGLRenderer({ canvas, context: glContext, antialias: true })
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    const renderer = new THREE.WebGLRenderer({ canvas, context: glContext, antialias: false })
+    // 体渲染是逐像素 ray-marching，成本与像素数成正比：Retina 下按 2 倍像素比渲染会
+    // 让片元数翻 4 倍。1.5 倍在观感上几乎无差别。
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5))
     rendererRef.current = renderer
 
     const controls = new OrbitControls(camera, renderer.domElement)
@@ -175,8 +178,15 @@ export default function Volume3D({ volume }: { volume: VolumeInput | null }) {
     scene.add(placeholder)
 
     let raf = 0
-    const animate = () => {
+    // 体渲染按 30fps 刷新：autoRotate 的观感几乎不受影响，GPU 开销减半。
+    const limiter = createFrameLimiter(30)
+    // 面板滚出视口或窗口切到后台时不渲染 —— 否则整页滚动都在为看不见的场景付费。
+    let inView = false
+    const stopObserve = observeInViewport(mount, (v) => { inView = v })
+    const animate = (t: number) => {
       raf = requestAnimationFrame(animate)
+      if (!inView || document.hidden) return
+      if (!limiter(t)) return
       controls.update()
       // ray-marching 的射线原点必须跟随真实相机：OrbitControls（含
       // autoRotate）会持续移动相机，若 uCameraPos 不更新，体将被错误投影
@@ -187,7 +197,7 @@ export default function Volume3D({ volume }: { volume: VolumeInput | null }) {
       }
       renderer.render(scene, camera)
     }
-    animate()
+    animate(performance.now())
 
     const onResize = () => {
       const w = mount.clientWidth
@@ -202,6 +212,7 @@ export default function Volume3D({ volume }: { volume: VolumeInput | null }) {
 
     return () => {
       cancelAnimationFrame(raf)
+      stopObserve()
       ro.disconnect()
       controls.dispose()
       boxGeo.dispose()
@@ -236,7 +247,7 @@ export default function Volume3D({ volume }: { volume: VolumeInput | null }) {
         uVolume: { value: tex },
         uCameraPos: { value: cameraRef.current!.position.clone() },
         uBoxCenter: { value: new THREE.Vector3(0, 0, 0) },
-        uSampleCount: { value: 140 },
+        uSampleCount: { value: 96 },
         uAlphaScale: { value: 0.42 },
         uWindow: { value: new THREE.Vector2(winUniformRef.current.lo, winUniformRef.current.hi) },
       },

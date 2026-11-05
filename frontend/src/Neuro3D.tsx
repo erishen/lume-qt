@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { Bridge, Intervention } from './qwebchannel'
+import { observeInViewport } from './framePacing'
 
 /**
  * Neuro3D — 三维神经脉络 + 实时神经介入手术可视化（Three.js / WebGL）。
@@ -50,7 +51,7 @@ export default function Neuro3D({ bridge }: { bridge: Bridge | null }) {
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
     renderer.setSize(mount.clientWidth, mount.clientHeight)
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5))
     mount.appendChild(renderer.domElement)
 
     const controls = new OrbitControls(camera, renderer.domElement)
@@ -151,6 +152,7 @@ export default function Neuro3D({ bridge }: { bridge: Bridge | null }) {
     const pulsePath: number[][] = Array.from({ length: pulseCount }, () => [])
     const pulseSeg = new Float32Array(pulseCount).fill(0)
     const pulseT = new Float32Array(pulseCount).fill(0)
+    let pulsesAlive = 0
 
     const pulseGeom = track(new THREE.BufferGeometry())
     pulseGeom.setAttribute('position', new THREE.BufferAttribute(pulsePos, 3))
@@ -182,6 +184,7 @@ export default function Neuro3D({ bridge }: { bridge: Bridge | null }) {
       for (let p = 0; p < pulseCount; p++) {
         if (!pulseAlive[p]) {
           pulseAlive[p] = 1
+          pulsesAlive += 1
           pulsePath[p] = [from]
           const nbrs = adj[from]
           if (nbrs.length > 0) {
@@ -477,6 +480,8 @@ export default function Neuro3D({ bridge }: { bridge: Bridge | null }) {
       nf: createNfTool(),
     }
 
+    const toolEntries = Object.entries(tools)
+
     let activeTool: ActiveIntervention | null = null
 
     const onIv = (iv: Intervention) => {
@@ -533,9 +538,13 @@ export default function Neuro3D({ bridge }: { bridge: Bridge | null }) {
     let raf = 0
     const timer = new THREE.Timer()
     const pulseTmp = new THREE.Vector3()
+    // 3D 面板在页面下方，滚出视口或窗口在后台时停止整棵场景的更新与渲染
+    let inView = false
+    const stopObserve = observeInViewport(mount, (v) => { inView = v })
 
     const animate = () => {
       raf = requestAnimationFrame(animate)
+      if (!inView || document.hidden) return
       timer.update()
       const dt = Math.min(timer.getDelta(), 0.1)
       const now = performance.now()
@@ -564,15 +573,16 @@ export default function Neuro3D({ bridge }: { bridge: Bridge | null }) {
           pulsePos[p * 3 + 2] = pulseTmp.z
         } else {
           pulseAlive[p] = 0
+          pulsesAlive -= 1
           pulsePos[p * 3 + 1] = -999
         }
       }
       pulseGeom.attributes.position.needsUpdate = true
-      const active = pulseAlive.reduce((s, v) => s + v, 0) > 0
+      const active = pulsesAlive > 0
       pulseMat.opacity += ((active ? 0.9 : 0) - pulseMat.opacity) * 0.2
 
       // 更新介入工具
-      for (const [key, tool] of Object.entries(tools)) {
+      for (const [key, tool] of toolEntries) {
         const isActive = activeTool?.type === key && now < activeTool.until
         if (isActive) {
           tool.group.visible = true
@@ -613,6 +623,7 @@ export default function Neuro3D({ bridge }: { bridge: Bridge | null }) {
     // ------------------------------------------------------------------
     return () => {
       cancelAnimationFrame(raf)
+      stopObserve()
       ro.disconnect()
       if (unsubEeg) unsubEeg()
       if (unsubIv) unsubIv()
