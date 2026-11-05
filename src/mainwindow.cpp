@@ -315,6 +315,11 @@ void MainWindow::setupNativeVolume()
                     m_volumePreset->setCurrentIndex(p.toInt());
                 }
             }
+            // CT 是诊断数据，默认灰阶；MR/其他本来就不是诊断图像（a.u.），
+            // 默认开伪彩只作定位演示，勾选框里仍标「非诊断」。
+            if (m_volumeOverlay && qgetenv("QTRS_VOLUME_COLOR").isEmpty()) {
+                m_volumeOverlay->setChecked(!isCt);
+            }
             if (auto *model = m_volumePreset->model()) {
                 for (int i = 0; i < 3; ++i) {
                     model->setData(model->index(i, 0), isCt, Qt::UserRole - 1); // 禁用项

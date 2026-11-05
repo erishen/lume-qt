@@ -80,24 +80,36 @@ void main()
 
     // 窗位/窗宽直接作用在 HU 上（临床惯例：W/L，而不是先压缩成 0-255 再猜）。
     // 等值面取窗中心，落到窗外的体素透明；这样换预设就等于换「看哪一层组织」。
+    float vPrev = -1.0;
+    vec3 pPrev = p;
     for (int i = 0; i < uSteps; ++i) {
         vec3 q = p + 0.5;
         if (all(greaterThanEqual(q, vec3(0.0))) && all(lessThanEqual(q, vec3(1.0)))) {
             float v = clamp((sampleHu(q) - uWindow.x) / uWindow.y + 0.5, 0.0, 1.0);
             if (v > 0.5) {
-                vec3 gxp = vec3(sampleHu(q + vec3(texel.x, 0.0, 0.0)),
-                                sampleHu(q + vec3(0.0, texel.y, 0.0)),
-                                sampleHu(q + vec3(0.0, 0.0, texel.z)));
-                vec3 gxn = vec3(sampleHu(q - vec3(texel.x, 0.0, 0.0)),
-                                sampleHu(q - vec3(0.0, texel.y, 0.0)),
-                                sampleHu(q - vec3(0.0, 0.0, texel.z)));
+                // 在跨越点做线性插值：不插值的话，等值面会落在采样格上，
+                // 曲面（尤其颅骨这种大曲率薄壳）会出现一圈圈台阶纹。
+                float tHit = 1.0;
+                if (vPrev >= 0.0 && vPrev < 0.5) {
+                    tHit = clamp((0.5 - vPrev) / (v - vPrev), 0.0, 1.0);
+                }
+                vec3 hp = mix(pPrev, p, tHit) + 0.5;
+                vec3 gxp = vec3(sampleHu(hp + vec3(texel.x, 0.0, 0.0)),
+                                sampleHu(hp + vec3(0.0, texel.y, 0.0)),
+                                sampleHu(hp + vec3(0.0, 0.0, texel.z)));
+                vec3 gxn = vec3(sampleHu(hp - vec3(texel.x, 0.0, 0.0)),
+                                sampleHu(hp - vec3(0.0, texel.y, 0.0)),
+                                sampleHu(hp - vec3(0.0, 0.0, texel.z)));
                 vec3 n = normalize(gxn - gxp);
                 float diff = max(abs(dot(n, normalize(-rd))), 0.0);
-                float shade = 0.55 + 0.45 * diff;
+                float rim = pow(1.0 - diff, 2.0);
+                // 主光 + 轮廓光；再按命中深度轻微压暗，给单色画面一点前后关系
+                float shade = 0.42 + 0.50 * diff + 0.18 * rim;
+                float depthFade = clamp(1.0 - 0.35 * float(i) / float(uSteps), 0.62, 1.0);
 
                 if (uColorMode == 0) {
                     // 灰阶：亮度就是窗内位置，符合阅片习惯。等值面处约 0.5 灰。
-                    fragColor = vec4(vec3(0.25 + 0.75 * v) * shade, 1.0);
+                    fragColor = vec4(vec3(0.30 + 0.70 * v) * shade * depthFade, 1.0);
                     return;
                 }
                 // 伪彩叠加（仅定位用）：强度越高越冷白，命中越深越偏冷。
@@ -108,6 +120,8 @@ void main()
                 fragColor = vec4(mix(byValue, byDepth, 0.42) * shade, 1.0);
                 return;
             }
+            vPrev = v;
+            pPrev = p;
         }
         p += rd * dt;
     }
@@ -159,7 +173,8 @@ void VolumeView::setVolume(const QByteArray &data, int dim, const QVariantMap &m
     {
         const int kBins = 1024;
         int hist[kBins] = {0};
-        const float tissueFloor = m_isCt ? -500.0f : m_huMin - 1.0f;
+        // CT 剔空气（约 -1000）；MR 剔背景零（背景常占大半体素，会把 p50 拖到 0）。
+        const float tissueFloor = m_isCt ? -500.0f : m_huMin + 0.001f * huRange;
         int tissueCount = 0;
         for (int i = 0; i < count; ++i) {
             if (static_cast<float>(hu[i]) < tissueFloor) continue;
@@ -180,10 +195,16 @@ void VolumeView::setVolume(const QByteArray &data, int dim, const QVariantMap &m
             return kBins - 1;
         };
         const float binToHu = huRange / static_cast<float>(kBins - 1);
-        const float loHu = m_huMin + static_cast<float>(percentileBin(50, 100)) * binToHu;
-        const float hiHu = m_huMin + static_cast<float>(percentileBin(999, 1000)) * binToHu;
+        const float loHu = m_huMin
+            + static_cast<float>(percentileBin(m_isCt ? 50 : 5, 100)) * binToHu;
+        const float hiHu = m_huMin
+            + static_cast<float>(percentileBin(999, 1000)) * binToHu;
         m_autoCenterHu = (loHu + hiHu) / 2.0f;
         m_autoWidthHu = std::max(20.0f, hiHu - loHu);
+        qInfo().noquote() << QStringLiteral("[Volume] 自适应窗分位：低 %1 高 %2 → W%3 / L%4")
+                                 .arg(static_cast<int>(loHu)).arg(static_cast<int>(hiHu))
+                                 .arg(static_cast<int>(m_autoWidthHu))
+                                 .arg(static_cast<int>(m_autoCenterHu));
     }
 
     // 打包成 16-bit 归一化纹理数据：GL_R16 支持线性过滤，且精度足够承载 HU。
