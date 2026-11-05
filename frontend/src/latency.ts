@@ -12,6 +12,41 @@
 
 export type Channel = 'ecg' | 'eeg' | 'emg' | 'neural' | 'vitals' | 'volume'
 
+/** 通道健康状态：正常 / 延迟超预算 / 已中断（画面是冻结帧） */
+export type SignalState = 'ok' | 'slow' | 'stale' | 'pending'
+
+export interface ChannelHealth {
+  channel: Channel
+  /** 距最近一次收到样本的时长（ms）；从未收到为 Infinity */
+  ageMs: number
+  /** 判定中断的阈值（ms） */
+  staleAfterMs: number
+  /** 最近窗口的到达中位数：判「慢」看它，避免一次卡顿把状态钉在告警里 */
+  receiptP50: number
+  receiptP99: number
+  state: SignalState
+}
+
+/**
+ * 中断阈值：按各通道采样周期的 5–8 倍留余量，宁可晚报也不误报。
+ * 这是「术中」与「演示」的分界线之一——信号停了必须显式告知，而不是继续画旧波形。
+ */
+const STALE_AFTER_MS: Record<Channel, number> = {
+  ecg: 250,
+  eeg: 400,
+  emg: 700,
+  neural: 600,
+  vitals: 4000,
+  // 体积是一次性加载，解析本身耗时数百毫秒，给足余量
+  volume: 30000,
+}
+
+/** 到达延迟预算：超过即视为「慢」，与看板标红阈值保持一致 */
+const SLOW_BUDGET_MS = 100
+
+/** 健康判定只看最近这么多个样本（看板统计仍用完整窗口） */
+const RECENT_WINDOW = 30
+
 /** epoch 微秒（与 C++ Bridge::nowMicros 对齐） */
 export function nowMicros(): number {
   return (performance.timeOrigin + performance.now()) * 1000
@@ -26,6 +61,15 @@ interface Series {
   painted: number[]
 }
 
+const lastReceiptUs: Record<Channel, number> = {
+  ecg: 0,
+  eeg: 0,
+  emg: 0,
+  neural: 0,
+  vitals: 0,
+  volume: 0,
+}
+
 const series: Record<Channel, Series> = {
   ecg: { receipt: [], painted: [] },
   eeg: { receipt: [], painted: [] },
@@ -35,15 +79,17 @@ const series: Record<Channel, Series> = {
   volume: { receipt: [], painted: [] },
 }
 
-function push(ring: number[], value: number) {
+function push(ring: number[], value: number, capacity = CAPACITY) {
   ring.push(value)
-  if (ring.length > CAPACITY) ring.splice(0, ring.length - CAPACITY)
+  if (ring.length > capacity) ring.splice(0, ring.length - capacity)
 }
 
 /** 记录一次「采集 → 到达 JS」的年龄；tsUs 缺失时忽略（纯浏览器演示无桥接） */
 export function recordReceipt(channel: Channel, tsUs: number | undefined) {
   if (typeof tsUs !== 'number' || !Number.isFinite(tsUs) || tsUs <= 0) return
-  push(series[channel].receipt, nowMicros() - tsUs)
+  const now = nowMicros()
+  lastReceiptUs[channel] = now
+  push(series[channel].receipt, now - tsUs)
 }
 
 /** 记录一次「采集 → 本帧绘制」的年龄；在真正 draw 的那一帧调用 */
@@ -92,4 +138,61 @@ export function snapshot(): ChannelLatency[] {
       samples: Math.max(r.n, p.n),
     }
   })
+}
+
+/**
+ * 通道健康度：给看门狗条轮询。
+ * 「从未收到」判为 pending 而不是 stale —— 启动时 ECG/体积本来就要等一会儿。
+ */
+export function channelHealth(): ChannelHealth[] {
+  const now = nowMicros()
+  return (Object.keys(series) as Channel[]).map((channel) => {
+    const s = series[channel]
+    // 判「慢」只看最近 30 个样本：512 窗口会把启动期（窗口未激活/解析中）的积压
+    // 一直算在里面，让健康状态卡在告警里出不来——那是测量噪声，不是当前链路状态。
+    const r = summarize(s.receipt.slice(-RECENT_WINDOW))
+    const last = lastReceiptUs[channel]
+    const ageMs = last > 0 ? (now - last) / 1000 : Number.POSITIVE_INFINITY
+    const staleAfterMs = STALE_AFTER_MS[channel]
+    let state: SignalState = 'pending'
+    if (last > 0) {
+      if (ageMs > staleAfterMs) state = 'stale'
+      else if (r.p50 > SLOW_BUDGET_MS) state = 'slow'
+      else state = 'ok'
+    }
+    return { channel, ageMs, staleAfterMs, receiptP50: r.p50, receiptP99: r.p99, state }
+  })
+}
+
+// ---------------------------------------------------------------------------
+// 帧预算：可见时的 rAF 间隔。P99 超预算意味着掉帧（不是「JS 算得慢」，而是没排上帧）。
+// ---------------------------------------------------------------------------
+
+export interface FrameStats {
+  p50: number
+  p99: number
+  /** 超过 33ms（30fps 预算）的帧占比 */
+  overBudgetRatio: number
+  samples: number
+}
+
+const FRAME_CAPACITY = 240
+const frameRing: number[] = []
+const FRAME_BUDGET_MS = 33
+
+/** 记录一次可见帧的 rAF 间隔（ms） */
+export function recordFrame(intervalMs: number) {
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) return
+  push(frameRing, intervalMs, FRAME_CAPACITY)
+}
+
+export function frameStats(): FrameStats {
+  const s = summarize(frameRing)
+  const over = frameRing.filter((v) => v > FRAME_BUDGET_MS).length
+  return {
+    p50: s.p50,
+    p99: s.p99,
+    overBudgetRatio: s.n > 0 ? over / s.n : 0,
+    samples: s.n,
+  }
 }

@@ -514,3 +514,40 @@ button:disabled {
   color: #5c6678;
   line-height: 1.5;
 }
+
+/* 信号看门狗：正常时低调，异常时必须抢眼（术中不允许静默失败） */
+.watchdog {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 2px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.watchdog-ok {
+  background: rgba(52, 211, 153, 0.08);
+  border: 1px solid rgba(52, 211, 153, 0.28);
+  color: #9ff0cf;
+}
+.watchdog-bad {
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  color: #ffc9c9;
+  font-weight: 600;
+}
+.watchdog-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.watchdog-ok .watchdog-dot { background: #34d399; }
+.watchdog-bad .watchdog-dot {
+  background: #f87171;
+  animation: wd-blink 1s steps(2, end) infinite;
+}
+@keyframes wd-blink {
+  50% { opacity: 0.25; }
+}

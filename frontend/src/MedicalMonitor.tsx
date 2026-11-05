@@ -4,7 +4,17 @@ import Neuro3D from './Neuro3D'
 import Volume3D from './Volume3D'
 import { createSyntheticBrain } from './syntheticVolume'
 import { createFrameLimiter, observeInViewport } from './framePacing'
-import { recordPainted, recordReceipt, snapshot, type ChannelLatency } from './latency'
+import {
+  channelHealth,
+  frameStats,
+  recordFrame,
+  recordPainted,
+  recordReceipt,
+  snapshot,
+  type ChannelHealth,
+  type ChannelLatency,
+  type FrameStats,
+} from './latency'
 
 // ECG 波形缓冲长度（点），对应画布横向采样
 const ECG_BUFFER = 600
@@ -105,9 +115,12 @@ export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
 
     const draw = (t: number) => {
       raf = requestAnimationFrame(draw)
-      const dt = Math.min(t - lastT, 100) / 1000
+      const rawMs = t - lastT
+      const dt = Math.min(rawMs, 100) / 1000
       lastT = t
       if (!inView || document.hidden) return
+      // 只统计真正可见的帧：掉帧（rAF 间隔超 33ms）意味着画面在等帧，不是算得慢
+      recordFrame(rawMs)
       if (ecgDirty.current) {
         ecgDirty.current = false
         recordPainted('ecg', lastEcgTs.current)
@@ -142,6 +155,8 @@ export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
       </div>
 
       <LatencyBoard hasBridge={bridge !== null} />
+
+      <WatchdogStrip hasBridge={bridge !== null} />
 
       {/* 波形 + 影像 */}
       <div className="monitor-row">
@@ -455,6 +470,81 @@ function fmt(ms: number): string {
  * 「到达」= 采集 → JS 回调；「上屏」= 采集 → 本帧真正 draw（目前只对 ECG 与体积采样）。
  * 窗口底部的原生波形条给出同机对照（不经 WebView）。
  */
+/** 信号看门狗：任何通道停止更新或延迟超预算都必须显式告警，而不是继续画旧波形 */
+function WatchdogStrip({ hasBridge }: { hasBridge: boolean }) {
+  const [tick, setTick] = useState<{ health: ChannelHealth[]; frame: FrameStats } | null>(null)
+  const lastBad = useRef('')
+  const slowStreak = useRef(0)
+
+  useEffect(() => {
+    const update = () => {
+      const h = channelHealth()
+      setTick({ health: h, frame: frameStats() })
+      // 状态变化时落一条日志：术中告警必须可回溯，不能只闪一下
+      // 「慢」连续 2 次采样（约 1s）才上报，避免单次抖动刷日志；中断立即上报
+      const raw = h.filter((c) => c.state === 'stale' || c.state === 'slow')
+      slowStreak.current = raw.some((c) => c.state === 'slow') ? slowStreak.current + 1 : 0
+      const badNow = raw.filter((c) => c.state === 'stale' || slowStreak.current >= 2)
+      const sig = badNow.map((c) => `${c.channel}:${c.state}`).join(',')
+      if (sig !== lastBad.current) {
+        lastBad.current = sig
+        if (badNow.length > 0) {
+          console.warn('[Watchdog] ' + badNow
+            .map((c) => `${c.channel}=${c.state}(age=${Math.round(c.ageMs)}ms, p50=${c.receiptP50.toFixed(1)}ms, p99=${c.receiptP99.toFixed(0)}ms)`)
+            .join(' '))
+        } else {
+          console.log('[Watchdog] 信号恢复正常')
+        }
+      }
+    }
+    update()
+    const timer = window.setInterval(update, 500)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  if (!hasBridge || !tick) return null
+
+  const bad = tick.health.filter((c) => c.state === 'stale' || c.state === 'slow')
+
+  const okCount = tick.health.filter((c) => c.state === 'ok').length
+  const stale = bad.filter((c) => c.state === 'stale')
+  const slow = bad.filter((c) => c.state === 'slow')
+  const frame = tick.frame
+
+  if (bad.length === 0) {
+    return (
+      <div className="watchdog watchdog-ok">
+        <span className="watchdog-dot" />
+        <span>
+          信号正常 · {okCount}/{tick.health.length} 通道有数据
+          {frame.samples > 0
+            ? ` · 帧 P50 ${frame.p50.toFixed(1)}ms / P99 ${frame.p99.toFixed(1)}ms`
+            : ''}
+        </span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="watchdog watchdog-bad">
+      <span className="watchdog-dot" />
+      <span>
+        {stale.length > 0
+          ? `信号中断：${stale
+              .map((c) => `${CHANNEL_LABEL[c.channel]} ${(c.ageMs / 1000).toFixed(1)}s`)
+              .join(' · ')}（画面为冻结帧）`
+          : ''}
+        {stale.length > 0 && slow.length > 0 ? '；' : ''}
+        {slow.length > 0
+          ? `延迟超预算：${slow
+              .map((c) => `${CHANNEL_LABEL[c.channel]} P50 ${c.receiptP50.toFixed(0)}ms`)
+              .join(' · ')}`
+          : ''}
+      </span>
+    </div>
+  )
+}
+
 function LatencyBoard({ hasBridge }: { hasBridge: boolean }) {
   const [rows, setRows] = useState<ChannelLatency[]>([])
 

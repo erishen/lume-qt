@@ -276,6 +276,58 @@ bridge.dataFromCpp.connect((payload) => {
 - 意义：这是「关键波形到底该不该走 WebView」的最小可对照实现——同机同源数据，一条走 QWebChannel
   + Canvas，一条走 Qt 信号 + QPainter，延迟差一个数量级的量级可直接读出来。
 
+### 4. 确定性：关闭渲染节流 + 信号看门狗 + 帧预算
+
+术中与演示最本质的差别不是「快」，而是**失败必须可见**：信号停了不能继续画旧波形。
+这一批做三件事。
+
+**a. 关闭 Chromium 的遮挡/后台节流**（`src/main.cpp` 的 `disableRendererThrottling()`，在
+`QApplication` 构造前 `qputenv`，若用户已自行配置则跳过）：
+
+```
+--disable-features=CalculateNativeWinOcclusion
+--disable-background-timer-throttling
+--disable-backgrounding-occluded-windows
+--disable-renderer-backgrounding
+```
+
+启动日志会打印 `[Chromium] flags: ...`，`ps -Ao command | grep QtWebEngineProcess` 可核对
+这些开关确实进了渲染进程（实测已生效，`CalculateNativeWinOcclusion` 在 `--disable-features` 列表里）。
+
+**b. 信号看门狗**（`latency.ts::channelHealth()` + `MedicalMonitor` 的 `WatchdogStrip`，500ms 轮询）：
+
+| 通道 | 判「中断」阈值 |
+| --- | --- |
+| ecg | 250ms |
+| eeg | 400ms |
+| emg | 700ms |
+| neural | 600ms |
+| vitals | 4s |
+| volume | 30s（一次性加载） |
+
+- 「中断」= 距最近一次收到样本超过阈值 → 红条 + 闪烁点 + `（画面为冻结帧）`；
+- 「延迟超预算」= 最近 30 个样本的**到达中位数** > 100ms（用中位数而不是 P99：一次卡顿不该
+  把状态钉在告警里，那是历史噪声不是当前链路状态）；
+- 从未收到判 `pending`，不计入告警（启动本来就该等）；
+- 状态变化落 `[Watchdog] ...`（`console.warn`）/ `[Watchdog] 信号恢复正常`（`console.log`），
+  告警可回溯；「慢」连续 2 次采样才上报，避免抖动刷日志。
+
+**c. 帧预算**：`recordFrame()` 只统计真正可见的 rAF 间隔，`frameStats()` 给出 P50/P99 与
+`overBudgetRatio`（>33ms 即掉帧），看门狗条正常态显示「信号正常 · n/N 通道有数据 · 帧 P50/P99」。
+
+验证记录（Apple M3，单实例）：
+
+- 告警路径：把 `ecg` 阈值临时改成 5ms → `[Watchdog] ecg=stale(...)` 立即出现；还原 250ms 后消失。
+- 真实告警：窗口未被激活的一次运行中出现
+  `[Watchdog] ecg=stale(age=284ms, p50=301ms, p99=1191ms) eeg=slow(...)`，
+  同期各通道到达中位数落在 **250–325ms**，与前台时的 **0.3–1.0ms** 相差两个量级。
+
+> **本节局限（实测，别误解成已解决）**：上面四个开关只关掉了 Chromium 的**定时器/后台节流**，
+> 并不能消除 macOS「窗口不在前台」时 QWebChannel 投递的批量迟发：实测遮挡状态下到达中位数
+> 仍是 250–325ms，个别样本迟到 10s 以上（积压后一次性投递），恢复前台后要过一段时间才排空。
+> 结论：**实时通路不能建立在这套 WebView 投递上**——这正是路线图第 3 步「关键波形原生化」的依据，
+> 看门狗的作用是让这种劣化不可能被静默忽略。
+
 ## 🧪 测试基础设施
 
 ### C++ 单元测试

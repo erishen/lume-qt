@@ -4,8 +4,33 @@
 
 #include "mainwindow.h"
 
+namespace {
+/**
+ * 术中场景要求「窗口被别的应用挡住也要继续刷新」。
+ * macOS 上 Chromium 默认做遮挡检测，会把 rAF 与定时器节流到秒级——实测同一份代码，
+ * 窗口前台时到达延迟 0.3–1.0ms，被遮挡时涨到数百毫秒（各通道读数还会趋同），
+ * 屏幕上看到的则是冻结帧。这些开关必须在 QApplication 构造前设好。
+ */
+void disableRendererThrottling()
+{
+    const QByteArray ours = "--disable-features=CalculateNativeWinOcclusion"
+                             " --disable-background-timer-throttling"
+                             " --disable-backgrounding-occluded-windows"
+                             " --disable-renderer-backgrounding";
+    const QByteArray existing = qgetenv("QTWEBENGINE_CHROMIUM_FLAGS");
+    if (existing.contains("CalculateNativeWinOcclusion")) {
+        return; // 用户已自行配置，尊重之
+    }
+    const QByteArray merged = existing.isEmpty() ? ours : existing + ' ' + ours;
+    qputenv("QTWEBENGINE_CHROMIUM_FLAGS", merged);
+}
+} // namespace
+
 int main(int argc, char *argv[])
 {
+    disableRendererThrottling();
+    qInfo().noquote() << "[Chromium] flags:" << qgetenv("QTWEBENGINE_CHROMIUM_FLAGS");
+
     // 注册自定义 scheme 必须在 QApplication 构造之前，
     // 否则 Qt WebEngine 会拒绝使用未注册的 scheme。
     QWebEngineUrlScheme scheme("app");
