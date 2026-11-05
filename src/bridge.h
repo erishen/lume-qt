@@ -195,6 +195,10 @@ private:
 
     std::shared_ptr<PacsThreadHolder> m_pacsHolder;
     bool m_pacsBusy = false;
+    /// 心跳单独一条线程/关联：长取回（C-MOVE 收尾可能数秒）期间仍要能发现掉线，
+    /// 不能因为「有人在取图」就把在线检测停掉。
+    std::shared_ptr<PacsThreadHolder> m_heartbeatHolder;
+    bool m_heartbeatBusy = false;
     QVariantMap m_pacsState;
 
     /// 最近一次 PACS 端点：心跳与重试都复用它，免得各处再解析一遍配置。

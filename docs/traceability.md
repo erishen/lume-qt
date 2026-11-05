@@ -52,7 +52,7 @@
 | QRS-I-003 | 只支持 C-MOVE 的 PACS 也有可取路径（本机接收 SCP） | `src/pacsclient.cpp` `src/bridge.cpp` | C-MOVE 60 对象 3137ms；`--disable-get` 下 C-GET → C-MOVE 回落 3226ms | 已验证 |
 | QRS-I-004 | 瞬时故障自动重试（有界退避），状态翻转时记录在线/离线 | `src/pacsclient.cpp` `src/bridge.cpp` | 断网三次失败后放弃；重试途中恢复第 2 次成功；心跳恢复 4ms | 已验证 |
 | QRS-I-005 | 多例选择 / 按病人过滤，而不是永远取第一例 | `frontend/src/MedicalMonitor.tsx` `src/bridge.cpp` | 库里两例时下拉可切换；选第二例后取回 8 个对象、体积来自该例目录 | 已验证 |
-| QRS-I-006 | 长时间取回期间的掉线要能及时暴露，而不是等取回失败 | `src/bridge.cpp` | 心跳与取回互斥，取回中跳过心跳：实现有，但覆盖不足 | 部分验证 |
+| QRS-I-006 | 长时间取回期间的掉线要能及时暴露，而不是等取回失败 | `src/bridge.cpp` | 心跳独立线程/关联：C-MOVE 进行中杀掉 PACS，同一秒记 `pacs.offline`、取回随后才失败；日志无「跳过本次探测」 | 已验证 |
 
 ## E. 审计与可追溯
 
@@ -99,6 +99,7 @@
 | 本批（多例选择） | QRS-I-005 |
 | 本批（重启恢复） | QRS-F-003 |
 | 本批（风险分析） | QRS-R-002 |
+| 本批（取回中心跳） | QRS-I-006 |
 
 统计不手写：`make trace` 每次重新数一遍，缺口或引用失效会直接报错。
 

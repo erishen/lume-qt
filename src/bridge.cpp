@@ -136,6 +136,11 @@ Bridge::~Bridge()
         if (m_pacsHolder->thread && m_pacsHolder->thread->joinable())
             m_pacsHolder->thread->join();
     }
+    if (m_heartbeatHolder) {
+        m_heartbeatHolder->alive = false;
+        if (m_heartbeatHolder->thread && m_heartbeatHolder->thread->joinable())
+            m_heartbeatHolder->thread->join();
+    }
 
     // 若 DICOM 解析仍在进行：先置 alive=false（位于堆上、独立于 this），
     // 再置 cancel=true 让 worker 在下一个边界退出，最后 join。
@@ -210,12 +215,13 @@ void Bridge::pacsProbe(const QString &host, int port, const QString &calledAe)
 
 void Bridge::probePacs(const QString &host, int port, const QString &calledAe, bool heartbeat)
 {
-    if (m_pacsBusy) {
-        // 心跳撞上正在跑的取回时直接跳过：网络卡住时堆探测只会让两边都超时。
+    // 心跳与取回各走各的关联：取回可能持续数秒，掉线检测不能跟着停。
+    if (heartbeat ? m_heartbeatBusy : m_pacsBusy) {
         qInfo() << "[PACS] 上一次请求尚未返回，跳过本次探测";
         return;
     }
-    m_pacsBusy = true;
+    if (heartbeat) m_heartbeatBusy = true;
+    else m_pacsBusy = true;
 
     m_pacsHost = host;
     m_pacsPort = port;
@@ -228,7 +234,8 @@ void Bridge::probePacs(const QString &host, int port, const QString &calledAe, b
 
     auto holder = std::make_shared<PacsThreadHolder>();
     holder->alive = true;
-    m_pacsHolder = holder;
+    if (heartbeat) m_heartbeatHolder = holder;
+    else m_pacsHolder = holder;
 
     if (!heartbeat) {
         qInfo().noquote() << QStringLiteral("[PACS] C-ECHO → %1:%2 AE=%3")
@@ -241,7 +248,12 @@ void Bridge::probePacs(const QString &host, int port, const QString &calledAe, b
 
         QMetaObject::invokeMethod(this, [this, holder, ep, ok, err, roundTripMs, heartbeat]() {
             if (!holder->alive) return;
-            m_pacsBusy = false;
+            if (heartbeat) {
+                m_heartbeatBusy = false;
+                if (m_heartbeatHolder == holder) m_heartbeatHolder.reset();
+            } else {
+                m_pacsBusy = false;
+            }
 
             const bool hadState = m_pacsProbed;
             const bool wasOnline = m_pacsOnline;

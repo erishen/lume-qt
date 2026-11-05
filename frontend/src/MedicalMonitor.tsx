@@ -597,7 +597,14 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
     if (!bridge || typeof bridge.pacsStatus?.connect !== 'function') return
     const onStatus = (st: PacsStatus) => {
       pacsRef.current = { host: st.host, port: st.port, ae: st.calledAe }
-      setPacs({ ok: st.ok, rttMs: st.roundTripMs, count: 0, ae: st.calledAe, message: st.message })
+      setPacs((prev) => ({
+        ok: st.ok,
+        rttMs: st.roundTripMs,
+        // 心跳不重新枚举病例，状态里可能没有 count：沿用上一次，别在看板上闪成 0。
+        count: st.count ?? prev?.count ?? 0,
+        ae: st.calledAe,
+        message: st.message,
+      }))
     }
     const onStudies = (studies: PacsStudy[], meta: PacsQueryMeta) => {
       setPacs((prev) => ({
@@ -624,15 +631,8 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
             ? `重试中（第 ${(st.attempt ?? 1) + 1}/${st.maxAttempts ?? 3} 次）`
             : st.message,
       )
-      setPacs((prev) =>
-        prev
-          ? {
-              ...prev,
-              ok: st.ok,
-              message: st.ok ? '' : st.message,
-            }
-          : prev,
-      )
+      // 取回结果只影响「取回」这件事本身；连通性由 C-ECHO 心跳单独判定，
+      // 否则取回成功会把刚测到的掉线状态覆盖掉，看板在两秒内来回翻转。
     }
     const onRecovered = (info: SessionRecovery) => {
       if (info && info.previousSession) setRecovery(info)
