@@ -33,8 +33,8 @@
 | QRS-N-002 | 每个通道自行判定断流，并在画面上明确标注冻结帧与已断时长 | `src/vitalstrip.cpp` | `QTRS_FAULT=ecg,spo2`：两条 lane 各盖「信号中断 2507 ms · 冻结帧」 | 已验证 |
 | QRS-N-003 | 报警判定在原生侧完成，不依赖前端是否渲染成功 | `src/vitalstrip.cpp` | 台账 `alarm.on` 在 `QTRS_SIM_SPO2=86` 下产生，与前端状态无关 | 已验证 |
 | QRS-N-004 | 报警提示可静音，但判定不变、数值不隐藏、静音有时限且可追溯 | `src/vitalstrip.cpp` `src/mainwindow.cpp` | `QTRS_ALARM_MUTE_SEC=6`：琥珀边框 → 到期回红，台账 `alarm.mute` / `alarm.unmute(expired)` | 已验证 |
-| QRS-N-005 | 报警应有分级与声音，且优先级符合 IEC 60601-1-8 的思路 | `src/vitalstrip.cpp` | 高/中两级（红/黄），`QTRS_SIM_SPO2=84` 下 3 s 复鸣、`=91` 下中优先级；台账带 `priority` | 已验证 |
-| QRS-N-006 | 静音期间不得再发声，但不得改变判定或隐藏数值 | `src/vitalstrip.cpp` | 静音后 7 s 内 `[Alarm] beep` 行数不变（3→3）；SpO₂ 仍显示 84 | 已验证 |
+| QRS-N-005 | 报警应有分级与声音，且优先级符合 IEC 60601-1-8 的思路 | `src/vitalstrip.cpp` | 高/中两级（红/黄）；高 1000 Hz 三连 3 s 复鸣、中 620 Hz 两声 8 s 复鸣，`QSoundEffect` 播自合成 WAV；台账带 `priority` | 已验证 |
+| QRS-N-006 | 静音期间不得再发声，但不得改变判定或隐藏数值 | `src/vitalstrip.cpp` | 静音期间无 `[Alarm] tone` 行；SpO₂ 仍显示 84、判定仍为高优先级 | 已验证 |
 
 ## C. 设备接入
 
@@ -77,7 +77,7 @@
 | --- | --- | --- | --- | --- |
 | QRS-R-001 | 软件按 IEC 62304 做安全分类并形成需求—实现—验证追溯 | `docs/traceability.md` `scripts/check-traceability.py` | `make trace` 校验本表结构完整、引用文件存在 | 部分验证 |
 | QRS-R-002 | 按 ISO 14971 形成风险分析（危害、原因、控制措施、剩余风险） | `docs/risk-analysis.md` | 14 条危害，每条指回控制代码与 QRS 需求；缺概率量化与临床输入 | 部分验证 |
-| QRS-R-003 | 报警系统满足 IEC 60601-1-8（优先级、声音、视觉编码、延迟） | `src/vitalstrip.cpp` | 已有两级优先级与复鸣声音；缺合规音库、视觉编码规范与报警延迟量化 | 部分验证 |
+| QRS-R-003 | 报警系统满足 IEC 60601-1-8（优先级、声音、视觉编码、延迟） | `src/vitalstrip.cpp` | 两级优先级 + 可区分音调（三连/两声）；缺声压级与脉冲群验证、视觉编码规范、报警延迟量化 | 部分验证 |
 | QRS-R-004 | 临床场景验证（真实术式、真实设备、真实 PACS） | — | — | 缺口 |
 
 ## 证据索引

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QColor>
+#include <memory>
 #include <QElapsedTimer>
 #include <QRectF>
 #include <QVariant>
@@ -9,6 +10,7 @@
 #include <QWidget>
 
 class QPainter;
+class QSoundEffect;
 
 /**
  * NativeVitalStrip — 关键波形（ECG / SpO₂）的「原生绘制通道」。
@@ -31,6 +33,7 @@ class NativeVitalStrip : public QWidget
 
 public:
     explicit NativeVitalStrip(QWidget *parent = nullptr);
+    ~NativeVitalStrip() override;
 
 signals:
     /// 结构化审计事件（中断/恢复/报警触发与解除）。字段含 type/channel/detail，
@@ -98,6 +101,12 @@ private:
     int m_alarmLevel = 0;
     /// 声音节流：同级报警按固定间隔复鸣，避免每帧都响
     QElapsedTimer m_beepTimer;
+    // 两个可区分的报警音：高优先级急促三连（1000 Hz），中优先级两声（620 Hz）。
+    // 用程序生成的 WAV 而不是系统提示音：系统 beep 的长度、音高都不可控，
+    // 也没法保证「高」听起来比「中」更急。
+    std::unique_ptr<QSoundEffect> m_highTone;
+    std::unique_ptr<QSoundEffect> m_midTone;
+    bool m_toneFallbackWarned = false;
     bool m_soundEnabled = true;
     /// 静音计时：到期自动恢复，且到期本身也记一条台账（谁把提示压掉了、压了多久）
     QElapsedTimer m_muteTimer;

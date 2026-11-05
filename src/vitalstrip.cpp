@@ -4,6 +4,10 @@
 #include <QFont>
 #include <QFontMetrics>
 #include <QApplication>
+#include <QDir>
+#include <QFile>
+#include <QSoundEffect>
+#include <QStandardPaths>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPaintEvent>
@@ -35,6 +39,69 @@ const QColor kMidAlarm(0xf2, 0xc9, 0x4c);
 const QColor kMuted(0x94, 0x9e, 0xb0);
 } // namespace
 
+namespace {
+
+/// 写一个 16-bit 单声道 WAV：pulses 是「响 N ms / 停 M ms」的序列。
+/// 报警音自己合成而不是塞二进制素材：音高、节奏都写在代码里，评审时看得见。
+bool writeToneWav(const QString &path, int freqHz, const QVector<QPair<int, int>> &pulses)
+{
+    constexpr int sampleRate = 44100;
+    constexpr double amplitude = 0.6;
+    QByteArray pcm;
+    for (const auto &pulse : pulses) {
+        const int onSamples = sampleRate * pulse.first / 1000;
+        const int offSamples = sampleRate * pulse.second / 1000;
+        for (int i = 0; i < onSamples; ++i) {
+            const double t = static_cast<double>(i) / sampleRate;
+            const qint16 v = static_cast<qint16>(
+                amplitude * 32767.0 * std::sin(2.0 * M_PI * freqHz * t));
+            pcm.append(static_cast<char>(v & 0xff));
+            pcm.append(static_cast<char>((v >> 8) & 0xff));
+        }
+        pcm.append(QByteArray(offSamples * 2, '\0'));
+    }
+
+    QByteArray wav;
+    auto appendU32 = [&wav](quint32 v) {
+        wav.append(static_cast<char>(v & 0xff));
+        wav.append(static_cast<char>((v >> 8) & 0xff));
+        wav.append(static_cast<char>((v >> 16) & 0xff));
+        wav.append(static_cast<char>((v >> 24) & 0xff));
+    };
+    auto appendU16 = [&wav](quint16 v) {
+        wav.append(static_cast<char>(v & 0xff));
+        wav.append(static_cast<char>((v >> 8) & 0xff));
+    };
+    wav.append("RIFF");
+    appendU32(static_cast<quint32>(36 + pcm.size()));
+    wav.append("WAVEfmt ");
+    appendU32(16);
+    appendU16(1);            // PCM
+    appendU16(1);            // 单声道
+    appendU32(sampleRate);
+    appendU32(sampleRate * 2);
+    appendU16(2);            // 每帧字节
+    appendU16(16);           // 位深
+    wav.append("data");
+    appendU32(static_cast<quint32>(pcm.size()));
+    wav.append(pcm);
+
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly)) return false;
+    return f.write(wav) == wav.size();
+}
+
+QString toneFilePath(int level)
+{
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                        + QStringLiteral("/sounds");
+    QDir().mkpath(dir);
+    return dir + (level == 2 ? QStringLiteral("/alarm-high.wav")
+                             : QStringLiteral("/alarm-mid.wav"));
+}
+
+} // namespace
+
 NativeVitalStrip::NativeVitalStrip(QWidget *parent)
     : QWidget(parent)
 {
@@ -55,10 +122,34 @@ NativeVitalStrip::NativeVitalStrip(QWidget *parent)
     // 声音默认开：报警系统没有声音说不过去；开发时可用 QTRS_ALARM_SOUND=0 关掉。
     m_soundEnabled = qEnvironmentVariable("QTRS_ALARM_SOUND") != QStringLiteral("0");
 
+    if (m_soundEnabled) {
+        // 高：三连短响（120 ms 响 / 60 ms 停）；中：两声长响（220 ms / 140 ms）。
+        // 节奏差异比音高差异更容易在嘈杂的手术室里被分辨出来。
+        const QString highPath = toneFilePath(2);
+        const QString midPath = toneFilePath(1);
+        if (!QFile::exists(highPath) || QFile(highPath).size() == 0) {
+            writeToneWav(highPath, 1000,
+                         {{120, 60}, {120, 60}, {120, 260}});
+        }
+        if (!QFile::exists(midPath) || QFile(midPath).size() == 0) {
+            writeToneWav(midPath, 620, {{220, 140}, {220, 300}});
+        }
+        m_highTone = std::make_unique<QSoundEffect>();
+        m_highTone->setSource(QUrl::fromLocalFile(highPath));
+        m_highTone->setVolume(0.9f);
+        m_highTone->setLoopCount(1);
+        m_midTone = std::make_unique<QSoundEffect>();
+        m_midTone->setSource(QUrl::fromLocalFile(midPath));
+        m_midTone->setVolume(0.9f);
+        m_midTone->setLoopCount(1);
+    }
+
     bool ok = false;
     const int sec = qEnvironmentVariable("QTRS_ALARM_MUTE_SEC").toInt(&ok);
     if (ok) m_defaultMuteSeconds = std::clamp(sec, 5, 300);
 }
+
+NativeVitalStrip::~NativeVitalStrip() = default;
 
 bool NativeVitalStrip::alarmsMuted() const
 {
@@ -356,11 +447,27 @@ void NativeVitalStrip::paintEvent(QPaintEvent *event)
         const int intervalMs = m_alarmLevel == 2 ? 3000 : 8000;
         if (m_soundEnabled && !muted
             && (!m_beepTimer.isValid() || m_beepTimer.elapsed() >= intervalMs)) {
-            QApplication::beep();
             m_beepTimer.start();
-            qInfo().noquote() << QStringLiteral("[Alarm] beep level=%1 hr=%2 spo2=%3")
-                                     .arg(m_alarmLevel).arg(m_hr, 0, 'f', 0)
-                                     .arg(m_spo2Value, 0, 'f', 0);
+            QSoundEffect *toneEffect = (m_alarmLevel == 2 ? m_highTone : m_midTone).get();
+            if (toneEffect != nullptr && toneEffect->status() != QSoundEffect::Error) {
+                toneEffect->play();
+                // 把音源状态一起打出来：Ready 说明 WAV 已被解码器接受，
+                // 而不是「调用过 play() 就算响过了」。
+                qInfo().noquote()
+                    << QStringLiteral("[Alarm] tone level=%1 status=%2 hr=%3 spo2=%4")
+                           .arg(m_alarmLevel)
+                           .arg(static_cast<int>(toneEffect->status()))
+                           .arg(m_hr, 0, 'f', 0)
+                           .arg(m_spo2Value, 0, 'f', 0);
+            } else {
+                // 音频设备不可用 / WAV 加载失败时退回系统提示音：
+                // 声音质量降级，但「有报警」这件事不能因此消失。
+                QApplication::beep();
+                if (!m_toneFallbackWarned) {
+                    m_toneFallbackWarned = true;
+                    qWarning() << "[Alarm] 报警音加载失败，退回系统提示音";
+                }
+            }
         }
     }
 

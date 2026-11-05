@@ -18,6 +18,7 @@ find_package(Qt6 REQUIRED COMPONENTS
     Network
     Core
     Positioning
+    Multimedia
 )
 
 # DICOM 解析（DCMTK 3.7.x，brew install dcmtk）
@@ -125,6 +126,7 @@ target_link_libraries(qt-react-shell PRIVATE
     Qt6::WebEngineWidgets
     Qt6::WebChannel
     Qt6::Network
+    Qt6::Multimedia
     DCMTK::dcmdata
     DCMTK::dcmnet
     DCMTK::oflog
