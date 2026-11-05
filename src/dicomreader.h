@@ -27,7 +27,8 @@ public:
 
     /**
      * 扫描 directory 下所有 .dcm，按空间 Z 排序重建体积。
-     * 降采样到 targetDim³（最近邻），灰度归一化为 uint8。
+     * 降采样到 targetDim³（最近邻），灰度归一化为 uint8；
+     * outHu 非空时另外输出同一网格的 int16 HU（用于原生侧按窗位窗宽显示）。
      *
      * 健壮性约定：
      *  - 矩阵尺寸以出现次数最多的 (rows, cols) 为准，尺寸不一致的切片会被剔除
@@ -40,5 +41,6 @@ public:
                            QVariantMap &outMeta,
                            QString &err,
                            int targetDim = 128,
-                           const std::atomic<bool> *cancel = nullptr);
+                           const std::atomic<bool> *cancel = nullptr,
+                           QByteArray *outHu = nullptr);
 };

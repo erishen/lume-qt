@@ -127,6 +127,7 @@ public:
     Q_INVOKABLE QString dicomSamplePath() const;
     // 最近一次解析出的体积字节（供 AppSchemeHandler 以二进制供数；不暴露给 JS）
     QByteArray volumeBytes() const;
+    QByteArray volumeHuBytes() const;
 
 public slots:
     // JS 可通过 bridge.setDataFromCpp(...) 触发，用于演示双向通信
@@ -227,4 +228,5 @@ private:
 
     // 最近一次解析出的体积（主线程写入、主线程读取，无需加锁）
     QByteArray m_volumeBytes;
+    QByteArray m_volumeHuBytes;
 };

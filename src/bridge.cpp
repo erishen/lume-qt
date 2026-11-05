@@ -70,6 +70,16 @@ Bridge::Bridge(QObject *parent)
     connect(provider, &DeviceProvider::ecgSample, this, &Bridge::ecgSample);
     connect(provider, &DeviceProvider::spo2Sample, this, &Bridge::spo2Sample);
     connect(provider, &DeviceProvider::vitalsReady, this, &Bridge::vitalsReady);
+
+    // 调试入口：QTRS_VOLUME_DIR=<dir> 启动后加载指定 DICOM 序列（验证窗预设用）。
+    // 延后 6 s：网页侧启动时会自动加载演示样例，等它落地后再覆盖，验证才不会看错数据。
+    if (const QByteArray volDir = qgetenv("QTRS_VOLUME_DIR"); !volDir.isEmpty()) {
+        const QString dir = QString::fromUtf8(volDir);
+        QTimer::singleShot(6000, this, [this, dir]() {
+            m_authoritativeVolumeDir = dir;
+            loadDicomVolume(dir);
+        });
+    }
     connect(provider, &DeviceProvider::eegSample, this, &Bridge::eegSample);
     connect(provider, &DeviceProvider::emgSample, this, &Bridge::emgSample);
     connect(provider, &DeviceProvider::neuralSpike, this, &Bridge::neuralSpike);
@@ -783,20 +793,23 @@ void Bridge::loadDicomVolume(const QString &directory)
     holder->alive = true;
     holder->thread = std::make_unique<std::thread>([this, directory, holder]() {
         QByteArray data;
+        QByteArray huData;
         QVariantMap meta;
         QString err;
-        const bool ok = DicomReader::loadVolume(directory, data, meta, err, 128, &holder->cancel);
+        const bool ok = DicomReader::loadVolume(directory, data, meta, err, 128,
+                                              &holder->cancel, &huData);
 
         // 结果必须回到 Qt 主线程再发射信号（QWebChannel 依赖所在线程）。
         // 闭包通过 holder->alive 判断 Bridge 是否仍存活，避免析构后
         // 对已释放 this 的访问（use-after-free）。
         if (ok) {
             meta.insert(QStringLiteral("tsUs"), nowMicros());
-            QMetaObject::invokeMethod(this, [this, holder, meta, data]() {
+            QMetaObject::invokeMethod(this, [this, holder, meta, data, huData]() {
                 if (!holder->alive) return;
                 // 体积数据存进成员，由 AppSchemeHandler 以二进制供数；
                 // 信号只传 URL，避免 2MB 二进制走文本序列化。
                 m_volumeBytes = data;
+                m_volumeHuBytes = huData;
                 if (m_audit) m_audit->record(QStringLiteral("dicom.volumeReady"), {
                     {QStringLiteral("source"), meta.value(QStringLiteral("source"))},
                     {QStringLiteral("bytes"), static_cast<double>(data.size())},
@@ -855,6 +868,11 @@ QString Bridge::getPlatformInfo() const
         .arg(platform(),
              QSysInfo::currentCpuArchitecture(),
              QString::fromLatin1(qVersion()));
+}
+
+QByteArray Bridge::volumeHuBytes() const
+{
+    return m_volumeHuBytes;
 }
 
 QByteArray Bridge::volumeBytes() const

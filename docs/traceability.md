@@ -21,6 +21,7 @@
 | QRS-T-003 | MB 级 DICOM 体积不得经 QWebChannel 传输（会破坏字节） | `src/appschemehandler.cpp` `frontend/src/Volume3D.tsx` | `app://app/__volume/current.bin` 取回 2,097,152 字节，与源文件逐字节一致 | 已验证 |
 | QRS-T-004 | 渲染进程不得因窗口遮挡/后台而被 Chromium 节流 | `src/main.cpp` | `ps` 核对四个开关进入渲染进程；遮挡下 WebView 到达中位数仍 250–325ms | 部分验证 |
 | QRS-T-006 | 三维体积绘制必须能在不依赖 WebView 的情况下独立出图 | `src/volumeview.cpp` `src/mainwindow.cpp` | 离屏 OpenGL 3.3：首帧 241–261ms（含上下文与着色器），稳态 60 帧均值 2.9–7.3ms（404×558）；`dicom.volumeNativeFrame` 入账 | 已验证 |
+| QRS-T-007 | 体积显示必须保住 HU、按临床窗位/窗宽预设呈现，默认灰阶 | `src/dicomreader.cpp` `src/volumeview.cpp` `src/mainwindow.cpp` | 合成 CT（HU −1000…1200）：软组织窗 W80/L40 出颅骨与脑实质、骨窗 W1500/L300 只剩骨；MR 自动回退 `a.u.` 强度窗；默认灰阶、伪彩需手动开启且标注非诊断 | 部分验证 |
 | QRS-T-005 | 关键通路的设计必须在「WebView 投递不可靠」这一实测结论上成立 | `src/vitalstrip.cpp` | 原生 P50 0.24ms vs 前端 291–367ms（约 1000 倍量级差） | 已验证 |
 
 > QRS-T-004 标为部分验证：开关确实生效，但挡不住 macOS 窗口非前台时 QWebChannel 批量迟发。
@@ -102,6 +103,7 @@
 | 本批（风险分析） | QRS-R-002 |
 | 本批（取回中心跳） | QRS-I-006 |
 | 本批（单实例） | QRS-A-003 |
+| 本批（HU 窗预设） | QRS-T-007 |
 
 统计不手写：`make trace` 每次重新数一遍，缺口或引用失效会直接报错。
 

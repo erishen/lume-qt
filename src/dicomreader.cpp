@@ -38,6 +38,7 @@ struct Slice {
     double slope = 1.0;
     double intercept = 0.0;
     bool signedPixels = false;
+    QString modality;
 
     /** 取第 idx 个样本的物理值（应用符号与 rescale） */
     double valueAt(size_t idx) const
@@ -113,6 +114,11 @@ bool readSlice(const QString &path, Slice &slice, QString &err)
     slice.slope = slope;
     slice.intercept = intercept;
     slice.signedPixels = (pixelRep == 1);
+    {
+        OFString mod;
+        if (ds->findAndGetOFString(DCM_Modality, mod).good())
+            slice.modality = QString::fromLatin1(QByteArray(mod.c_str()).constData());
+    }
     slice.raw.clear();
 
     const size_t expected = static_cast<size_t>(rows) * static_cast<size_t>(cols);
@@ -232,7 +238,8 @@ bool DicomReader::loadVolume(const QString &directory,
                              QVariantMap &outMeta,
                              QString &err,
                              int targetDim,
-                             const std::atomic<bool> *cancel)
+                             const std::atomic<bool> *cancel,
+                             QByteArray *outHu)
 {
     const QDir dir(directory);
     if (!dir.exists()) {
@@ -368,6 +375,19 @@ bool DicomReader::loadVolume(const QString &directory,
     outData = QByteArray(reinterpret_cast<const char *>(bytes.data()),
                          static_cast<int>(bytes.size()));
 
+    // 另外输出 int16 HU：网页侧的 8-bit 归一化是为了体积小、够看；
+    // 原生侧要按临床窗位/窗宽显示，必须先保住 HU，否则一旦压缩成 0–255，
+    // 「软组织窗 W80/L40」这类预设就无从谈起了。
+    if (outHu != nullptr) {
+        std::vector<int16_t> hu(vol.size());
+        for (size_t i = 0; i < vol.size(); ++i) {
+            const long rounded = std::lround(vol[i]);
+            hu[i] = static_cast<int16_t>(std::clamp<long>(rounded, -32768, 32767));
+        }
+        *outHu = QByteArray(reinterpret_cast<const char *>(hu.data()),
+                            static_cast<int>(hu.size() * sizeof(int16_t)));
+    }
+
     outMeta.clear();
     outMeta.insert(QStringLiteral("dims"), QVariantList() << targetDim << targetDim << targetDim);
     outMeta.insert(QStringLiteral("spacing"),
@@ -377,5 +397,6 @@ bool DicomReader::loadVolume(const QString &directory,
     outMeta.insert(QStringLiteral("slices"), slicesN);
     outMeta.insert(QStringLiteral("skipped"), static_cast<int>(skipped));
     outMeta.insert(QStringLiteral("source"), directory);
+    outMeta.insert(QStringLiteral("modality"), slices.front().modality);
     return true;
 }

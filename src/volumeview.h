@@ -36,8 +36,19 @@ public:
     explicit VolumeView(QWidget *parent = nullptr);
     ~VolumeView() override;
 
-    /// 接收重采样后的体数据（dim³，8-bit 单通道）与元信息。
+    /// 接收重采样后的体数据（dim³，int16 HU）与元信息。
+    /// 传 8-bit 归一化数据会直接拒绝：按窗位/窗宽显示必须保住 HU。
     void setVolume(const QByteArray &data, int dim, const QVariantMap &meta);
+
+    /// 临床窗预设：0 软组织 W80/L40，1 骨 W1500/L300，2 血管 W400/L100，3 数据自适应
+    void setPreset(int preset);
+    int preset() const { return m_preset; }
+
+    /// 伪彩叠加：默认关闭，按诊断惯例走灰阶。
+    void setColorOverlay(bool on);
+    bool colorOverlay() const { return m_colorOverlay; }
+
+    QString windowText() const;
     bool hasVolume() const { return m_hasData; }
 
     /// 首帧耗时（从 setVolume 到第一帧画完并回读），没有数据时为 -1。
@@ -95,8 +106,15 @@ private:
     float m_yaw = 25.0f;
     float m_pitch = 18.0f;
     float m_distance = 1.35f;
-    float m_windowCenter = 0.38f;
-    float m_windowWidth = 0.62f;
+    float m_windowCenterHu = 40.0f;
+    float m_windowWidthHu = 80.0f;
+    float m_huMin = -1000.0f;
+    float m_huMax = 1000.0f;
+    float m_autoCenterHu = 40.0f;
+    float m_autoWidthHu = 80.0f;
+    int m_preset = 0;
+    bool m_colorOverlay = false;
+    bool m_isCt = false;
     QPoint m_lastPos;
     bool m_dragging = false;
 };

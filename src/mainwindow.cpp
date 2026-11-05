@@ -7,6 +7,10 @@
 #include <QWebEngineScript>
 #include <QWebEngineScriptCollection>
 #include <QWebEngineSettings>
+#include <QCheckBox>
+#include <QStandardItemModel>
+#include <QComboBox>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QShortcut>
 #include <QSplitter>
@@ -156,14 +160,61 @@ MainWindow::MainWindow(QWidget *parent)
         "background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
         "stop:0 #f2a24f, stop:0.5 #efd3a8, stop:1 #9fc4ea);"
         "border-radius:3px;"));
-    auto *legendText = new QLabel(
-        QStringLiteral("近处/软组织（暖）　→　深处/骨·对比剂（冷）"), volumePanel);
-    legendText->setStyleSheet(QStringLiteral("color:#7b8798;font-size:10px;"));
+    // 窗预设 + 伪彩开关：默认灰阶软组织窗，符合阅片习惯；
+    // 伪彩只为定位（区分深度/密度），标注「非诊断」，不冒充标准色标。
+    auto *controls = new QHBoxLayout;
+    controls->setSpacing(6);
+    m_volumePreset = new QComboBox(volumePanel);
+    m_volumePreset->addItems({QStringLiteral("软组织窗 W80/L40"),
+                              QStringLiteral("骨窗 W1500/L300"),
+                              QStringLiteral("血管窗 W400/L100"),
+                              QStringLiteral("数据自适应")});
+    m_volumePreset->setStyleSheet(QStringLiteral("font-size:11px;"));
+    m_volumeOverlay = new QCheckBox(QStringLiteral("伪彩（非诊断）"), volumePanel);
+    m_volumeOverlay->setStyleSheet(QStringLiteral("color:#9fb2c9;font-size:11px;"));
+    controls->addWidget(m_volumePreset, 1);
+    controls->addWidget(m_volumeOverlay, 0);
+
+    m_volumeLegendText = new QLabel(volumePanel);
+    m_volumeLegendText->setStyleSheet(QStringLiteral("color:#7b8798;font-size:10px;"));
+    m_volumeLegendText->setWordWrap(true);
+    m_volumeLegendText->setText(QStringLiteral("灰阶显示 · 亮度 = 窗内位置（伪彩关闭）"));
+
     volumeLayout->addWidget(volumeTitle);
     volumeLayout->addWidget(m_volumeView, 1);
+    volumeLayout->addLayout(controls);
     volumeLayout->addWidget(volumeLegend);
-    volumeLayout->addWidget(legendText);
+    volumeLayout->addWidget(m_volumeLegendText);
     volumeLayout->addWidget(m_volumeStatus);
+
+    connect(m_volumePreset, &QComboBox::currentIndexChanged, this, [this](int idx) {
+        if (m_volumeView == nullptr) return;
+        m_volumeView->setPreset(idx);
+        if (m_volumeStatus && !m_volumeSourceText.isEmpty()) {
+            m_volumeStatus->setText(QStringLiteral("%1 · %2")
+                                        .arg(m_volumeSourceText, m_volumeView->windowText()));
+        }
+    });
+    // 环境变量便于自动化验证预设：QTRS_VOLUME_PRESET=0/1/2/3、QTRS_VOLUME_COLOR=1
+    {
+        const QByteArray presetEnv = qgetenv("QTRS_VOLUME_PRESET");
+        if (!presetEnv.isEmpty()) {
+            m_volumePreset->setCurrentIndex(presetEnv.toInt());
+        }
+        if (qgetenv("QTRS_VOLUME_COLOR") == "1") {
+            m_volumeOverlay->setChecked(true);
+        }
+    }
+
+    connect(m_volumeOverlay, &QCheckBox::toggled, this, [this](bool on) {
+        if (m_volumeView == nullptr) return;
+        m_volumeView->setColorOverlay(on);
+        if (m_volumeLegendText) {
+            m_volumeLegendText->setText(
+                on ? QStringLiteral("伪彩叠加 · 暖=近/软组织，冷=深/骨·对比剂（仅供定位，非诊断色标）")
+                   : QStringLiteral("灰阶显示 · 亮度 = 窗内位置（伪彩关闭）"));
+        }
+    });
     centerSplit->addWidget(volumePanel);
     centerSplit->setStretchFactor(0, 1);
     centerSplit->setStretchFactor(1, 0);
@@ -244,13 +295,38 @@ void MainWindow::setupNativeVolume()
         Q_UNUSED(volumeUrl);
         const QVariantList dims = meta.value(QStringLiteral("dims")).toList();
         const int dim = dims.isEmpty() ? 128 : dims.at(0).toInt();
-        m_volumeView->setVolume(m_bridge->volumeBytes(), dim, meta);
+        // 原生侧用 int16 HU：只有保住 HU，「W80/L40」这类临床窗才有意义。
+        m_volumeView->setVolume(m_bridge->volumeHuBytes(), dim, meta);
+        const bool isCt = meta.value(QStringLiteral("modality")).toString().compare(
+                              QStringLiteral("CT"), Qt::CaseInsensitive) == 0;
+        const QString unit = isCt ? QStringLiteral("HU") : QStringLiteral("%1 a.u. (非 HU)")
+                                                        .arg(meta.value(QStringLiteral("modality")).toString());
+        m_volumeSourceText = QStringLiteral("%1³ · %2 %3…%4 · 来源 %5")
+                                 .arg(dim)
+                                 .arg(unit)
+                                 .arg(static_cast<int>(meta.value(QStringLiteral("min")).toDouble()))
+                                 .arg(static_cast<int>(meta.value(QStringLiteral("max")).toDouble()))
+                                 .arg(meta.value(QStringLiteral("source")).toString());
+        if (m_volumePreset) {
+            // CT 才有 HU 窗预设；MR/其他只有「数据自适应」。
+            if (isCt) {
+                // 切到 CT 后重新应用一次预设（环境变量或用户上次选择），别留存 MR 的自适应档
+                if (const QByteArray p = qgetenv("QTRS_VOLUME_PRESET"); !p.isEmpty()) {
+                    m_volumePreset->setCurrentIndex(p.toInt());
+                }
+            }
+            if (auto *model = m_volumePreset->model()) {
+                for (int i = 0; i < 3; ++i) {
+                    model->setData(model->index(i, 0), isCt, Qt::UserRole - 1); // 禁用项
+                }
+            }
+            if (!isCt && m_volumePreset->currentIndex() != 3) {
+                m_volumePreset->setCurrentIndex(3);
+            }
+        }
         if (m_volumeStatus) {
-            m_volumeStatus->setText(
-                QStringLiteral("%1³ · %2 KB · 来源 %3")
-                    .arg(dim)
-                    .arg(m_bridge->volumeBytes().size() / 1024)
-                    .arg(meta.value(QStringLiteral("source")).toString()));
+            m_volumeStatus->setText(QStringLiteral("%1 · %2")
+                                        .arg(m_volumeSourceText, m_volumeView->windowText()));
         }
     });
     connect(m_bridge, &Bridge::dicomVolumeError, this, [this](const QString &message) {

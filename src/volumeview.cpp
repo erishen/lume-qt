@@ -37,7 +37,9 @@ uniform vec3 uUp;
 uniform vec3 uFwd;
 uniform float uTanHalfFov;
 uniform float uAspect;
-uniform vec2 uWindow;   // x = 窗位中心, y = 窗宽（归一化强度）
+uniform vec2 uHuRange;   // x = huMin, y = huMax - huMin
+uniform vec2 uWindow;    // x = 窗位(HU), y = 窗宽(HU)
+uniform int uColorMode;  // 0 = 灰阶（诊断惯例）, 1 = 伪彩叠加（非诊断）
 uniform int uSteps;
 
 const vec3 kBoxMin = vec3(-0.5);
@@ -55,6 +57,11 @@ bool hitBox(vec3 ro, vec3 rd, out float t0, out float t1)
     return t1 > t0;
 }
 
+float sampleHu(vec3 q)
+{
+    return uHuRange.x + texture(uVolume, q).r * uHuRange.y;
+}
+
 void main()
 {
     vec3 rd = normalize(vNdc.x * uAspect * uTanHalfFov * uRight
@@ -70,38 +77,35 @@ void main()
     float dt = (t1 - t0) / float(uSteps);
     vec3 p = uCamPos + rd * t0;
     vec3 texel = vec3(1.0 / 128.0);
-    const float iso = 0.52;
 
-    // 等值面 + 梯度光照 + 双色编码。
-    // 不用半透明累积：非增强 CT 累积出来是一团雾，脑沟脑回全糊掉。
-    // 颜色区分分两层意思：
-    //   1) 按命中处强度——软组织琥珀、骨/对比剂冷白；
-    //   2) 按命中深度——近处偏暖、深处偏冷，给出前后关系。
+    // 窗位/窗宽直接作用在 HU 上（临床惯例：W/L，而不是先压缩成 0-255 再猜）。
+    // 等值面取窗中心，落到窗外的体素透明；这样换预设就等于换「看哪一层组织」。
     for (int i = 0; i < uSteps; ++i) {
         vec3 q = p + 0.5;
         if (all(greaterThanEqual(q, vec3(0.0))) && all(lessThanEqual(q, vec3(1.0)))) {
-            float raw = texture(uVolume, q).r;
-            float v = clamp((raw - uWindow.x) / uWindow.y + 0.5, 0.0, 1.0);
-            if (v > iso) {
-                vec3 gx = vec3(texture(uVolume, q + vec3(texel.x, 0.0, 0.0)).r,
-                               texture(uVolume, q + vec3(0.0, texel.y, 0.0)).r,
-                               texture(uVolume, q + vec3(0.0, 0.0, texel.z)).r);
-                vec3 gx0 = vec3(texture(uVolume, q - vec3(texel.x, 0.0, 0.0)).r,
-                                texture(uVolume, q - vec3(0.0, texel.y, 0.0)).r,
-                                texture(uVolume, q - vec3(0.0, 0.0, texel.z)).r);
-                vec3 n = normalize(gx0 - gx);
+            float v = clamp((sampleHu(q) - uWindow.x) / uWindow.y + 0.5, 0.0, 1.0);
+            if (v > 0.5) {
+                vec3 gxp = vec3(sampleHu(q + vec3(texel.x, 0.0, 0.0)),
+                                sampleHu(q + vec3(0.0, texel.y, 0.0)),
+                                sampleHu(q + vec3(0.0, 0.0, texel.z)));
+                vec3 gxn = vec3(sampleHu(q - vec3(texel.x, 0.0, 0.0)),
+                                sampleHu(q - vec3(0.0, texel.y, 0.0)),
+                                sampleHu(q - vec3(0.0, 0.0, texel.z)));
+                vec3 n = normalize(gxn - gxp);
                 float diff = max(abs(dot(n, normalize(-rd))), 0.0);
+                float shade = 0.55 + 0.45 * diff;
 
-                // 强度色：琥珀（软组织）→ 冷白（骨/对比剂）
-                float k = clamp((v - iso) / (1.0 - iso), 0.0, 1.0);
+                if (uColorMode == 0) {
+                    // 灰阶：亮度就是窗内位置，符合阅片习惯。等值面处约 0.5 灰。
+                    fragColor = vec4(vec3(0.25 + 0.75 * v) * shade, 1.0);
+                    return;
+                }
+                // 伪彩叠加（仅定位用）：强度越高越冷白，命中越深越偏冷。
+                float k = clamp((v - 0.5) * 2.0, 0.0, 1.0);
                 vec3 byValue = mix(vec3(1.0, 0.56, 0.22), vec3(0.88, 0.94, 1.0), k);
-                // 深度色：命中越深越偏冷
                 float depthT = clamp(float(i) / float(uSteps) * 2.2, 0.0, 1.0);
                 vec3 byDepth = mix(vec3(1.0, 0.80, 0.52), vec3(0.45, 0.68, 1.0), depthT);
-                vec3 base = mix(byValue, byDepth, 0.42);
-                base *= (0.50 + 0.50 * diff);
-
-                fragColor = vec4(base, 1.0);
+                fragColor = vec4(mix(byValue, byDepth, 0.42) * shade, 1.0);
                 return;
             }
         }
@@ -129,53 +133,135 @@ VolumeView::VolumeView(QWidget *parent)
 
 void VolumeView::setVolume(const QByteArray &data, int dim, const QVariantMap &meta)
 {
-    if (dim <= 0 || data.size() != dim * dim * dim) {
-        qWarning().noquote() << "[Volume] 体数据尺寸不符，忽略："
+    const int count = dim * dim * dim;
+    if (dim <= 0 || data.size() != count * static_cast<int>(sizeof(int16_t))) {
+        qWarning().noquote() << "[Volume] 体数据不是 int16 HU，拒绝显示："
                              << "dim=" << dim << "bytes=" << data.size();
         return;
     }
-    m_bytes = data;
+    const int16_t *hu = reinterpret_cast<const int16_t *>(data.constData());
     m_texDim = dim;
     m_meta = meta;
+    // 只有 CT 的物理值才是 HU（RescaleSlope/Intercept 换算出来的）。
+    // MR 是任意强度单位，拿「骨窗 W1500/L300」去套没有意义，只能用自适应强度窗。
+    m_isCt = meta.value(QStringLiteral("modality")).toString().compare(
+                 QStringLiteral("CT"), Qt::CaseInsensitive) == 0;
+
+    // 记录真实 HU 值域：着色器需要把 16-bit 归一化纹理还原成 HU 才能做窗。
+    m_huMin = static_cast<float>(meta.value(QStringLiteral("min"), -1000.0).toDouble());
+    m_huMax = static_cast<float>(meta.value(QStringLiteral("max"), 1000.0).toDouble());
+    if (!(m_huMax > m_huMin)) { m_huMin = -1000.0f; m_huMax = 1000.0f; }
+    const float huRange = m_huMax - m_huMin;
+
+    // 数据自适应窗：直方图的「组织」分位 p50 → p99.9。
+    // CT 里空气（约 -1000 HU）通常占一半以上体素，直接取 p50 会把窗位拖到空气，
+    // 整屏糊成白雾（这坑在 8-bit 时代踩过一次）。所以 CT 统计时先剔掉 < -500 HU。
+    {
+        const int kBins = 1024;
+        int hist[kBins] = {0};
+        const float tissueFloor = m_isCt ? -500.0f : m_huMin - 1.0f;
+        int tissueCount = 0;
+        for (int i = 0; i < count; ++i) {
+            if (static_cast<float>(hu[i]) < tissueFloor) continue;
+            const int bin = std::clamp(
+                static_cast<int>((static_cast<float>(hu[i]) - m_huMin) / huRange * (kBins - 1)),
+                0, kBins - 1);
+            hist[bin] += 1;
+            tissueCount += 1;
+        }
+        const int total = tissueCount > 0 ? tissueCount : count;
+        auto percentileBin = [&](int num, int den) {
+            const int cut = static_cast<int>(static_cast<long long>(total) * num / den);
+            int acc = 0;
+            for (int i = 0; i < kBins; ++i) {
+                acc += hist[i];
+                if (acc >= cut) return i;
+            }
+            return kBins - 1;
+        };
+        const float binToHu = huRange / static_cast<float>(kBins - 1);
+        const float loHu = m_huMin + static_cast<float>(percentileBin(50, 100)) * binToHu;
+        const float hiHu = m_huMin + static_cast<float>(percentileBin(999, 1000)) * binToHu;
+        m_autoCenterHu = (loHu + hiHu) / 2.0f;
+        m_autoWidthHu = std::max(20.0f, hiHu - loHu);
+    }
+
+    // 打包成 16-bit 归一化纹理数据：GL_R16 支持线性过滤，且精度足够承载 HU。
+    std::vector<uint16_t> packed(static_cast<size_t>(count));
+    for (int i = 0; i < count; ++i) {
+        const float t = std::clamp((static_cast<float>(hu[i]) - m_huMin) / huRange, 0.0f, 1.0f);
+        packed[static_cast<size_t>(i)] =
+            static_cast<uint16_t>(std::lround(t * 65535.0f));
+    }
+    m_bytes = QByteArray(reinterpret_cast<const char *>(packed.data()),
+                         static_cast<int>(packed.size() * sizeof(uint16_t)));
+
     m_hasData = true;
     m_textureDirty = true;
     m_firstFrameMs = -1;
     m_sinceSetVolume.start();
+    setPreset(m_preset); // 应用当前预设（默认软组织窗）
 
-    // 窗宽窗位按体数据自身的 2%–98% 分位定，而不是写死 0.38/0.62：
-    // 不同重建的 CT 强度范围差别很大，写死的窗口不是全黑就是过曝。
-    {
-        int hist[256] = {0};
-        const int total = static_cast<int>(data.size());
-        for (int i = 0; i < total; ++i) {
-            hist[static_cast<unsigned char>(data.at(i))] += 1;
-        }
-        auto percentile = [&](int num, int den) {
-            const int cut = static_cast<int>(
-                static_cast<long long>(total) * num / den);
-            int acc = 0;
-            for (int i = 0; i < 256; ++i) {
-                acc += hist[i];
-                if (acc >= cut) return i;
-            }
-            return 255;
-        };
-        // CT 体数据里空气占绝大多数：2% 分位几乎总是 0，不能拿它当窗下限。
-        // 用 p50（软组织起点）到 p99.9（骨/对比剂）作为显示窗口。
-        const int lo = percentile(50, 100);
-        const int hi = std::max(lo + 8, percentile(999, 1000));
-        m_windowCenter = (static_cast<float>(lo) + static_cast<float>(hi)) / 2.0f / 255.0f;
-        m_windowWidth = std::max(0.12f, (static_cast<float>(hi - lo)) / 255.0f);
-        qInfo().noquote() << QStringLiteral("[Volume] 体数据分位窗：p50=%1 p99.9=%2 → 窗位 %3 窗宽 %4")
-                                 .arg(lo).arg(hi)
-                                 .arg(m_windowCenter, 0, 'f', 3)
-                                 .arg(m_windowWidth, 0, 'f', 3);
-    }
-
-    qInfo().noquote() << QStringLiteral("[Volume] 原生体渲染收到数据：%1³，%2 KB，来源 %3")
-                             .arg(dim).arg(data.size() / 1024)
+    qInfo().noquote() << QStringLiteral("[Volume] 原生体渲染收到 HU 数据：%1³，HU %2…%3，%4 KB，来源 %5")
+                             .arg(dim)
+                             .arg(static_cast<int>(m_huMin))
+                             .arg(static_cast<int>(m_huMax))
+                             .arg(data.size() / 1024)
                              .arg(meta.value(QStringLiteral("source")).toString());
     renderFrame();
+}
+
+void VolumeView::setPreset(int preset)
+{
+    m_preset = std::clamp(preset, 0, 3);
+    if (!m_isCt && m_preset != 3) {
+        qWarning().noquote() << "[Volume] 非 CT 数据不支持 HU 窗预设，回退到数据自适应强度窗";
+        m_preset = 3;
+    }
+    switch (m_preset) {
+    case 1: // 骨窗
+        m_windowCenterHu = 300.0f;
+        m_windowWidthHu = 1500.0f;
+        break;
+    case 2: // 血管/对比剂窗
+        m_windowCenterHu = 100.0f;
+        m_windowWidthHu = 400.0f;
+        break;
+    case 3: // 数据自适应
+        m_windowCenterHu = m_autoCenterHu;
+        m_windowWidthHu = m_autoWidthHu;
+        break;
+    case 0:
+    default: // 软组织窗（临床常用的 W80 / L40）
+        m_windowCenterHu = 40.0f;
+        m_windowWidthHu = 80.0f;
+        break;
+    }
+    if (m_hasData && m_windowCenterHu > m_huMax) {
+        // 骨窗之类预设可能整段落在数据值域之外（去掉颅骨的脑实质数据 HU 上限只有 249）。
+        // 这时画面本就该是空的——但不能让它看起来像渲染坏了。
+        qWarning().noquote() << QStringLiteral("[Volume] 预设超出数据 HU 上限（%1 > %2），窗内无组织")
+                                    .arg(static_cast<int>(m_windowCenterHu))
+                                    .arg(static_cast<int>(m_huMax));
+    }
+    qInfo().noquote() << "[Volume] 窗预设切换：" << windowText();
+    if (m_hasData) renderFrame();
+}
+
+void VolumeView::setColorOverlay(bool on)
+{
+    m_colorOverlay = on;
+    qInfo().noquote() << "[Volume] 显示模式：" << (on ? "伪彩叠加（非诊断）" : "灰阶（诊断惯例）");
+    if (m_hasData) renderFrame();
+}
+
+QString VolumeView::windowText() const
+{
+    return QStringLiteral("W%1 / L%2 %4 · %3")
+        .arg(static_cast<int>(m_windowWidthHu))
+        .arg(static_cast<int>(m_windowCenterHu))
+        .arg(m_colorOverlay ? QStringLiteral("伪彩（非诊断）") : QStringLiteral("灰阶"))
+        .arg(m_isCt ? QStringLiteral("HU") : QStringLiteral("a.u."));
 }
 
 VolumeView::~VolumeView()
@@ -284,11 +370,11 @@ void VolumeView::uploadTexture()
 {
     if (!m_textureDirty || !m_hasData) return;
     m_gl->glBindTexture(GL_TEXTURE_3D, m_texture);
-    m_gl->glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    m_gl->glTexImage3D(GL_TEXTURE_3D, 0, GL_R8, m_texDim, m_texDim, m_texDim, 0,
-                       GL_RED, GL_UNSIGNED_BYTE, m_bytes.constData());
+    m_gl->glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
+    m_gl->glTexImage3D(GL_TEXTURE_3D, 0, GL_R16, m_texDim, m_texDim, m_texDim, 0,
+                       GL_RED, GL_UNSIGNED_SHORT, m_bytes.constData());
     m_textureDirty = false;
-    qInfo().noquote() << QStringLiteral("[Volume] 3D 纹理上传完成：%1³ = %2 KB")
+    qInfo().noquote() << QStringLiteral("[Volume] 16-bit 3D 纹理上传完成：%1³ = %2 KB（R16，线性过滤）")
                              .arg(m_texDim).arg(m_bytes.size() / 1024);
 }
 
@@ -344,7 +430,9 @@ void VolumeView::renderFrame()
     m_program.setUniformValue("uFwd", fwd);
     m_program.setUniformValue("uTanHalfFov", tanHalfFov);
     m_program.setUniformValue("uAspect", aspect);
-    m_program.setUniformValue("uWindow", QVector2D(m_windowCenter, m_windowWidth));
+    m_program.setUniformValue("uHuRange", QVector2D(m_huMin, m_huMax - m_huMin));
+    m_program.setUniformValue("uWindow", QVector2D(m_windowCenterHu, m_windowWidthHu));
+    m_program.setUniformValue("uColorMode", m_colorOverlay ? 1 : 0);
     m_program.setUniformValue("uSteps", 192);
 
     m_gl->glActiveTexture(GL_TEXTURE0);
