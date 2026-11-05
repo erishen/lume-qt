@@ -5,6 +5,8 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 
@@ -19,6 +21,7 @@
 #include <vector>
 
 #include "../src/bridge.h"
+#include "../src/auditsink.h"
 #include "../src/simulatorprovider.h"
 #include "../src/dicomreader.h"
 
@@ -433,6 +436,50 @@ TEST(SimulatorClockTest, DeviceClockOffsetIsAppliedToSamples)
     EXPECT_NEAR(hostNowUs - tsUs, -kOffsetUs, 200.0 * 1000.0);
 
     qunsetenv("QTRS_CLOCK_OFFSET_MS");
+}
+
+/**
+ * 台账契约：一行一条 JSON，固定字段（ts/tsUs/session/type）不可被业务字段覆盖，
+ * 业务字段原样并入。这些是事后复核与统计的前提，坏了就等于没有台账。
+ */
+TEST(AuditSinkTest, WritesParsableJsonLinesWithFixedFields)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+
+    AuditSink sink;
+    ASSERT_TRUE(sink.open(dir.path()));
+    EXPECT_FALSE(sink.filePath().isEmpty());
+    EXPECT_FALSE(sink.sessionId().isEmpty());
+
+    QVariantMap ev;
+    ev.insert(QStringLiteral("channel"), QStringLiteral("ECG"));
+    ev.insert(QStringLiteral("ageMs"), 1234.0);
+    // 试图覆盖固定字段：必须被忽略
+    ev.insert(QStringLiteral("session"), QStringLiteral("hacked"));
+    ev.insert(QStringLiteral("type"), QStringLiteral("fake.type"));
+    sink.record(QStringLiteral("signal.stale"), ev);
+    sink.record(QStringLiteral("signal.recover"), {{QStringLiteral("channel"), QStringLiteral("ECG")}});
+    EXPECT_EQ(sink.count(), 2);
+
+    QFile f(sink.filePath());
+    ASSERT_TRUE(f.open(QIODevice::ReadOnly | QIODevice::Text));
+    const QStringList lines = QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'),
+                                                                  Qt::SkipEmptyParts);
+    ASSERT_EQ(lines.size(), 2);
+
+    QJsonParseError err{};
+    const QJsonDocument doc = QJsonDocument::fromJson(lines.at(0).toUtf8(), &err);
+    ASSERT_EQ(err.error, QJsonParseError::NoError) << err.errorString().toStdString();
+    const QJsonObject obj = doc.object();
+
+    EXPECT_EQ(obj.value(QStringLiteral("type")).toString(), QStringLiteral("signal.stale"));
+    EXPECT_EQ(obj.value(QStringLiteral("session")).toString(), sink.sessionId());
+    EXPECT_EQ(obj.value(QStringLiteral("channel")).toString(), QStringLiteral("ECG"));
+    EXPECT_GT(obj.value(QStringLiteral("tsUs")).toDouble(), 0.0);
+    EXPECT_FALSE(obj.value(QStringLiteral("ts")).toString().isEmpty());
+    // 业务字段里的 type 不得覆盖事件类型
+    EXPECT_NE(obj.value(QStringLiteral("type")).toString(), QStringLiteral("fake.type"));
 }
 
 int main(int argc, char **argv) {

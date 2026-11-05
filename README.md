@@ -443,6 +443,45 @@ QTRS_CLOCK_OFFSET_MS=5000 ./build/qt-react-shell
 回归保护：`tests/bridge_test.cpp::SimulatorClockTest.DeviceClockOffsetIsAppliedToSamples`
 断言注入偏移后样本时间戳确实带偏移、且 `hasHardwareClock()` 返回 true。
 
+### 8. 故障安全与可追溯：结构化事件台账
+
+只往 stderr 打日志不够——那是给人看的，不可解析、不可统计、不可归档。术中系统里
+「刚才到底发生了什么」必须能事后复核：某通道什么时候断的、断了多久、是谁报的警。
+
+- **`src/auditsink.h/.cpp`**：JSON Lines 台账，一行一条。固定字段
+  `ts`（ISO 带毫秒）/ `tsUs`（epoch 微秒）/ `session`（会话 id）/ `type`，
+  业务字段原样并入且**不能覆盖固定字段**。按天切分：
+  `~/Library/Application Support/research/qt-react-shell/audit/audit-YYYYMMDD.jsonl`
+  （Linux 上是 `~/.local/share/research/qt-react-shell/audit/`）。
+- **两个独立来源都写进同一份台账**，用 `source` 区分：
+  - `native-strip`：原生条的中断 / 恢复 / 报警边沿（`signal.stale` / `signal.recover` /
+    `alarm.on` / `alarm.off`，带 `channel`、`ageMs`、`thresholdMs`）；
+  - `web-frontend`：前端看门狗的 `watchdog.bad` / `watchdog.ok`（带 `states`、`ageMs`、`p50Ms`）。
+    前端通过 `bridge.logAuditEvent(...)` 提交，C++ 侧只认 `type`，其余字段照收。
+- **C++ 侧事件**：`session.start`（provider 与时基）、`provider.start`（医疗/神经分组）、
+  `dicom.volumeReady` / `dicom.volumeError`。
+- 报警只在**边沿**记一次（`m_alarmActive` 比对），不会每帧刷台账。
+
+一次故障注入（`QTRS_FAULT=ecg,spo2`）产生的台账（节选）：
+
+```json
+{"ts":"2026-11-05T15:08:06.821","tsUs":...,"session":"20261105T150806-55042","type":"session.start","provider":"simulator"}
+{"ts":"2026-11-05T15:08:08.560","tsUs":...,"type":"dicom.volumeReady","bytes":2097152,"dims":[128,128,128]}
+{"ts":"2026-11-05T15:08:09.934","tsUs":...,"type":"watchdog.bad","source":"web-frontend","states":"ecg:stale,eeg:slow,..."}
+{"ts":"2026-11-05T15:08:10.391","tsUs":...,"type":"signal.stale","source":"native-strip","channel":"ECG","ageMs":739.556,"thresholdMs":250}
+{"ts":"2026-11-05T15:08:10.394","tsUs":...,"type":"signal.stale","source":"native-strip","channel":"SpO2","ageMs":739.502,"thresholdMs":400}
+```
+
+排查与统计：
+
+```bash
+f=~/Library/Application\ Support/research/qt-react-shell/audit/audit-$(date +%Y%m%d).jsonl
+python3 -c "import json,sys;[print(json.loads(l)['type']) for l in open(sys.argv[1])]" "$f" | sort | uniq -c
+```
+
+边界说明：这是**工程级事件时间线**，不是合规证明。IEC 62304 的证据链还要版本冻结、
+验证记录、变更控制与签核；本节的产出是那条链里「发生了什么」这一层。
+
 ## 🧪 测试基础设施
 
 ### C++ 单元测试

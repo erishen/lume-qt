@@ -1,4 +1,5 @@
 #include "bridge.h"
+#include "auditsink.h"
 #include "deviceprovider.h"
 #include "dicomreader.h"
 #include "simulatorprovider.h"
@@ -45,6 +46,17 @@ Bridge::Bridge(QObject *parent)
 
     qInfo().noquote() << "[Bridge] provider:" << provider->kind() << "·" << provider->description()
                       << "· 硬件时基:" << (provider->hasHardwareClock() ? "是" : "否（宿主墙钟）");
+
+    // 台账在 Bridge 构造时打开，会话 id 从这一刻起贯穿整次运行。
+    m_audit = new AuditSink(this);
+    m_audit->open();
+    m_audit->record(QStringLiteral("session.start"), {
+        {QStringLiteral("provider"), provider->kind()},
+        {QStringLiteral("providerDescription"), provider->description()},
+        {QStringLiteral("hasHardwareClock"), provider->hasHardwareClock()},
+        {QStringLiteral("platform"), m_audit->filePath().isEmpty() ? QStringLiteral("unknown")
+                                                                   : QSysInfo::productType()},
+    });
 }
 
 Bridge::~Bridge()
@@ -61,6 +73,19 @@ Bridge::~Bridge()
         // 释放本副本；若仍有已入队闭包持有 holder 副本，它会存活到那些
         // 闭包执行完毕（此时 alive 已为 false，不会访问 this）。
     }
+}
+
+void Bridge::logAuditEvent(const QVariantMap &event)
+{
+    if (!m_audit) return;
+    const QString type = event.value(QStringLiteral("type")).toString();
+    if (type.isEmpty()) {
+        qWarning() << "[Audit] 前端事件缺少 type，已忽略";
+        return;
+    }
+    QVariantMap fields = event;
+    fields.remove(QStringLiteral("type"));
+    m_audit->record(type, fields);
 }
 
 QVariantMap Bridge::providerInfo() const
@@ -111,11 +136,21 @@ void Bridge::loadDicomVolume(const QString &directory)
                 // 体积数据存进成员，由 AppSchemeHandler 以二进制供数；
                 // 信号只传 URL，避免 2MB 二进制走文本序列化。
                 m_volumeBytes = data;
+                if (m_audit) m_audit->record(QStringLiteral("dicom.volumeReady"), {
+                    {QStringLiteral("source"), meta.value(QStringLiteral("source"))},
+                    {QStringLiteral("bytes"), static_cast<double>(data.size())},
+                    {QStringLiteral("dims"), meta.value(QStringLiteral("dims"))},
+                });
                 emit dicomVolumeReady(meta, QStringLiteral("app://app/__volume/current.bin"));
             });
         } else {
             QMetaObject::invokeMethod(this, [this, holder, err]() {
-                if (holder->alive) emit dicomVolumeError(err);
+                if (holder->alive) {
+                    if (m_audit) m_audit->record(QStringLiteral("dicom.volumeError"), {
+                        {QStringLiteral("message"), err},
+                    });
+                    emit dicomVolumeError(err);
+                }
             });
         }
 
@@ -197,6 +232,10 @@ void Bridge::startMedicalSimulation()
     if (!m_provider) return;
     if (m_provider->startMedical()) {
         qInfo().noquote() << "[Bridge] 启动医疗数据源:" << m_provider->description();
+        if (m_audit) m_audit->record(QStringLiteral("provider.start"), {
+            {QStringLiteral("provider"), m_provider->kind()},
+            {QStringLiteral("group"), QStringLiteral("medical")},
+        });
     }
 }
 
@@ -216,6 +255,10 @@ void Bridge::startNeurologySimulation()
     if (!m_provider) return;
     if (m_provider->startNeurology()) {
         qInfo().noquote() << "[Bridge] 启动神经内科数据源:" << m_provider->description();
+        if (m_audit) m_audit->record(QStringLiteral("provider.start"), {
+            {QStringLiteral("provider"), m_provider->kind()},
+            {QStringLiteral("group"), QStringLiteral("neurology")},
+        });
     }
 }
 

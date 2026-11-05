@@ -79,6 +79,8 @@ qt_add_executable(qt-react-shell
     src/mainwindow.h
     src/bridge.cpp
     src/bridge.h
+    src/auditsink.cpp
+    src/auditsink.h
     src/deviceprovider.h
     src/simulatorprovider.cpp
     src/simulatorprovider.h

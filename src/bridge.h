@@ -74,6 +74,13 @@ public:
     Q_INVOKABLE void startNeurologySimulation();
     Q_INVOKABLE void stopNeurologySimulation();
 
+    // ---- 结构化审计台账 ----
+    /// 追加一条审计事件（前端看门狗等 WebView 侧事件走这里）。
+    /// map 里的 type 是事件类型，其余字段原样并入；固定字段（ts/tsUs/session）不可覆盖。
+    Q_INVOKABLE void logAuditEvent(const QVariantMap &event);
+    /// 台账本体：MainWindow 把原生条的事件也写到同一份文件
+    class AuditSink *auditSink() const { return m_audit; }
+
     // ---- 当前设备数据源（前端据此判断时间戳时基） ----
     // 返回 {kind, description, hasHardwareClock}。hasHardwareClock=true 时 tsUs 来自
     // 设备时钟，与宿主墙钟存在未知常量偏移：前端必须先估偏移再算延迟，否则看到的
@@ -120,6 +127,9 @@ private:
     /// 设备接入层：模拟器只是其中一种实现，换真实设备时替换这里即可。
     /// Bridge 只负责把它发出的信号原样转发给 QWebChannel，不参与采样与合成。
     class DeviceProvider *m_provider = nullptr;
+
+    /// 事件台账（JSON Lines）。一行一条，按天切分。
+    class AuditSink *m_audit = nullptr;
 
     // DICOM 后台加载线程的持有结构（堆上、shared_ptr 管理）。
     // 使 worker 收尾闭包能精确删除“本线程”、并在 Bridge 析构后安全

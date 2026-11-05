@@ -158,7 +158,7 @@ export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
 
       <LatencyBoard hasBridge={bridge !== null} bridge={bridge} />
 
-      <WatchdogStrip hasBridge={bridge !== null} />
+      <WatchdogStrip hasBridge={bridge !== null} bridge={bridge} />
 
       {/* 波形 + 影像 */}
       <div className="monitor-row">
@@ -473,7 +473,7 @@ function fmt(ms: number): string {
  * 窗口底部的原生波形条给出同机对照（不经 WebView）。
  */
 /** 信号看门狗：任何通道停止更新或延迟超预算都必须显式告警，而不是继续画旧波形 */
-function WatchdogStrip({ hasBridge }: { hasBridge: boolean }) {
+function WatchdogStrip({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridge | null }) {
   const [tick, setTick] = useState<{ health: ChannelHealth[]; frame: FrameStats } | null>(null)
   const lastBad = useRef('')
   const slowStreak = useRef(0)
@@ -490,6 +490,15 @@ function WatchdogStrip({ hasBridge }: { hasBridge: boolean }) {
       const sig = badNow.map((c) => `${c.channel}:${c.state}`).join(',')
       if (sig !== lastBad.current) {
         lastBad.current = sig
+        // 状态变化落结构化台账：WebView 侧与原生条是两个独立判定来源，
+        // source 字段让事后复核能分清是谁报的。console 只留给人看。
+        bridge?.logAuditEvent({
+          type: badNow.length > 0 ? 'watchdog.bad' : 'watchdog.ok',
+          source: 'web-frontend',
+          states: badNow.map((c) => `${c.channel}:${c.state}`).join(','),
+          ageMs: badNow.length > 0 ? Math.round(Math.max(...badNow.map((c) => c.ageMs))) : 0,
+          p50Ms: badNow.length > 0 ? Math.round(Math.max(...badNow.map((c) => c.receiptP50))) : 0,
+        })
         if (badNow.length > 0) {
           console.warn('[Watchdog] ' + badNow
             .map((c) => `${c.channel}=${c.state}(age=${Math.round(c.ageMs)}ms, p50=${c.receiptP50.toFixed(1)}ms, p99=${c.receiptP99.toFixed(0)}ms)`)
@@ -502,7 +511,7 @@ function WatchdogStrip({ hasBridge }: { hasBridge: boolean }) {
     update()
     const timer = window.setInterval(update, 500)
     return () => window.clearInterval(timer)
-  }, [])
+  }, [bridge])
 
   if (!hasBridge || !tick) return null
 

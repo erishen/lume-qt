@@ -31,6 +31,11 @@ class NativeVitalStrip : public QWidget
 public:
     explicit NativeVitalStrip(QWidget *parent = nullptr);
 
+signals:
+    /// 结构化审计事件（中断/恢复/报警触发与解除）。字段含 type/channel/detail，
+    /// 由 MainWindow 转交 AuditSink 落盘；控件本身不直接碰文件。
+    void auditEvent(const QVariantMap &event);
+
 public slots:
     /// 与 Bridge::ecgSample(double, double) 直连（不经过 QWebChannel）
     void pushEcgSample(double value, double tsUs);
@@ -75,11 +80,12 @@ private:
     Lane m_ecg;
     Lane m_spo2;
 
+    /// 报警边沿检测：只在变化时产生审计事件，避免每帧刷台账
+    bool m_alarmActive = false;
     double m_hr = 0.0;
     double m_spo2Value = 0.0;
     double m_sys = 0.0;
     double m_dia = 0.0;
     bool m_hasVitals = false;
-    bool m_alarmActive = false;
     qint64 m_paintCount = 0;
 };

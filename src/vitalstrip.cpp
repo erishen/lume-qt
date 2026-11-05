@@ -210,6 +210,19 @@ void NativeVitalStrip::paintEvent(QPaintEvent *event)
 
     // 报警判定在原生侧完成：不依赖前端是否渲染成功
     const bool alarm = m_hasVitals && (m_spo2Value < 90.0 || m_hr < 50.0);
+    if (alarm != m_alarmActive) {
+        // 报警边沿记入台账：什么时候报的、依据哪个值，事后能复核
+        m_alarmActive = alarm;
+        emit auditEvent(QVariantMap{
+            {QStringLiteral("type"), alarm ? QStringLiteral("alarm.on") : QStringLiteral("alarm.off")},
+            {QStringLiteral("channel"), alarm ? (m_spo2Value < 90.0 ? QStringLiteral("SpO2")
+                                                                   : QStringLiteral("HR"))
+                                              : QStringLiteral("all")},
+            {QStringLiteral("hr"), m_hr},
+            {QStringLiteral("spo2"), m_spo2Value},
+            {QStringLiteral("source"), QStringLiteral("native-strip")},
+        });
+    }
     if (alarm) {
         p.setPen(kAlarm);
         p.setFont(QFont(QStringLiteral("Helvetica"), 10, QFont::Bold));
@@ -289,13 +302,22 @@ void NativeVitalStrip::paintLaneWatchdog(QPainter &p, const QRectF &rect, Lane &
     const bool stale = ageMs > lane.staleMs;
     if (stale != lane.wasStale) {
         lane.wasStale = stale;
+        QVariantMap ev;
+        ev.insert(QStringLiteral("channel"), lane.key);
+        ev.insert(QStringLiteral("ageMs"), ageMs);
+        ev.insert(QStringLiteral("thresholdMs"), lane.staleMs);
+        ev.insert(QStringLiteral("source"), QStringLiteral("native-strip"));
         if (stale) {
             qWarning().noquote() << QStringLiteral(
                                         "[VitalStrip] %1 信号中断：%2 ms 无样本（画面为冻结帧）")
                                         .arg(lane.key)
                                         .arg(ageMs, 0, 'f', 0);
+            ev.insert(QStringLiteral("type"), QStringLiteral("signal.stale"));
+            emit auditEvent(ev);
         } else {
             qInfo().noquote() << QStringLiteral("[VitalStrip] %1 信号恢复").arg(lane.key);
+            ev.insert(QStringLiteral("type"), QStringLiteral("signal.recover"));
+            emit auditEvent(ev);
         }
     }
     if (!stale) return;

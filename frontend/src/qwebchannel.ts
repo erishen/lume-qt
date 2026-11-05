@@ -67,6 +67,9 @@ export interface Bridge {
   startNeurologySimulation(): void
   stopNeurologySimulation(): void
 
+  /** 追加一条结构化审计事件（type 必填，其余字段原样落盘） */
+  logAuditEvent(event: Record<string, unknown>): void
+
   /** 当前设备数据源与时基信息 */
   providerInfo(): Promise<ProviderInfo>
 

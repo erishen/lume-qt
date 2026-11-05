@@ -17,6 +17,7 @@
 #include <memory>
 
 #include "appschemehandler.h"
+#include "auditsink.h"
 #include "bridge.h"
 #include "consolepage.h"
 #include "vitalstrip.h"
@@ -193,6 +194,18 @@ void MainWindow::setupNativeStrip()
     // SpO₂ 波形只走原生：WebView 侧不订阅这条通道，关键通路的显示与判定不依赖 IPC
     connect(m_bridge, &Bridge::spo2Sample, m_strip, &NativeVitalStrip::pushSpo2Sample);
     connect(m_bridge, &Bridge::vitalsReady, m_strip, &NativeVitalStrip::setVitals);
+
+    // 原生条的中断/恢复/报警事件写进同一份台账：这些判定发生在原生侧，
+    // 与前端看门狗是两个独立来源，事后复核需要能区分是谁报的（source 字段）。
+    auto *audit = m_bridge->auditSink();
+    connect(m_strip, &NativeVitalStrip::auditEvent, this, [audit](const QVariantMap &ev) {
+        if (!audit) return;
+        const QString type = ev.value(QStringLiteral("type")).toString();
+        if (type.isEmpty()) return;
+        QVariantMap fields = ev;
+        fields.remove(QStringLiteral("type"));
+        audit->record(type, fields);
+    });
 }
 
 void MainWindow::setupConsoleBridge()
