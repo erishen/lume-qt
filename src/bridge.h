@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QByteArray>
 #include <QObject>
 #include <QVariant>
 #include <QVariantMap>
@@ -31,8 +32,13 @@ class QTimer;
  *
  * 医疗影像实时数据模拟：
  *  - startMedicalSimulation() / stopMedicalSimulation() 控制
- *  - ecgSample(double) 每 40ms 推送一个心电图波形样本
+ *  - ecgSample(double value, double tsUs) 每 40ms 推送一个心电图波形样本
  *  - vitalsReady(map)  每 600ms 推送一次生命体征快照
+ *
+ * 所有实时信号的载荷都带采集时刻 tsUs（epoch 微秒，system_clock），
+ * 与 JS 侧 performance.timeOrigin + performance.now() 同一时基，
+ * 因此前端可以算出「采集 → 收到 → 绘制」的真实链路延迟，而不是只能测
+ * 「C++ emit → JS 回调」这段。
  *
  * 神经内科介入模拟：
  *  - startNeurologySimulation() / stopNeurologySimulation() 控制
@@ -72,6 +78,8 @@ public:
     Q_INVOKABLE void loadDicomVolume(const QString &directory);
     // 返回内置 DICOM 样例序列目录（脑部 T1 MRI）
     Q_INVOKABLE QString dicomSamplePath() const;
+    // 最近一次解析出的体积字节（供 AppSchemeHandler 以二进制供数；不暴露给 JS）
+    QByteArray volumeBytes() const;
 
 public slots:
     // JS 可通过 bridge.setDataFromCpp(...) 触发，用于演示双向通信
@@ -88,19 +96,23 @@ private slots:
 signals:
     // C++ → JS 信号
     void dataFromCpp(const QVariant &data);
-    // 医疗实时数据信号
-    void ecgSample(double value);
+    // 医疗实时数据信号（tsUs = 采集时刻，epoch 微秒）
+    void ecgSample(double value, double tsUs);
     void vitalsReady(const QVariantMap &vitals);
     // 神经内科实时数据信号
-    void eegSample(double value);
-    void emgSample(double value);
-    void neuralSpike(double value);
+    void eegSample(double value, double tsUs);
+    void emgSample(double value, double tsUs);
+    void neuralSpike(double value, double tsUs);
     void interventionReady(const QVariantMap &intervention);
-    // DICOM 体积加载结果（meta 含 dims/spacing；base64Pixels 为 uint8 体积）
-    void dicomVolumeReady(const QVariantMap &meta, const QString &base64Pixels);
+    // DICOM 体积加载结果。第二个参数是虚拟资源 URL（app://app/__volume/current.bin），
+    // 不是体积数据本身：2MB 级二进制不能走 QWebChannel 的文本序列化
+    // （实测会被 UTF-8 转换破坏），前端 fetch 该 URL 取真正的 ArrayBuffer。
+    void dicomVolumeReady(const QVariantMap &meta, const QString &volumeUrl);
     void dicomVolumeError(const QString &message);
 
 private:
+    /// 当前时刻（epoch 微秒）。给所有实时载荷打采集时间戳。
+    static double nowMicros();
     static double synthesizeEcg(double phase);
     static double clampTo(double v, double lo, double hi);
     static double randomUnit();          // [0,1) 均匀随机数
@@ -148,4 +160,7 @@ private:
     // 使 worker 收尾闭包能精确删除“本线程”、并在 Bridge 析构后安全
     // 跳过已入队的回调（详见 bridge.cpp 的 loadDicomVolume / ~Bridge）。
     std::shared_ptr<DicomThreadHolder> m_dicomHolder;
+
+    // 最近一次解析出的体积（主线程写入、主线程读取，无需加锁）
+    QByteArray m_volumeBytes;
 };

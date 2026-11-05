@@ -85,6 +85,8 @@ qt_add_executable(qt-react-shell
     src/appschemehandler.h
     src/consolepage.cpp
     src/consolepage.h
+    src/vitalstrip.cpp
+    src/vitalstrip.h
 )
 
 # 设置编译器警告（目标定义后设置）

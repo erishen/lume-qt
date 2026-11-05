@@ -7,12 +7,21 @@
 #include <QSysInfo>
 #include <QTimer>
 
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 
 // ---------------------------------------------------------------------------
 // 随机数辅助
 // ---------------------------------------------------------------------------
+
+double Bridge::nowMicros()
+{
+    const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::system_clock::now().time_since_epoch())
+                        .count();
+    return static_cast<double>(us);
+}
 
 double Bridge::randomUnit()
 {
@@ -118,9 +127,13 @@ void Bridge::loadDicomVolume(const QString &directory)
         // 闭包通过 holder->alive 判断 Bridge 是否仍存活，避免析构后
         // 对已释放 this 的访问（use-after-free）。
         if (ok) {
-            const QString base64 = QString::fromLatin1(data.toBase64());
-            QMetaObject::invokeMethod(this, [this, holder, meta, base64]() {
-                if (holder->alive) emit dicomVolumeReady(meta, base64);
+            meta.insert(QStringLiteral("tsUs"), nowMicros());
+            QMetaObject::invokeMethod(this, [this, holder, meta, data]() {
+                if (!holder->alive) return;
+                // 体积数据存进成员，由 AppSchemeHandler 以二进制供数；
+                // 信号只传 URL，避免 2MB 二进制走文本序列化。
+                m_volumeBytes = data;
+                emit dicomVolumeReady(meta, QStringLiteral("app://app/__volume/current.bin"));
             });
         } else {
             QMetaObject::invokeMethod(this, [this, holder, err]() {
@@ -159,6 +172,11 @@ QString Bridge::getPlatformInfo() const
         .arg(platform(),
              QSysInfo::currentCpuArchitecture(),
              QString::fromLatin1(qVersion()));
+}
+
+QByteArray Bridge::volumeBytes() const
+{
+    return m_volumeBytes;
 }
 
 QString Bridge::dicomSamplePath() const
@@ -217,7 +235,7 @@ void Bridge::emitEcgSample()
     if (m_ecgPhase >= 1.0) {
         m_ecgPhase -= 1.0;
     }
-    emit ecgSample(synthesizeEcg(m_ecgPhase));
+    emit ecgSample(synthesizeEcg(m_ecgPhase), nowMicros());
 }
 
 double Bridge::synthesizeEcg(double phase)
@@ -265,6 +283,7 @@ void Bridge::emitVitals()
     vitals.insert(QStringLiteral("temp"), std::round(m_temp * 10.0) / 10.0);
     vitals.insert(QStringLiteral("time"),
                   QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss")));
+    vitals.insert(QStringLiteral("tsUs"), nowMicros());
 
     // 诊断：仅记录前 3 条推送，验证实时数据通道
     if (m_vitalsCount < 3) {
@@ -366,17 +385,17 @@ double Bridge::synthesizeNeural()
 
 void Bridge::emitEegSample()
 {
-    emit eegSample(synthesizeEeg());
+    emit eegSample(synthesizeEeg(), nowMicros());
 }
 
 void Bridge::emitEmgSample()
 {
-    emit emgSample(synthesizeEmg());
+    emit emgSample(synthesizeEmg(), nowMicros());
 }
 
 void Bridge::emitNeuralSpike()
 {
-    emit neuralSpike(synthesizeNeural());
+    emit neuralSpike(synthesizeNeural(), nowMicros());
 }
 
 void Bridge::emitIntervention()
@@ -402,6 +421,7 @@ void Bridge::emitIntervention()
         ++m_interventionCount;
     }
 
+    iv.insert(QStringLiteral("tsUs"), nowMicros());
     emit interventionReady(iv);
 }
 

@@ -27,6 +27,8 @@ export interface Vitals {
   dia: number
   temp: number
   time: string
+  /** 采集时刻（epoch 微秒），用于端到端延迟统计 */
+  tsUs?: number
 }
 
 export interface Intervention {
@@ -37,6 +39,7 @@ export interface Intervention {
   duration: number
   status: string
   time: string
+  tsUs?: number
 }
 
 export interface Bridge {
@@ -61,13 +64,15 @@ export interface Bridge {
   dicomSamplePath(): Promise<string>
 
   dataFromCpp: QtSignal<(payload: Record<string, unknown>) => void>
-  ecgSample: QtSignal<(value: number) => void>
+  // 标量信号的第二个参数是采集时刻（epoch 微秒）
+  ecgSample: QtSignal<(value: number, tsUs: number) => void>
   vitalsReady: QtSignal<(vitals: Vitals) => void>
-  eegSample: QtSignal<(value: number) => void>
-  emgSample: QtSignal<(value: number) => void>
-  neuralSpike: QtSignal<(value: number) => void>
+  eegSample: QtSignal<(value: number, tsUs: number) => void>
+  emgSample: QtSignal<(value: number, tsUs: number) => void>
+  neuralSpike: QtSignal<(value: number, tsUs: number) => void>
   interventionReady: QtSignal<(intervention: Intervention) => void>
-  dicomVolumeReady: QtSignal<(meta: DicomVolumeMeta, base64: string) => void>
+  // 体积数据不走桥接：信号只给 URL，前端 fetch 该虚拟资源拿 ArrayBuffer
+  dicomVolumeReady: QtSignal<(meta: DicomVolumeMeta, volumeUrl: string) => void>
   dicomVolumeError: QtSignal<(message: string) => void>
 }
 
@@ -81,6 +86,8 @@ export interface DicomVolumeMeta {
   /** 因矩阵尺寸不一致被剔除的切片数（C++ 侧计入 meta.skipped） */
   skipped: number
   source: string
+  /** 解析完成时刻（epoch 微秒） */
+  tsUs?: number
 }
 
 /** qwebchannel.js 暴露的信号对象 */

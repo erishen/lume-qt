@@ -1,5 +1,6 @@
 #include "appschemehandler.h"
 
+#include <QBuffer>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -30,6 +31,12 @@ void AppSchemeHandler::requestStarted(QWebEngineUrlRequestJob *job)
     // 去掉前导 '/'
     if (path.startsWith(QLatin1Char('/'))) {
         path.remove(0, 1);
+    }
+
+    // 虚拟二进制资源：不走文件系统，直接交给 provider 供数
+    if (path == QLatin1String("__volume/current.bin")) {
+        serveVolume(job);
+        return;
     }
 
     // 解析并校验路径，防止目录穿越
@@ -84,4 +91,35 @@ void AppSchemeHandler::requestStarted(QWebEngineUrlRequestJob *job)
     }
 
     job->reply(mime.constData(), file);
+}
+
+void AppSchemeHandler::setVolumeProvider(VolumeProvider provider)
+{
+    m_volumeProvider = std::move(provider);
+}
+
+void AppSchemeHandler::serveVolume(QWebEngineUrlRequestJob *job)
+{
+    if (!m_volumeProvider) {
+        qWarning().noquote() << "[Scheme] 体积请求但未注册 provider";
+        job->fail(QWebEngineUrlRequestJob::UrlNotFound);
+        return;
+    }
+
+    const QByteArray data = m_volumeProvider();
+    if (data.isEmpty()) {
+        qWarning().noquote() << "[Scheme] 体积请求时数据尚未就绪";
+        job->fail(QWebEngineUrlRequestJob::UrlNotFound);
+        return;
+    }
+
+    // QBuffer 由 job 持有（parent = job），job 结束时一并释放
+    auto *buffer = new QBuffer(job);
+    buffer->setData(data);
+    if (!buffer->open(QIODevice::ReadOnly)) {
+        qWarning().noquote() << "[Scheme] 体积缓冲打开失败";
+        job->fail(QWebEngineUrlRequestJob::RequestFailed);
+        return;
+    }
+    job->reply("application/octet-stream", buffer);
 }

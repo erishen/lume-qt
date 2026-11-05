@@ -4,6 +4,7 @@ import Neuro3D from './Neuro3D'
 import Volume3D from './Volume3D'
 import { createSyntheticBrain } from './syntheticVolume'
 import { createFrameLimiter, observeInViewport } from './framePacing'
+import { recordPainted, recordReceipt, snapshot, type ChannelLatency } from './latency'
 
 // ECG 波形缓冲长度（点），对应画布横向采样
 const ECG_BUFFER = 600
@@ -29,16 +30,20 @@ export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
   const ecgBuf = useRef<number[]>([])
   // 只有新样本到达才重绘 ECG（样本 25Hz，无需按 60Hz 空转）
   const ecgDirty = useRef(true)
+  // 最近一个 ECG 样本的采集时刻，用于量「采集 → 上屏」
+  const lastEcgTs = useRef<number | undefined>(undefined)
 
   useEffect(() => {
     // 订阅实时数据（Qt 桥接或纯浏览器演示）
-    const onEcg = (value: number) => {
+    const onEcg = (value: number, tsUs?: number) => {
+      recordReceipt('ecg', tsUs)
+      lastEcgTs.current = tsUs
       const buf = ecgBuf.current
       buf.push(value)
       if (buf.length > ECG_BUFFER) buf.splice(0, buf.length - ECG_BUFFER)
       ecgDirty.current = true
     }
-    const onVitals = (v: Vitals) => setVitals(v)
+    const onVitals = (v: Vitals) => { recordReceipt('vitals', v.tsUs); setVitals(v) }
 
     // 纯浏览器演示：无 Qt 桥接时用 JS 模拟同源数据（与 C++ 侧一致）
     let ecgTimer: number | undefined
@@ -105,6 +110,7 @@ export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
       if (!inView || document.hidden) return
       if (ecgDirty.current) {
         ecgDirty.current = false
+        recordPainted('ecg', lastEcgTs.current)
         drawEcg(ecgRef.current, ecgBuf.current, t)
       }
       if (usLimiter(t)) drawUltrasound(usRef.current, t, dt)
@@ -134,6 +140,8 @@ export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
         <Vital label="体温" value={vitals?.temp} unit="°C" color="var(--c-temp)"
                alert={vitals ? vitals.temp > 37.5 : false} />
       </div>
+
+      <LatencyBoard hasBridge={bridge !== null} />
 
       {/* 波形 + 影像 */}
       <div className="monitor-row">
@@ -188,9 +196,9 @@ function NeurologyPanel({ bridge }: { bridge: Bridge | null }) {
       if (buf.length > NEURO_BUFFER) buf.splice(0, buf.length - NEURO_BUFFER)
       waveDirty.current = true
     }
-    const onEeg = (v: number) => push(eegBuf.current, v)
-    const onEmg = (v: number) => push(emgBuf.current, v)
-    const onNeural = (v: number) => push(neuralBuf.current, v)
+    const onEeg = (v: number, tsUs?: number) => { recordReceipt('eeg', tsUs); push(eegBuf.current, v) }
+    const onEmg = (v: number, tsUs?: number) => { recordReceipt('emg', tsUs); push(emgBuf.current, v) }
+    const onNeural = (v: number, tsUs?: number) => { recordReceipt('neural', tsUs); push(neuralBuf.current, v) }
     const onIv = (iv: Intervention) =>
       setInterventions((prev) => [...prev, iv].slice(-8))
 
@@ -426,6 +434,85 @@ function Vital({ label, value, unit, color, alert }: {
 }
 
 // ---------------------------------------------------------------------------
+// 链路延迟看板
+// ---------------------------------------------------------------------------
+
+const CHANNEL_LABEL: Record<string, string> = {
+  ecg: 'ECG 波形',
+  eeg: 'EEG 波形',
+  emg: 'EMG 波形',
+  neural: '神经元活动',
+  vitals: '生命体征',
+  volume: 'DICOM 体积',
+}
+
+function fmt(ms: number): string {
+  return ms > 0 ? ms.toFixed(1) : '—'
+}
+
+/**
+ * 延迟看板：读 latency.ts 的环形缓冲快照，1Hz 刷新。
+ * 「到达」= 采集 → JS 回调；「上屏」= 采集 → 本帧真正 draw（目前只对 ECG 与体积采样）。
+ * 窗口底部的原生波形条给出同机对照（不经 WebView）。
+ */
+function LatencyBoard({ hasBridge }: { hasBridge: boolean }) {
+  const [rows, setRows] = useState<ChannelLatency[]>([])
+
+  useEffect(() => {
+    const tick = () => setRows(snapshot())
+    tick()
+    const timer = window.setInterval(tick, 1000)
+
+    return () => window.clearInterval(timer)
+  }, [])
+
+  const active = rows.filter((r) => r.samples > 0)
+
+  return (
+    <div className="latency">
+      <div className="latency-head">
+        <span>链路延迟 · 采集 → 上屏</span>
+        <span className="panel-meta">
+          {hasBridge ? 'C++ 打时间戳 · 同一时基' : '无桥接，纯浏览器演示'}
+        </span>
+      </div>
+      {active.length === 0 ? (
+        <p className="iv-empty">等待样本…</p>
+      ) : (
+        <table className="latency-table">
+          <thead>
+            <tr>
+              <th>通道</th>
+              <th>到达 P50</th>
+              <th>到达 P99</th>
+              <th>上屏 P50</th>
+              <th>上屏 P99</th>
+              <th>样本</th>
+            </tr>
+          </thead>
+          <tbody>
+            {active.map((r) => (
+              <tr key={r.channel}>
+                <td>{CHANNEL_LABEL[r.channel] ?? r.channel}</td>
+                <td>{fmt(r.receiptP50)} ms</td>
+                <td className={r.receiptP99 > 100 ? 'lat-warn' : ''}>{fmt(r.receiptP99)} ms</td>
+                <td>{fmt(r.paintedP50)} ms</td>
+                <td className={r.paintedP99 > 100 ? 'lat-warn' : ''}>{fmt(r.paintedP99)} ms</td>
+                <td>{r.samples}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <p className="latency-note">
+        「到达」= 采集 → JS 回调；「上屏」= 采集 → 该帧真正绘制。原生通道（窗口底部波形条）
+        走 Qt 信号直连 + QPainter，不经 WebView，可作同机对照。
+      </p>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Canvas 渲染
 // ---------------------------------------------------------------------------
 
@@ -634,19 +721,35 @@ function drawUltrasound(canvas: HTMLCanvasElement | null, t: number, dt: number)
 // ---------------------------------------------------------------------------
 
 function DicomPanel({ bridge }: { bridge: Bridge | null }) {
-  const [volume, setVolume] = useState<{ base64: string; meta: DicomVolumeMeta } | null>(null)
+  const [volume, setVolume] = useState<{ pixels: Uint8Array | ArrayBuffer; meta: DicomVolumeMeta } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
     let mounted = true
 
-    const onReady = (meta: DicomVolumeMeta, base64: string) => {
+    const onReady = (meta: DicomVolumeMeta, volumeUrl: string) => {
       if (!mounted) return
-      setLoading(false)
-      setVolume({ base64, meta })
-      setError(null)
-      console.log('[DicomPanel] 体渲染就绪', meta.slices, '层', meta.dims)
+      // 体积走 app:// 虚拟资源的二进制直取：QWebChannel 的文本通道会把
+      // 2MB 二进制按 UTF-8 处理而破坏数据（实测量级：丢字节），不能用。
+      fetch(volumeUrl)
+        .then((resp) => {
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+          return resp.arrayBuffer()
+        })
+        .then((buf) => {
+          if (!mounted) return
+          recordReceipt('volume', meta.tsUs)
+          setLoading(false)
+          setVolume({ pixels: buf, meta })
+          setError(null)
+          console.log('[DicomPanel] 体数据已取回', buf.byteLength, 'bytes', meta.dims)
+        })
+        .catch((err: unknown) => {
+          if (!mounted) return
+          setLoading(false)
+          setError(`体数据取回失败：${String(err)}`)
+        })
     }
     const onError = (msg: string) => {
       if (!mounted) return

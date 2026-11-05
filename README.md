@@ -225,6 +225,57 @@ bridge.dataFromCpp.connect((payload) => {
 优化后首屏 60fps、滚到体渲染面板 55–60fps。注意同时开多个实例会争抢 GPU，帧率会明显下降，
 测的时候只留一个。
 
+## 术中化架构（时间戳 / 二进制体积 / 原生波形条）
+
+把 demo 往手术室方向挪，做了三件事；每件都对应一条「原理性限制」的解法，而不是 UI 装修。
+
+### 1. 全链路时间戳与延迟看板
+
+- **同一时基**：C++ `Bridge::nowMicros()` 取 `system_clock` epoch 微秒；前端 `nowMicros()` 用
+  `performance.timeOrigin + performance.now()` 换算成同一 epoch 微秒。差值即链路年龄。
+- **载荷带戳**：`ecgSample/eegSample/emgSample/neuralSpike` 改为 `(value, tsUs)` 双参；
+  `vitalsReady` / `interventionReady` / DICOM meta 的 map 内加 `tsUs`。
+- **看板**：`latency.ts` 每通道保留 512 样本环形缓冲，`MedicalMonitor` 里 `LatencyBoard` 按 1Hz
+  刷新，展示「到达 P50/P99」（采集 → JS 回调）与「上屏 P50/P99」（采集 → 真正绘制），
+  P99 > 100ms 标红。当前只有 ECG 与 DICOM 体积采「上屏」样本。
+
+实测（Apple M3，窗口前台单实例）：到达中位数 **0.3–1.0ms**（偶发 3ms）；
+窗口底部的原生波形条走 Qt 信号直连 + `QPainter`，采集→绘制 P50 **0.2ms** / P99 **≈28ms**
+（日志 `[VitalStrip]`），作为「不经 WebView」的同机对照。
+
+> 测量陷阱：macOS 上窗口被遮挡/失焦时，Chromium 会把渲染与定时器节流到秒级，积压样本会让
+> 看板读数涨到几百毫秒甚至数秒（且各通道 P50 会几乎相同）。这类数字是环境产物，不是链路性能。
+> 测的时候把窗口置前后再读；调试可用 `QTRS_TOPMOST=1 ./build/qt-react-shell` 让窗口置顶。
+
+### 2. DICOM 体积改二进制直传（去掉 base64）
+
+结论先行：**2MB 级二进制不能走 QWebChannel**。实测把 `QByteArray` 放进信号第二参，前端收到的是
+`String` 而不是 `ArrayBuffer`，且 2,097,152 字节到达后只剩 **2,097,145 个字符**——文本序列化
+按 UTF-8 处理，非法字节序列被吃掉，数据已损坏。这条退路（省掉 base64）做不通。
+
+最终方案是**虚拟二进制资源**：
+
+- `Bridge` 解析成功后把体积存进 `m_volumeBytes`，信号 `dicomVolumeReady(meta, volumeUrl)` 只传
+  URL：`app://app/__volume/current.bin`。
+- `AppSchemeHandler::serveVolume()` 用 `QBuffer`（parent = job）以 `application/octet-stream`
+  回给 Chromium；`MainWindow` 通过 `setVolumeProvider()` 注册取数回调（延迟求值，`m_bridge` 创建晚于注册，安全）。
+- 前端 `fetch(volumeUrl).arrayBuffer()` 直接拿到 2,097,152 字节的 `ArrayBuffer`（实测日志
+  `体数据已取回 2097152 bytes`），**零编码放大、零逐字节解码**；`Volume3D` 的 `VolumeInput`
+  接受 `Uint8Array | ArrayBuffer`，`base64ToBytes` / `bytesToBase64` 已删除。
+- 硬前提：`app://` 的 scheme 注册必须带 `FetchApiAllowed`（否则 `fetch` 直接 `Failed to fetch`）；
+  本地资源同时关掉磁盘缓存（`NoCache`），避免「改了代码仍加载旧 bundle」。
+- `Vite` 产物目录仍由同一 handler 服务，`job->reply` 的 MIME 与虚拟资源分支互不影响。
+
+### 3. 原生关键波形条（ECG 不过 WebView）
+
+`src/vitalstrip.cpp` 的 `NativeVitalStrip : QWidget`（固定 112px）挂在 `QWebEngineView` 下方：
+
+- `bridge->ecgSample → pushEcgSample(value, tsUs)`、`bridge->vitalsReady → setVitals(map)` 直连，
+  数据不出 Qt 事件循环，`paintEvent` 用 `QPainter` 画网格 + 600 点波形 + 右侧 HR/SpO₂/NIBP。
+- 条体右侧画出「采集→绘制 P50/P99」，并每约 2 秒落一条 `[VitalStrip]` 日志；含演示级阈值报警（SpO₂ < 90 或 HR < 50 时红点 + 文案）。
+- 意义：这是「关键波形到底该不该走 WebView」的最小可对照实现——同机同源数据，一条走 QWebChannel
+  + Canvas，一条走 Qt 信号 + QPainter，延迟差一个数量级的量级可直接读出来。
+
 ## 🧪 测试基础设施
 
 ### C++ 单元测试

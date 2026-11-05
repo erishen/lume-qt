@@ -1,21 +1,11 @@
 import type { DicomVolumeMeta } from './qwebchannel'
 
-/** Uint8Array → base64（避免中文/大数组时的 stack overflow，分块处理） */
-export function bytesToBase64(bytes: Uint8Array): string {
-  let bin = ''
-  const chunk = 0x8000
-  for (let i = 0; i < bytes.length; i += chunk) {
-    bin += String.fromCharCode(...bytes.subarray(i, i + chunk))
-  }
-  return btoa(bin)
-}
-
 /**
  * 合成一个类脑部体积（球壳分层 + 脑回噪声），
  * 用于无 Qt 桥接（纯浏览器预览）时演示 DICOM 体渲染。
  * 形状：扁椭球（符合解剖学轮廓） + 皮层高亮 + 中线结构。
  */
-export function createSyntheticBrain(dim = 96): { base64: string; meta: DicomVolumeMeta } {
+export function createSyntheticBrain(dim = 96): { pixels: Uint8Array; meta: DicomVolumeMeta } {
   const data = new Uint8Array(dim * dim * dim)
   const cx = dim / 2
   const cy = dim / 2
@@ -50,7 +40,7 @@ export function createSyntheticBrain(dim = 96): { base64: string; meta: DicomVol
   }
 
   return {
-    base64: bytesToBase64(data),
+    pixels: data,
     meta: {
       dims: [dim, dim, dim],
       spacing: [1, 1, 1],

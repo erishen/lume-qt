@@ -7,11 +7,17 @@ class QWebEngineProfile;
 class QWebEnginePage;
 class AppSchemeHandler;
 class Bridge;
+class NativeVitalStrip;
 
 /**
  * MainWindow — 宿主窗口。
  *
- * 布局：单一 QWebEngineView 全窗口渲染 React 前端。
+ * 布局：QWebEngineView（React 前端，占满剩余空间）+ 底部固定高度的
+ *       原生关键波形条 NativeVitalStrip。
+ *
+ * 为什么关键通道不走 WebView：网页那条链路要过 QWebChannel IPC 与渲染进程
+ * 合成，抖动量级不可控（GC、后台节流、系统降频）。术中关键波形与报警的
+ * 主链路应直连 Qt 信号 + QPainter 绘制，WebView 只承担信息展示。
  * 通信：QWebChannel 将 Bridge 对象暴露给 JS，前端经 qwebchannel.js
  *       连接（见 frontend/src/qwebchannel.ts）。
  * 诊断：自定义 QWebEnginePage 把前端 console.log / JS 异常 / WebGL 错误
@@ -28,10 +34,12 @@ public:
 private:
     void setupWebChannel();
     void setupConsoleBridge();
+    void setupNativeStrip();
 
     QWebEngineView *m_view = nullptr;
     QWebEngineProfile *m_profile = nullptr;
     QWebEnginePage *m_page = nullptr;
     AppSchemeHandler *m_schemeHandler = nullptr;
     Bridge *m_bridge = nullptr;
+    NativeVitalStrip *m_strip = nullptr;
 };

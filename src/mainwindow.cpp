@@ -10,6 +10,8 @@
 #include <QWebEngineView>
 #include <QTimer>
 #include <QUrl>
+#include <QVBoxLayout>
+#include <QWidget>
 #include <QUrlQuery>
 
 #include <memory>
@@ -17,6 +19,7 @@
 #include "appschemehandler.h"
 #include "bridge.h"
 #include "consolepage.h"
+#include "vitalstrip.h"
 
 namespace {
 /// 前端诊断探针脚本：捕获 WebGL 上下文创建失败与着色器编译/链接错误。
@@ -103,6 +106,13 @@ MainWindow::MainWindow(QWidget *parent)
     // 但会共享/覆盖这份缓存；排查异常时先确认没有残留进程（见 README「已知事项」）。
     m_profile = new QWebEngineProfile(QStringLiteral("qt-react-shell"), this);
     m_schemeHandler = new AppSchemeHandler(QStringLiteral(WEB_ROOT_PATH), this);
+    // 体积二进制由 scheme handler 直接供数（见 AppSchemeHandler::serveVolume）
+    m_schemeHandler->setVolumeProvider([this]() {
+        return m_bridge ? m_bridge->volumeBytes() : QByteArray();
+    });
+    // 前端产物是本地资源，缓存只会带来「改了代码但界面还是旧 bundle」的假象
+    // （实测：重新构建后仍加载上一次的 index.xxx.js）。本地应用不需要磁盘缓存。
+    m_profile->setHttpCacheType(QWebEngineProfile::NoCache);
     m_profile->installUrlSchemeHandler(QByteArrayLiteral("app"), m_schemeHandler);
 
     // 允许本地资源访问远程资源（如需加载外部图片/CDN 可放开），
@@ -112,13 +122,25 @@ MainWindow::MainWindow(QWidget *parent)
     m_profile->settings()->setAttribute(
         QWebEngineSettings::JavascriptCanOpenWindows, true);
 
-    m_view = new QWebEngineView(m_profile, this);
-    setCentralWidget(m_view);
+    // 中央区 = WebView（弹性）+ 底部原生波形条（固定高度）。
+    auto *central = new QWidget(this);
+    auto *centralLayout = new QVBoxLayout(central);
+    centralLayout->setContentsMargins(0, 0, 0, 0);
+    centralLayout->setSpacing(0);
+
+    m_view = new QWebEngineView(m_profile, central);
+    centralLayout->addWidget(m_view, 1);
+
+    m_strip = new NativeVitalStrip(central);
+    centralLayout->addWidget(m_strip, 0);
+
+    setCentralWidget(central);
 
     // 注意顺序：必须先 setPage（替换默认 page），再 setWebChannel，
     // 否则 channel 会绑定到随后被丢弃的旧 page 上，前端将拿不到 bridge。
     setupConsoleBridge();
     setupWebChannel();
+    setupNativeStrip();
 
     // 加载前端（React 构建产物）
     // 若设置了 QTRS_DEV_URL（如 http://localhost:5173），则加载 Vite 开发服务器，
@@ -161,6 +183,14 @@ void MainWindow::setupWebChannel()
     QWebChannel *channel = new QWebChannel(this);
     channel->registerObject(QStringLiteral("bridge"), m_bridge);
     m_page->setWebChannel(channel);
+}
+
+void MainWindow::setupNativeStrip()
+{
+    // 关键波形直连 Bridge 信号：不经过 QWebChannel，因此这里同时也是
+    // 「原生通道 vs WebView 通道」延迟对照的基准。
+    connect(m_bridge, &Bridge::ecgSample, m_strip, &NativeVitalStrip::pushEcgSample);
+    connect(m_bridge, &Bridge::vitalsReady, m_strip, &NativeVitalStrip::setVitals);
 }
 
 void MainWindow::setupConsoleBridge()

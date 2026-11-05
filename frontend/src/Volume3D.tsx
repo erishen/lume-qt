@@ -3,6 +3,7 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { DicomVolumeMeta } from './qwebchannel'
 import { createFrameLimiter, observeInViewport } from './framePacing'
+import { recordPainted } from './latency'
 
 /**
  * Volume3D — DICOM 体积体渲染（Three.js / WebGL2）。
@@ -12,7 +13,9 @@ import { createFrameLimiter, observeInViewport } from './framePacing'
  */
 
 interface VolumeInput {
-  base64: string
+  /** uint8 体积，长度 = dims³。跨桥接时是 ArrayBuffer（QByteArray），
+   *  纯浏览器演示时是 Uint8Array。 */
+  pixels: Uint8Array | ArrayBuffer
   meta: DicomVolumeMeta
 }
 
@@ -101,11 +104,12 @@ void main() {
 }
 `
 
-function base64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64)
-  const bytes = new Uint8Array(bin.length)
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-  return bytes
+/**
+ * 归一成 Uint8Array。跨桥接时 QByteArray 直接映射为 ArrayBuffer，
+ * 不再有 33% 的 base64 文本膨胀和逐字节解码。
+ */
+function toBytes(pixels: Uint8Array | ArrayBuffer): Uint8Array {
+  return pixels instanceof Uint8Array ? pixels : new Uint8Array(pixels)
 }
 
 export default function Volume3D({ volume }: { volume: VolumeInput | null }) {
@@ -116,6 +120,8 @@ export default function Volume3D({ volume }: { volume: VolumeInput | null }) {
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
   const boxMeshRef = useRef<THREE.Mesh | null>(null)
   const texRef = useRef<THREE.Data3DTexture | null>(null)
+  // 等待被记录「采集 → 上屏」的时刻（纹理就位后第一帧消费掉）
+  const pendingPaintedTs = useRef<number | undefined>(undefined)
   const winUniformRef = useRef<{ lo: number; hi: number }>({ lo: 0.05, hi: 0.95 })
   const [wc, setWc] = useState(50)
   const [ww, setWw] = useState(100)
@@ -196,6 +202,11 @@ export default function Volume3D({ volume }: { volume: VolumeInput | null }) {
         ;(mat.uniforms.uCameraPos.value as THREE.Vector3).copy(camera.position)
       }
       renderer.render(scene, camera)
+      // 纹理就位后的第一帧 → 记「采集 → 上屏」年龄
+      if (pendingPaintedTs.current !== undefined) {
+        recordPainted('volume', pendingPaintedTs.current)
+        pendingPaintedTs.current = undefined
+      }
     }
     animate(performance.now())
 
@@ -228,8 +239,9 @@ export default function Volume3D({ volume }: { volume: VolumeInput | null }) {
     const scene = sceneRef.current
     if (!scene) return
 
-    const bytes = base64ToBytes(volume.base64)
+    const bytes = toBytes(volume.pixels)
     const d = volume.meta.dims[0]
+    pendingPaintedTs.current = volume.meta.tsUs
 
     const tex = new THREE.Data3DTexture(bytes, d, d, d)
     tex.format = THREE.RedFormat
@@ -308,7 +320,7 @@ export default function Volume3D({ volume }: { volume: VolumeInput | null }) {
           <span className="vol3d-dims">
             {volume.meta.dims[0]}³ · {volume.meta.slices} 层
             {volume.meta.skipped > 0 && `（剔除 ${volume.meta.skipped} 层矩阵不一致切片）`}
-            {' '}· {Math.round(volume.base64.length / 1024)}KB
+            {' '}· {Math.round(volume.pixels.byteLength / 1024)}KB
           </span>
         </div>
       )}

@@ -169,7 +169,7 @@ TEST_F(BridgeTest, DicomVolumeLoadsAndCleansUp) {
 
 // 端到端验证“前端真正拿到的体数据”是否可渲染：
 //   1. 必须收到 dicomVolumeReady（成功信号），而非 dicomVolumeError；
-//   2. base64 必须能解码、长度等于 dims³；
+//   2. 成功信号必须带出可 fetch 的 URL，且 Bridge 持有的字节数等于 dims³；
 //   3. 体数据必须有真实的灰度分布（非全零、非常数）——否则体渲染只会画出一块黑屏。
 // 这一用例曾因“只看信号是否到达”而漏判：着色器编译失败时前端全黑，
 // 而 C++ 侧一切正常，测试却显示绿灯。
@@ -185,17 +185,22 @@ TEST_F(BridgeTest, DicomVolumePayloadIsRenderable) {
     ASSERT_TRUE(errorSpy.isEmpty());
 
     const QVariantMap meta = readySpy.value(0).at(0).toMap();
-    const QString base64 = readySpy.value(0).at(1).toString();
-    ASSERT_FALSE(base64.isEmpty()) << "体数据 base64 为空";
+    // 体积改走 app:// 虚拟资源（二进制直取），信号里只有 URL
+    const QString volumeUrl = readySpy.value(0).at(1).toString();
+    ASSERT_FALSE(volumeUrl.isEmpty()) << "体积 URL 为空";
+    EXPECT_TRUE(volumeUrl.startsWith(QStringLiteral("app://app/__volume/")))
+        << "体积 URL 应指向 scheme handler 的虚拟资源：" << volumeUrl.toStdString();
+
+    const QByteArray raw = bridge->volumeBytes();
+    ASSERT_FALSE(raw.isEmpty()) << "体数据为空";
 
     const QVariantList dims = meta.value("dims").toList();
     ASSERT_EQ(dims.size(), 3) << "meta.dims 应为 [d,d,d]";
     const int d = dims.at(0).toInt();
     ASSERT_GT(d, 0);
 
-    const QByteArray raw = QByteArray::fromBase64(base64.toLatin1());
     ASSERT_EQ(raw.size(), d * d * d)
-        << "解码后字节数与 dims³ 不符：期望 " << (d * d * d) << "，实际 " << raw.size();
+        << "体积字节数与 dims³ 不符：期望 " << (d * d * d) << "，实际 " << raw.size();
 
     // 统计灰度分布：体渲染需要有对比度，全零或常数都会渲染成纯黑/纯色
     int nonZero = 0;
