@@ -41,6 +41,22 @@ if (GTest_FOUND)
     # 设置编译选项
     target_compile_features(bridge_test PRIVATE cxx_std_17)
 
+    # 与主目标保持同一套质量门：测试代码不该比产品代码更宽松，
+    # 否则测试里的类型转换 / 变量遮蔽问题没人拦。
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(bridge_test PRIVATE
+            -Wall
+            -Wextra
+            -Werror
+            -pedantic
+            -Wshadow
+            -Wformat=2
+            -Wconversion
+            -Wnull-dereference
+            -Wdouble-promotion
+        )
+    endif()
+
     # 添加测试
     add_test(NAME BridgeUnitTests
         COMMAND bridge_test

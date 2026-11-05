@@ -11,10 +11,13 @@
 // DICOM 后台加载线程的持有结构（堆分配、由 shared_ptr 共享）。
 //  - thread：后台解析线程（unique_ptr 保证单一所有权）；
 //  - alive：生命周期标志，独立于 Bridge 对象，确保 Bridge 析构后
-//    已入队的回调仍能安全读取它而不会产生 use-after-free。
+//    已入队的回调仍能安全读取它而不会产生 use-after-free；
+//  - cancel：协作式取消标志。~Bridge 先置位再 join，让解析在下一个
+//    文件/切片边界尽快退出，避免关窗时被整卷解析（数秒）阻塞。
 struct DicomThreadHolder {
     std::unique_ptr<std::thread> thread;
     std::atomic<bool> alive{false};
+    std::atomic<bool> cancel{false};
 };
 
 class QTimer;

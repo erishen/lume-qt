@@ -78,10 +78,12 @@ Bridge::Bridge(QObject *parent)
 Bridge::~Bridge()
 {
     // 若 DICOM 解析仍在进行：先置 alive=false（位于堆上、独立于 this），
-    // 再 join 等待线程结束。已入队的回调会因 alive=false 跳过对 this 的访问，
-    // 避免 Bridge 释放后的 use-after-free。
+    // 再置 cancel=true 让 worker 在下一个边界退出，最后 join。
+    // 已入队的回调会因 alive=false 跳过对 this 的访问，避免 Bridge 释放后的
+    // use-after-free；cancel 让 join 不必等整卷解析完（否则关窗会卡住数秒）。
     if (m_dicomHolder) {
         m_dicomHolder->alive = false;
+        m_dicomHolder->cancel = true;
         if (m_dicomHolder->thread && m_dicomHolder->thread->joinable())
             m_dicomHolder->thread->join();
         // 释放本副本；若仍有已入队闭包持有 holder 副本，它会存活到那些
@@ -110,7 +112,7 @@ void Bridge::loadDicomVolume(const QString &directory)
         QByteArray data;
         QVariantMap meta;
         QString err;
-        const bool ok = DicomReader::loadVolume(directory, data, meta, err);
+        const bool ok = DicomReader::loadVolume(directory, data, meta, err, 128, &holder->cancel);
 
         // 结果必须回到 Qt 主线程再发射信号（QWebChannel 依赖所在线程）。
         // 闭包通过 holder->alive 判断 Bridge 是否仍存活，避免析构后

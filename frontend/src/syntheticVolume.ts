@@ -57,6 +57,7 @@ export function createSyntheticBrain(dim = 96): { base64: string; meta: DicomVol
       min: 0,
       max: 255,
       slices: dim,
+      skipped: 0,
       source: 'synthetic',
     },
   }

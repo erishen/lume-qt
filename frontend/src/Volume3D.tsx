@@ -295,7 +295,9 @@ export default function Volume3D({ volume }: { volume: VolumeInput | null }) {
             <em>{ww}%</em>
           </label>
           <span className="vol3d-dims">
-            {volume.meta.dims[0]}³ · {volume.meta.slices} 层 · {Math.round(volume.base64.length / 1024)}KB
+            {volume.meta.dims[0]}³ · {volume.meta.slices} 层
+            {volume.meta.skipped > 0 && `（剔除 ${volume.meta.skipped} 层矩阵不一致切片）`}
+            {' '}· {Math.round(volume.base64.length / 1024)}KB
           </span>
         </div>
       )}

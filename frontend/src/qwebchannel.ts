@@ -78,6 +78,8 @@ export interface DicomVolumeMeta {
   min: number
   max: number
   slices: number
+  /** 因矩阵尺寸不一致被剔除的切片数（C++ 侧计入 meta.skipped） */
+  skipped: number
   source: string
 }
 

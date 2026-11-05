@@ -3,11 +3,21 @@
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QSignalSpy>
+#include <QTemporaryDir>
 
+#include <dcmtk/config/osconfig.h>
+#include <dcmtk/dcmdata/dctk.h>
+
+#include <algorithm>
+#include <atomic>
+#include <cstdio>
 #include <iostream>
+#include <vector>
 
 #include "../src/bridge.h"
+#include "../src/dicomreader.h"
 
 class BridgeTest : public ::testing::Test {
 protected:
@@ -181,11 +191,11 @@ TEST_F(BridgeTest, DicomVolumePayloadIsRenderable) {
         maxV = qMax(maxV, v);
         sum += v;
     }
-    const double mean = sum / raw.size();
+    const double mean = sum / static_cast<double>(raw.size());
     std::cout << "[DicomVolume] dims=" << d << " bytes=" << raw.size()
               << " min=" << int(minV) << " max=" << int(maxV)
               << " mean=" << mean << " nonZero=" << nonZero
-              << " (" << (100.0 * nonZero / raw.size()) << "%)" << std::endl;
+              << " (" << (100.0 * nonZero / static_cast<double>(raw.size())) << "%)" << std::endl;
 
     EXPECT_GT(nonZero, raw.size() / 100)
         << "体数据几乎全零 —— 体渲染将显示为黑屏";
@@ -214,6 +224,134 @@ TEST_F(BridgeTest, DicomVolumeDestructorWhileInFlightIsSafe) {
     QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
     // 若执行到此处未被 std::terminate / abort，即视为通过
     EXPECT_TRUE(true);
+}
+
+// ---------------------------------------------------------------------------
+// DicomReader 健壮性回归（合成 DICOM 序列）
+//   1. Z 恰为 0 的切片不能被当成「缺少位置」——旧实现用 z==0 当哨兵，
+//      会把居中采集的中间层排到最前，造成串层；
+//   2. 矩阵尺寸不一致的切片必须被剔除——旧实现用首张切片的 cols 作为
+//      全部切片的步长，混入不同尺寸切片时会越界读（vector::operator[] 不检查）；
+//   3. 协作式取消应在读盘前快速返回，否则关窗会被整卷解析阻塞数秒。
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** 生成一张常量灰度的合成 DICOM 切片并写入 dir */
+bool writeSyntheticSlice(const QString &dir, const QString &name,
+                         int rows, int cols, quint16 value,
+                         double z, bool withZ, int instance)
+{
+    DcmFileFormat fileFormat;
+    DcmDataset *ds = fileFormat.getDataset();
+    ds->putAndInsertString(DCM_SOPClassUID, UID_SecondaryCaptureImageStorage);
+    ds->putAndInsertString(DCM_Modality, "MR");
+    ds->putAndInsertUint16(DCM_SamplesPerPixel, 1);
+    ds->putAndInsertString(DCM_PhotometricInterpretation, "MONOCHROME2");
+    ds->putAndInsertUint16(DCM_Rows, static_cast<Uint16>(rows));
+    ds->putAndInsertUint16(DCM_Columns, static_cast<Uint16>(cols));
+    ds->putAndInsertUint16(DCM_BitsAllocated, 16);
+    ds->putAndInsertUint16(DCM_BitsStored, 16);
+    ds->putAndInsertUint16(DCM_HighBit, 15);
+    ds->putAndInsertUint16(DCM_PixelRepresentation, 0);
+    ds->putAndInsertString(DCM_PixelSpacing, "1\\1");
+    ds->putAndInsertString(DCM_SliceThickness, "1.0");
+    ds->putAndInsertUint16(DCM_InstanceNumber, static_cast<Uint16>(instance));
+    if (withZ) {
+        char pos[64];
+        std::snprintf(pos, sizeof(pos), "0\\0\\%g", z);
+        ds->putAndInsertString(DCM_ImagePositionPatient, pos);
+    }
+
+    const size_t count = static_cast<size_t>(rows) * static_cast<size_t>(cols);
+    std::vector<Uint16> pixels(count, value);
+    ds->putAndInsertUint16Array(DCM_PixelData, pixels.data(),
+                                static_cast<unsigned long>(count));
+
+    const QString path = dir + QLatin1Char('/') + name;
+    const OFCondition cond = fileFormat.saveFile(QFile::encodeName(path).constData(),
+                                                 EXS_LittleEndianExplicit);
+    return cond.good();
+}
+
+int grayAt(const QByteArray &data, int dim, int z, int y, int x)
+{
+    const size_t idx = (static_cast<size_t>(z) * static_cast<size_t>(dim)
+                        + static_cast<size_t>(y)) * static_cast<size_t>(dim)
+                       + static_cast<size_t>(x);
+    return static_cast<int>(static_cast<quint8>(data.at(static_cast<int>(idx))));
+}
+
+} // namespace
+
+TEST(DicomReaderRobustness, ZEqualToZeroKeepsSliceInPlace)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    // Z = -1 / 0 / +1，灰度 10 / 20 / 30
+    ASSERT_TRUE(writeSyntheticSlice(tmp.path(), "a.dcm", 4, 4, 10, -1.0, true, 1));
+    ASSERT_TRUE(writeSyntheticSlice(tmp.path(), "b.dcm", 4, 4, 20, 0.0, true, 2));
+    ASSERT_TRUE(writeSyntheticSlice(tmp.path(), "c.dcm", 4, 4, 30, 1.0, true, 3));
+
+    QByteArray data;
+    QVariantMap meta;
+    QString err;
+    ASSERT_TRUE(DicomReader::loadVolume(tmp.path(), data, meta, err, 3)) << err.toStdString();
+
+    const int d = meta.value("dims").toList().at(0).toInt();
+    ASSERT_EQ(d, 3);
+    ASSERT_EQ(data.size(), d * d * d);
+
+    const int g0 = grayAt(data, d, 0, 1, 1);
+    const int g1 = grayAt(data, d, 1, 1, 1);
+    const int g2 = grayAt(data, d, 2, 1, 1);
+
+    // z=0 的那层（灰度 20）必须落在中间，而不是被当成“无位置”排到最前
+    EXPECT_LT(g0, g1) << "z=-1 层与 z=0 层顺序错乱（g0=" << g0 << ", g1=" << g1 << ")";
+    EXPECT_LT(g1, g2) << "z=0 层与 z=+1 层顺序错乱（g1=" << g1 << ", g2=" << g2 << ")";
+    EXPECT_GT(g1, 60) << "中间层灰度异常偏低，可能取到了错误切片（g1=" << g1 << ")";
+    EXPECT_LT(g1, 200) << "中间层灰度异常偏高（g1=" << g1 << ")";
+}
+
+TEST(DicomReaderRobustness, InconsistentMatrixSlicesAreSkipped)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    // 基准 4×4（两张），混入一张 8×8：应被剔除，而不是按 4 的步长越界读
+    ASSERT_TRUE(writeSyntheticSlice(tmp.path(), "a.dcm", 4, 4, 10, -1.0, true, 1));
+    ASSERT_TRUE(writeSyntheticSlice(tmp.path(), "b.dcm", 4, 4, 20, 0.0, true, 2));
+    ASSERT_TRUE(writeSyntheticSlice(tmp.path(), "c.dcm", 8, 8, 30, 1.0, true, 3));
+
+    QByteArray data;
+    QVariantMap meta;
+    QString err;
+    ASSERT_TRUE(DicomReader::loadVolume(tmp.path(), data, meta, err, 2)) << err.toStdString();
+
+    EXPECT_EQ(meta.value("slices").toInt(), 2) << "应只保留两张 4×4 切片";
+    EXPECT_EQ(meta.value("skipped").toInt(), 1) << "尺寸不一致的切片应计入 skipped";
+
+    const int d = meta.value("dims").toList().at(0).toInt();
+    ASSERT_EQ(data.size(), d * d * d);
+    // 体积必须仍有对比度（10..20），且未被 8×8 的价值污染
+    int maxG = 0;
+    for (int i = 0; i < data.size(); ++i)
+        maxG = std::max(maxG, static_cast<int>(static_cast<quint8>(data.at(i))));
+    EXPECT_EQ(maxG, 255);
+}
+
+TEST(DicomReaderRobustness, CancelReturnsWithoutParsingWholeSeries)
+{
+    std::atomic<bool> cancel{true};
+    QByteArray data;
+    QVariantMap meta;
+    QString err;
+    QElapsedTimer timer;
+    timer.start();
+    const bool ok = DicomReader::loadVolume(QStringLiteral(DICOM_SAMPLE_PATH),
+                                            data, meta, err, 16, &cancel);
+    EXPECT_FALSE(ok) << "取消标志已置位，解析不应返回成功";
+    EXPECT_TRUE(err.contains(QStringLiteral("取消"))) << err.toStdString();
+    EXPECT_LT(timer.elapsed(), 1000) << "取消应在读盘前返回，实测耗时 " << timer.elapsed() << "ms";
 }
 
 int main(int argc, char **argv) {
