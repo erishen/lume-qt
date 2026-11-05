@@ -3,6 +3,8 @@
 #include <QDateTime>
 #include <QFont>
 #include <QFontMetrics>
+#include <QKeyEvent>
+#include <QMouseEvent>
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPen>
@@ -28,6 +30,7 @@ const QColor kTraceSpo2(0x60, 0xa5, 0xfa);
 const QColor kText(0xa9, 0xb4, 0xd0);
 const QColor kDim(0x5c, 0x66, 0x78);
 const QColor kAlarm(0xf8, 0x71, 0x71);
+const QColor kAmber(0xf5, 0xb0, 0x4b);
 } // namespace
 
 NativeVitalStrip::NativeVitalStrip(QWidget *parent)
@@ -36,6 +39,8 @@ NativeVitalStrip::NativeVitalStrip(QWidget *parent)
     setFixedHeight(static_cast<int>(kStripHeight));
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     setAttribute(Qt::WA_OpaquePaintEvent, true);
+    // 静音要能用键盘触发：术中手套上手，快捷键比精确点按可靠。
+    setFocusPolicy(Qt::StrongFocus);
 
     m_ecg.key = QStringLiteral("ECG");
     m_ecg.title = QStringLiteral("ECG · 原生绘制通道（QPainter，不经 WebView）");
@@ -44,6 +49,84 @@ NativeVitalStrip::NativeVitalStrip(QWidget *parent)
     m_spo2.key = QStringLiteral("SpO2");
     m_spo2.title = QStringLiteral("SpO₂ 体积描记波 · 原生判定（不经 WebView）");
     m_spo2.staleMs = 400.0;
+
+    bool ok = false;
+    const int sec = qEnvironmentVariable("QTRS_ALARM_MUTE_SEC").toInt(&ok);
+    if (ok) m_defaultMuteSeconds = std::clamp(sec, 5, 300);
+}
+
+bool NativeVitalStrip::alarmsMuted() const
+{
+    return m_muteTimer.isValid() && m_muteSeconds > 0
+        && m_muteTimer.elapsed() < static_cast<qint64>(m_muteSeconds) * 1000;
+}
+
+int NativeVitalStrip::defaultMuteSeconds() const
+{
+    return m_defaultMuteSeconds;
+}
+
+int NativeVitalStrip::muteRemainingMs() const
+{
+    if (!alarmsMuted()) return 0;
+    const qint64 left = static_cast<qint64>(m_muteSeconds) * 1000 - m_muteTimer.elapsed();
+    return static_cast<int>(std::max<qint64>(0, left));
+}
+
+bool NativeVitalStrip::muteAlarms(int seconds)
+{
+    if (seconds <= 0) {
+        if (m_muteTimer.isValid()) {
+            m_muteTimer.invalidate();
+            emit auditEvent(QVariantMap{
+                {QStringLiteral("type"), QStringLiteral("alarm.unmute")},
+                {QStringLiteral("reason"), QStringLiteral("manual")},
+                {QStringLiteral("source"), QStringLiteral("native-strip")},
+            });
+        }
+        update();
+        return false;
+    }
+    // 上限 5 分钟：静音是「暂时压掉提示」，不是关掉报警系统。
+    m_muteSeconds = std::min(seconds, 300);
+    m_muteTimer.start();
+    m_muteExpiryLogged = false;
+    emit auditEvent(QVariantMap{
+        {QStringLiteral("type"), QStringLiteral("alarm.mute")},
+        {QStringLiteral("seconds"), m_muteSeconds},
+        {QStringLiteral("alarmActive"), m_alarmActive},
+        {QStringLiteral("hr"), m_hr},
+        {QStringLiteral("spo2"), m_spo2Value},
+        {QStringLiteral("source"), QStringLiteral("native-strip")},
+    });
+    update();
+    return true;
+}
+
+void NativeVitalStrip::mousePressEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton) {
+        // 点一下整个区域即可静音/解除：报警时手上没空去对准某个小按钮。
+        muteAlarms(alarmsMuted() ? 0 : defaultMuteSeconds());
+        event->accept();
+        return;
+    }
+    QWidget::mousePressEvent(event);
+}
+
+void NativeVitalStrip::keyPressEvent(QKeyEvent *event)
+{
+    if (event->key() == Qt::Key_M) {
+        muteAlarms(alarmsMuted() ? 0 : defaultMuteSeconds());
+        event->accept();
+        return;
+    }
+    if (event->key() == Qt::Key_Escape) {
+        muteAlarms(0);
+        event->accept();
+        return;
+    }
+    QWidget::keyPressEvent(event);
 }
 
 double NativeVitalStrip::nowMicros()
@@ -224,14 +307,37 @@ void NativeVitalStrip::paintEvent(QPaintEvent *event)
         });
     }
     if (alarm) {
-        p.setPen(kAlarm);
+        const bool muted = alarmsMuted();
+        // 静音到期：提示恢复成红色，同时记一条「到期解除」的台账，
+        // 免得事后只看到 mute 看不到是谁、什么时候把提示放回来的。
+        if (!muted && m_muteTimer.isValid() && !m_muteExpiryLogged) {
+            m_muteExpiryLogged = true;
+            emit auditEvent(QVariantMap{
+                {QStringLiteral("type"), QStringLiteral("alarm.unmute")},
+                {QStringLiteral("reason"), QStringLiteral("expired")},
+                {QStringLiteral("seconds"), m_muteSeconds},
+                {QStringLiteral("source"), QStringLiteral("native-strip")},
+            });
+        }
+        const QColor tone = muted ? kAmber : kAlarm;
+        p.setPen(tone);
         p.setFont(QFont(QStringLiteral("Helvetica"), 10, QFont::Bold));
         const QString what = m_spo2Value < 90.0 ? QStringLiteral("低血氧报警")
                                                 : QStringLiteral("心动过缓报警");
-        p.drawText(QRectF(infoX, 132.0, 200.0, 20.0), Qt::AlignLeft, what);
+        const QString label = muted
+            ? QStringLiteral("%1 · 已静音 %2 s").arg(what).arg(muteRemainingMs() / 1000)
+            : what;
+        p.drawText(QRectF(infoX, 132.0, 200.0, 20.0), Qt::AlignLeft, label);
         p.setPen(Qt::NoPen);
-        p.setBrush(kAlarm);
+        p.setBrush(tone);
         p.drawEllipse(QPointF(infoX + 8.0, 12.0), 4.0, 4.0);
+    }
+
+    // 整条边框随报警状态变红/变琥珀：不依赖文字被看见，也不依赖前端是否渲染成功。
+    if (m_hasVitals && (m_spo2Value < 90.0 || m_hr < 50.0)) {
+        p.setPen(QPen(alarmsMuted() ? kAmber : kAlarm, 3.0));
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5));
     }
 
     // 每 ~120 帧（约 2 秒）落一条日志：截图之外也要有可核查的数字

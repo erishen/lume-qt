@@ -62,6 +62,12 @@ SimulatorProvider::SimulatorProvider(QObject *parent)
     };
 
     m_spo2Timer = new QTimer(this);
+    if (qEnvironmentVariableIsSet("QTRS_SIM_HR")) {
+        m_hrFixed = qEnvironmentVariable("QTRS_SIM_HR").toDouble();
+    }
+    if (qEnvironmentVariableIsSet("QTRS_SIM_SPO2")) {
+        m_spo2Fixed = qEnvironmentVariable("QTRS_SIM_SPO2").toDouble();
+    }
     m_spo2Timer->setInterval(stress > 0 ? 5 : 40);
     connect(m_spo2Timer, &QTimer::timeout, this, &SimulatorProvider::emitSpo2Sample);
 
@@ -202,8 +208,9 @@ void SimulatorProvider::emitVitals()
         return clampTo(v, lo, hi);
     };
 
-    m_hr   = drift(m_hr,   0.2,  58.0, 102.0);
-    m_spo2 = drift(m_spo2, 0.1,  93.0, 100.0);
+    // 注入值固定不动：报警验证需要「一直低」而不是随机游走偶尔穿过阈值。
+    m_hr   = m_hrFixed >= 0.0 ? m_hrFixed : drift(m_hr, 0.2, 58.0, 102.0);
+    m_spo2 = m_spo2Fixed >= 0.0 ? m_spo2Fixed : drift(m_spo2, 0.1, 93.0, 100.0);
     m_rr   = drift(m_rr,   0.1,  12.0,  24.0);
     m_sys  = drift(m_sys,  0.3, 108.0, 142.0);
     m_dia  = drift(m_dia,  0.2,  68.0,  92.0);

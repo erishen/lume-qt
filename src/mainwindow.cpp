@@ -7,6 +7,7 @@
 #include <QWebEngineScript>
 #include <QWebEngineScriptCollection>
 #include <QWebEngineSettings>
+#include <QShortcut>
 #include <QWebEngineView>
 #include <QTimer>
 #include <QUrl>
@@ -198,6 +199,13 @@ void MainWindow::setupNativeStrip()
     // 原生条的中断/恢复/报警事件写进同一份台账：这些判定发生在原生侧，
     // 与前端看门狗是两个独立来源，事后复核需要能区分是谁报的（source 字段）。
     auto *audit = m_bridge->auditSink();
+    // 静音快捷键：M 切换（窗口级，焦点在 WebView 里也生效）。术中没有空去点小按钮。
+    auto *muteKey = new QShortcut(QKeySequence(Qt::Key_M), this);
+    muteKey->setContext(Qt::WindowShortcut);
+    connect(muteKey, &QShortcut::activated, this, [this]() {
+        m_strip->muteAlarms(m_strip->alarmsMuted() ? 0 : m_strip->defaultMuteSeconds());
+    });
+
     connect(m_strip, &NativeVitalStrip::auditEvent, this, [audit](const QVariantMap &ev) {
         if (!audit) return;
         const QString type = ev.value(QStringLiteral("type")).toString();

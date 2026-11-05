@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QColor>
+#include <QElapsedTimer>
 #include <QRectF>
 #include <QVariant>
 #include <QVariantMap>
@@ -36,6 +37,15 @@ signals:
     /// 由 MainWindow 转交 AuditSink 落盘；控件本身不直接碰文件。
     void auditEvent(const QVariantMap &event);
 
+public:
+    /// 静音报警提示（边框与文字降为琥珀色），seconds 秒后自动恢复；传 0 立即解除。
+    /// 静音只改变「提示方式」，不改变判定，也不隐藏当前数值——这是报警系统的最低要求。
+    bool muteAlarms(int seconds);
+    bool alarmsMuted() const;
+    int muteRemainingMs() const;
+    /// 点击/快捷键触发的默认静音时长（`QTRS_ALARM_MUTE_SEC`，默认 120 s，限 5–300）
+    int defaultMuteSeconds() const;
+
 public slots:
     /// 与 Bridge::ecgSample(double, double) 直连（不经过 QWebChannel）
     void pushEcgSample(double value, double tsUs);
@@ -46,6 +56,8 @@ public slots:
 
 protected:
     void paintEvent(QPaintEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
 
 private:
     struct Lane {
@@ -82,6 +94,11 @@ private:
 
     /// 报警边沿检测：只在变化时产生审计事件，避免每帧刷台账
     bool m_alarmActive = false;
+    /// 静音计时：到期自动恢复，且到期本身也记一条台账（谁把提示压掉了、压了多久）
+    QElapsedTimer m_muteTimer;
+    int m_muteSeconds = 0;
+    bool m_muteExpiryLogged = false;
+    int m_defaultMuteSeconds = 120;
     double m_hr = 0.0;
     double m_spo2Value = 0.0;
     double m_sys = 0.0;

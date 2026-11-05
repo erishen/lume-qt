@@ -65,6 +65,9 @@ private:
     double m_ecgPhase = 0.0;
     double m_spo2Phase = 0.0;
     double m_hr = 72.0;
+    /// 可注入的固定生命体征：用于验证报警链路（QTRS_SIM_HR / QTRS_SIM_SPO2）。
+    double m_hrFixed = -1.0;
+    double m_spo2Fixed = -1.0;
     double m_spo2 = 98.0;
     double m_rr = 16.0;
     double m_sys = 118.0;
