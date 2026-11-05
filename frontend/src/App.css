@@ -253,13 +253,13 @@ button:disabled {
   overflow: hidden;
 }
 
+/* 列表最多保留 8 条，随内容自然撑开，滚动交给页面本身——
+   这里再套一层 max-height/overflow 会出现第二个竖向滚动条，滚轮落在列表上时不带动页面。 */
 .iv-list {
   padding: 0.5rem 0.75rem;
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
-  max-height: 150px;
-  overflow-y: auto;
 }
 
 .iv-empty {
