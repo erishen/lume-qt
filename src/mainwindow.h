@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QMainWindow>
 #include <QUrl>
 
@@ -71,4 +72,15 @@ private:
     bool m_syncingWindow = false;
     QLabel *m_volumeLegendText = nullptr;
     QString m_volumeSourceText;
+    /// 手动调窗前的预设档（0–3），供「恢复上次预设」按钮/快捷键回退。
+    int m_lastPresetIndex = 0;
+    /// 重启后要恢复的手动窗值；等体数据到达（有 HU 范围可夹取）再套用。
+    bool m_hasPendingManualWindow = false;
+    double m_pendingWindowWidth = 80.0;
+    double m_pendingWindowLevel = 40.0;
+    /// 手动拖窗会连续发信号，落盘节流到 500 ms，避免每帧写一次 QSettings。
+    QElapsedTimer m_windowSaveClock;
+    /// 启动恢复与体数据到达时的「程序性改控件」不能回写偏好，
+    /// 否则恢复出来的值会把用户真正的上次选择覆盖掉。
+    bool m_restoringSettings = false;
 };

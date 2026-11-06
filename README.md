@@ -1451,3 +1451,35 @@ export QTRS_PACS_TLS_VERIFY=require   # require（默认）/ check / ignore
 
 1. `DcmSCU::useSecureConnection(DcmTLSTransportLayer*)` 在本机 DCMTK 3.7.1 上报 `ASC Caller passed in a NULL key`——单独探针里私钥/证书都加载成功、`checkPrivateKeyMatchesCertificate()` 为真，仍然建不起连接；换 `DcmTLSSCU` 才能通。DCMTK 已把 `DcmTLSSCU` 标为 deprecated，本文件里用 `#pragma clang diagnostic ignored "-Wdeprecated-declarations"` 顶住质量门，等上游修好再换回新 API。
 2. `DcmTLSSCU::enableAuthentication()` 的 passphrase 必须显式传 `""`。默认 `NULL` 会从 stdin 读口令，桌面 GUI 没有 stdin，会卡在建连之前。
+
+### 23.12 窗值持久化与「恢复上次预设」
+
+手动调窗是术中最容易留下的「脏状态」：调完忘了回临床预设，下一次开机还是上一台的 W/L，
+读片时病灶可能正好落在窗边界外。这一批把窗位状态做成可持久化、可一键回退：
+
+- **持久化键**（`QSettings`，macOS 落 `~/Library/Preferences/com.research.qt-react-shell.plist`）：
+  `volume/preset`（0–4，4 = 自定义）、`volume/lastPreset`（手动前那一档 0–3）、
+  `volume/manualW` / `volume/manualL`、`volume/overlay`、`volume/bone`、`volume/clipAxis`、`volume/clipPos`。
+- **启动恢复**：预设/伪彩立即恢复；手动窗值要等体数据到达、拿到这批数据的 HU 上下限后再套
+  （否则夹取范围不对），去骨/切面同样在数据到达后恢复。
+- **环境变量优先**：`QTRS_VOLUME_PRESET` / `QTRS_VOLUME_COLOR` / `QTRS_VOLUME_BONE` /
+  `QTRS_VOLUME_CLIP` / `QTRS_VOLUME_WL` 存在时不读也不写用户偏好，保证自动化与标定可复现。
+- **一键回退**：窗值行新增「恢复上次预设」按钮；快捷键 `⌘⇧W`，同时接受物理 `Ctrl+Shift+W`
+  （Qt 在 macOS 把 `Ctrl` 映射成 Command，只注册一个会与提示文案对不上）。回退后状态行追加
+  「已恢复上次预设」，日志写 `[Volume] 恢复上次预设 <档位> <W/L>`。
+- **程序性改控件不回写**：启动恢复与体数据到达期间用 `m_restoringSettings` 挡住保存，
+  否则「恢复出来的值」会把用户真正的上次选择覆盖掉（实测踩到：`lastPreset=2` 被改写成 1）。
+
+本机实测（256³ MR，`QTRS_PACS=127.0.0.1:11113:QTRSQR`）：
+
+| 场景 | 结果 |
+| --- | --- |
+| 预置 `preset=4`、`manualW=60`、`manualL=30`、`clipAxis=1`、`clipPos=60` 后重启 | 日志 `手动调窗：W60 / L30 a.u.`、`切面：轴1 @ 60%`；控件显示「自定义（手动调窗）」、冠状面 60% |
+| 重启后偏好是否被恢复动作改写 | 否：`preset=4`、`lastPreset=2`、`manualW/L=60/30`、`clipPos=60` 全部保持 |
+| `⌘⇧W` | `[Volume] 恢复上次预设 2 W38 / L55 a.u.`，下拉回到「中强度窗（血管近似）」，状态行「已恢复上次预设」 |
+| 物理 `Ctrl+Shift+W` | 同上（第二条 `Meta+Shift+W` 快捷键） |
+| env 覆盖（`QTRS_VOLUME_WL=800,150`） | 套用 env 值，但不写用户偏好（`volume/manualW/L` 不变） |
+
+已知边界（诚实标注）：偏好是**全局单套**，不是按模态分开存。CT 存的 W800/L150 切到 MR 时会被
+夹到组织强度范围（实测 `800/150 → 33/83`），不是「记错了」，而是 MR 没有 HU；如果后面要支持
+CT/MR 各自记忆，需要把键按 `ct` / `mr` 分桶并在数据到达后选桶。
