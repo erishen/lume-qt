@@ -123,6 +123,9 @@ public:
     /// 追加一条审计事件（前端看门狗等 WebView 侧事件走这里）。
     /// map 里的 type 是事件类型，其余字段原样并入；固定字段（ts/tsUs/session）不可覆盖。
     Q_INVOKABLE void logAuditEvent(const QVariantMap &event);
+    /// 台账检索：{type:"alarm."|"", text:"93", limit:50} → {events:[...], scanned, returned, truncated}
+    /// 事件按「新→旧」返回。只读文件，不写台账；单次最多扫 5000 行，避免翻旧账拖住 UI。
+    Q_INVOKABLE QVariantMap queryAuditEvents(const QVariantMap &filter);
     /// 台账本体：MainWindow 把原生条的事件也写到同一份文件
     class AuditSink *auditSink() const { return m_audit; }
     class LumeSink *lumeSink() const { return m_lume; }

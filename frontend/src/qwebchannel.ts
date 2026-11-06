@@ -71,6 +71,13 @@ export interface Bridge {
 
   /** 追加一条结构化审计事件（type 必填，其余字段原样落盘） */
   logAuditEvent(event: Record<string, unknown>): void
+  /** 台账检索：type 为空表示全部，text 匹配类型与各字段，结果按新→旧 */
+  queryAuditEvents(filter: { type?: string; text?: string; limit?: number }): Promise<{
+    events: Record<string, unknown>[]
+    scanned: number
+    returned: number
+    truncated: boolean
+  }>
 
   /** 当前设备数据源与时基信息 */
   providerInfo(): Promise<ProviderInfo>

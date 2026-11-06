@@ -1,5 +1,6 @@
 #include "bridge.h"
 #include "auditsink.h"
+#include "auditquery.h"
 #include "lumesink.h"
 #include "deviceprovider.h"
 #include "dicomreader.h"
@@ -663,6 +664,78 @@ void Bridge::logAuditEvent(const QVariantMap &event)
     QVariantMap fields = event;
     fields.remove(QStringLiteral("type"));
     m_audit->record(type, fields);
+}
+
+QVariantMap Bridge::queryAuditEvents(const QVariantMap &filter)
+{
+    AuditFilter f;
+    f.typePrefix = filter.value(QStringLiteral("type")).toString().trimmed();
+    f.text = filter.value(QStringLiteral("text")).toString().trimmed();
+    f.limit = clampAuditLimit(filter.value(QStringLiteral("limit")).toInt());
+
+    // 分片按文件名正序读（audit-YYYYMMDD.jsonl 在前、.1 轮转副本在后），
+    // 读进来后再按时间排序——文件名顺序不等于事件顺序，"先读的"不能当成"旧的"。
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                        + QStringLiteral("/audit");
+    QStringList files = QDir(dir).entryList({QStringLiteral("audit-*.jsonl*")}, QDir::Files, QDir::Name);
+
+    constexpr int kScanBudget = 5000;
+    QJsonArray scannedEvents;   // 旧→新，供 filterAuditEvents 取尾部
+    int scanned = 0;
+    bool truncated = false;
+    for (const QString &name : files) {
+        QFile file(QStringLiteral("%1/%2").arg(dir, name));
+        if (!file.open(QIODevice::ReadOnly)) continue;
+        // 一次读整份再按行切：文件被轮转限制在几十 MB 内，逐行 readLine 在慢盘上更吃亏。
+        const QByteArray blob = file.readAll();
+        const QList<QByteArray> lines = blob.split('\n');
+        QJsonArray dayEvents;
+        for (const QByteArray &raw : lines) {
+            const QByteArray line = raw.trimmed();
+            if (line.isEmpty()) continue;
+            const QJsonObject ev = QJsonDocument::fromJson(line).object();
+            if (ev.isEmpty()) continue;   // 崩溃时可能留下半行，跳过而不是让整次查询失败
+            dayEvents.append(ev);
+            ++scanned;
+        }
+        // 单文件内保持文件顺序（即时间顺序），整体按「天」从旧到新拼接。
+        const int before = static_cast<int>(scannedEvents.size());
+        for (const QJsonValue &v : dayEvents) scannedEvents.append(v);
+        if (scanned >= kScanBudget) {
+            truncated = static_cast<int>(scannedEvents.size()) > before || files.size() > 1;
+            break;
+        }
+    }
+
+    // 事件自带 ISO 时间戳：按 ts（不足则按 tsUs）排一次，避免文件分片顺序与轮转
+    // 副本把「最新 8 条」变成「最旧 8 条」（实测踩到：默认视图停在一早的会话）。
+    QList<QJsonObject> ordered;
+    ordered.reserve(scannedEvents.size());
+    for (const QJsonValue &v : scannedEvents) ordered.append(v.toObject());
+    std::stable_sort(ordered.begin(), ordered.end(),
+                     [](const QJsonObject &a, const QJsonObject &b) {
+                         const QString ta = a.value(QStringLiteral("ts")).toString();
+                         const QString tb = b.value(QStringLiteral("ts")).toString();
+                         if (ta != tb) return ta < tb;
+                         return a.value(QStringLiteral("tsUs")).toDouble()
+                                < b.value(QStringLiteral("tsUs")).toDouble();
+                     });
+    QJsonArray orderedArray;
+    for (const QJsonObject &ev : ordered) orderedArray.append(ev);
+    const QJsonArray hits = filterAuditEvents(orderedArray, f);
+    qInfo().noquote() << QStringLiteral("[Audit] 查询 type=%1 text=%2 扫描 %3 条 → 命中 %4 条")
+                             .arg(f.typePrefix.isEmpty() ? QStringLiteral("*") : f.typePrefix,
+                                  f.text.isEmpty() ? QStringLiteral("*") : f.text)
+                             .arg(scanned)
+                             .arg(hits.size());
+
+    QVariantMap out;
+    out.insert(QStringLiteral("events"), hits.toVariantList());
+    out.insert(QStringLiteral("scanned"), scanned);
+    out.insert(QStringLiteral("returned"), hits.size());
+    out.insert(QStringLiteral("truncated"), truncated);
+    out.insert(QStringLiteral("session"), m_audit ? m_audit->sessionId() : QString());
+    return out;
 }
 
 QVariantMap Bridge::providerInfo() const

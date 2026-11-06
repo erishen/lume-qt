@@ -605,3 +605,128 @@ button:disabled {
 .pacs-study:focus {
   outline: 1px solid #64748b;
 }
+
+/* ---------- 事件流 · 台账检索 ---------- */
+.audit-stream {
+  margin-top: 1.5rem;
+  /* 内容区是 auto-fit 多列：检索行需要整行宽度，否则摘要被挤成四行（实测很难读） */
+  grid-column: 1 / -1;
+}
+
+.audit-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.audit-meta {
+  font-size: 0.78rem;
+  color: #8b98ad;
+  font-variant-numeric: tabular-nums;
+}
+
+.audit-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.75rem 0 0.6rem;
+}
+
+.audit-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.audit-chip {
+  padding: 0.22rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid #232a38;
+  background: #0a0e15;
+  color: #9fb0c7;
+  font-size: 0.76rem;
+  cursor: pointer;
+  transition: border-color 120ms, color 120ms, background 120ms;
+}
+
+.audit-chip:hover {
+  border-color: #35506f;
+  color: #d7e3f2;
+}
+
+.audit-chip.on {
+  border-color: #3d7bfd;
+  background: rgba(61, 123, 253, 0.14);
+  color: #dfe9ff;
+}
+
+.audit-search {
+  flex: 1 1 220px;
+  min-width: 180px;
+  padding: 0.3rem 0.55rem;
+  border-radius: 8px;
+  border: 1px solid #232a38;
+  background: #0a0e15;
+  color: #d7e3f2;
+  font-size: 0.8rem;
+  outline: none;
+}
+
+.audit-search:focus {
+  border-color: #3d7bfd;
+}
+
+.audit-search::placeholder {
+  color: #5d6b80;
+}
+
+.audit-empty {
+  margin: 0.4rem 0 0;
+  font-size: 0.8rem;
+  color: #7d8ba0;
+}
+
+/* 每行一条：时间 / 类型 / 摘要。列表随内容撑开，滚动交给页面（避免第二个竖滚动条）。 */
+.audit-row {
+  display: grid;
+  grid-template-columns: 5.2rem 9.5rem 1fr;
+  gap: 0.55rem;
+  align-items: baseline;
+  padding: 0.28rem 0.1rem;
+  border-bottom: 1px solid rgba(35, 42, 56, 0.55);
+  font-size: 0.78rem;
+}
+
+.audit-row:last-child {
+  border-bottom: 0;
+}
+
+.audit-time {
+  color: #8b98ad;
+  font-variant-numeric: tabular-nums;
+}
+
+.audit-type {
+  color: #7fa8ff;
+}
+
+.audit-desc {
+  color: #c7d3e3;
+  overflow-wrap: anywhere;
+}
+
+.audit-row.high .audit-type,
+.audit-row.high .audit-desc {
+  color: #ff6b6b;
+}
+
+.audit-row.mid .audit-type,
+.audit-row.mid .audit-desc {
+  color: #ffb84d;
+}
+
+.audit-row.signal .audit-type {
+  color: #5ee7df;
+}

@@ -76,6 +76,7 @@
 | QRS-A-001 | 关键事件以结构化 JSON Lines 落盘，固定字段不可被业务字段覆盖 | `src/auditsink.cpp` | 抽查 `audit-YYYYMMDD.jsonl`：`ts`/`tsUs`/`session`/`type` 恒在 | 已验证 |
 | QRS-A-002 | 断流、恢复、报警只在边沿记录，稳态不刷屏 | `src/vitalstrip.cpp` `src/bridge.cpp` | 长时间运行下 `signal.stale` 不重复；`alarm.on` 一次告警一条 | 已验证 |
 | QRS-A-003 | 多个实例同时运行不得互相污染台账（会话隔离或文件锁） | `src/main.cpp` | `state/instance.lock` 按 PID 判活：第二个实例打印持有者 pid 并 exit 1；死进程遗留锁在下次启动被接管；正常退出由 atexit 清锁 | 已验证 |
+| QRS-A-004 | 台账要能按类型与数值筛选检索，且不得因翻旧账拖慢界面 | `src/auditquery.cpp` `src/bridge.cpp` `frontend/src/AuditStream.tsx` | 搜 `93` → 命中 2 条均为 `alarm.on` 的 `SpO₂ 93%`（不命中 `ageMs=393`、会话 id）；默认视图为最新事件；单测 `AuditQueryTest` 覆盖前缀/子串/整值/上限 | 已验证 |
 
 ## F. 故障安全
 

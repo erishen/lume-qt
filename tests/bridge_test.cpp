@@ -23,6 +23,7 @@
 
 #include "../src/bridge.h"
 #include "../src/alarmconfig.h"
+#include "../src/auditquery.h"
 #include "../src/auditsink.h"
 #include "../src/lumesink.h"
 #include "../src/pacsclient.h"
@@ -484,6 +485,88 @@ TEST(AuditSinkTest, WritesParsableJsonLinesWithFixedFields)
     EXPECT_FALSE(obj.value(QStringLiteral("ts")).toString().isEmpty());
     // 业务字段里的 type 不得覆盖事件类型
     EXPECT_NE(obj.value(QStringLiteral("type")).toString(), QStringLiteral("fake.type"));
+}
+
+/**
+ * 台账过滤：类型前缀 + 全文（数值字段也要能搜到，否则「93」这种最常见的
+ * 复盘线索会搜不出血氧事件）。空过滤器必须放行全部。
+ */
+TEST(AuditQueryTest, TypePrefixAndScalarTextMatch)
+{
+    QJsonArray events{
+        QJsonObject{{QStringLiteral("type"), QStringLiteral("session.start")},
+                    {QStringLiteral("version"), 1}},
+        QJsonObject{{QStringLiteral("type"), QStringLiteral("signal.stall")},
+                    {QStringLiteral("channel"), QStringLiteral("ECG")},
+                    {QStringLiteral("ms"), 2507}},
+        QJsonObject{{QStringLiteral("type"), QStringLiteral("alarm.on")},
+                    {QStringLiteral("channel"), QStringLiteral("SpO2")},
+                    {QStringLiteral("priority"), QStringLiteral("medium")},
+                    {QStringLiteral("spo2"), 93}},
+    };
+
+    AuditFilter all;
+    EXPECT_TRUE(auditEventMatches(events.at(0).toObject(), all));
+    EXPECT_TRUE(auditEventMatches(events.at(1).toObject(), all));
+
+    AuditFilter alarm;
+    alarm.typePrefix = QStringLiteral("alarm.");
+    EXPECT_TRUE(auditEventMatches(events.at(2).toObject(), alarm));
+    EXPECT_FALSE(auditEventMatches(events.at(1).toObject(), alarm));
+
+    AuditFilter number;
+    number.text = QStringLiteral("93");
+    EXPECT_TRUE(auditEventMatches(events.at(2).toObject(), number));
+    EXPECT_FALSE(auditEventMatches(events.at(1).toObject(), number));
+
+    // 会话 id 里的「93905」也不该被「93」命中（数字搜索只看数值字段）
+    EXPECT_FALSE(auditEventMatches(QJsonObject{{QStringLiteral("type"), QStringLiteral("session.start")},
+                                               {QStringLiteral("session"), QStringLiteral("20261106T104750-93905")}},
+                                   number));
+
+    // 数值按整值匹配：ageMs=393 不能被「93」误命中，但「393」要能搜到
+    const QJsonObject slow{{QStringLiteral("type"), QStringLiteral("watchdog.bad")},
+                           {QStringLiteral("ageMs"), 393}};
+    EXPECT_FALSE(auditEventMatches(slow, number));
+    AuditFilter exact393;
+    exact393.text = QStringLiteral("393");
+    EXPECT_TRUE(auditEventMatches(slow, exact393));
+
+    // 不区分大小写；通道名这种「值」也在搜索范围内
+    AuditFilter channel;
+    channel.text = QStringLiteral("spo2");
+    EXPECT_TRUE(auditEventMatches(events.at(2).toObject(), channel));
+    EXPECT_FALSE(auditEventMatches(events.at(1).toObject(), channel));
+
+    // 类型前缀 + 文本是与关系
+    AuditFilter combo;
+    combo.typePrefix = QStringLiteral("signal.");
+    combo.text = QStringLiteral("2507");
+    EXPECT_TRUE(auditEventMatches(events.at(1).toObject(), combo));
+    EXPECT_FALSE(auditEventMatches(events.at(2).toObject(), combo));
+}
+
+/**
+ * 条数上限：取最新 N 条并反转为「新→旧」；非法 limit 收进合法区间。
+ */
+TEST(AuditQueryTest, LimitKeepsNewestAndClamps)
+{
+    QJsonArray events;
+    for (int i = 0; i < 5; ++i) {
+        events.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("tick")},
+                                  {QStringLiteral("seq"), i}});
+    }
+    AuditFilter f;
+    f.limit = 2;
+    const QJsonArray hits = filterAuditEvents(events, f);
+    ASSERT_EQ(hits.size(), 2);
+    EXPECT_EQ(hits.at(0).toObject().value(QStringLiteral("seq")).toInt(), 4);
+    EXPECT_EQ(hits.at(1).toObject().value(QStringLiteral("seq")).toInt(), 3);
+
+    EXPECT_EQ(clampAuditLimit(0), AuditFilter::kDefaultLimit);
+    EXPECT_EQ(clampAuditLimit(-7), AuditFilter::kDefaultLimit);
+    EXPECT_EQ(clampAuditLimit(999), AuditFilter::kMaxLimit);
+    EXPECT_EQ(clampAuditLimit(12), 12);
 }
 
 /**

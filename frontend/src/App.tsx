@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { connectBridge, type Bridge } from './qwebchannel'
+import AuditStream from './AuditStream'
 import MedicalMonitor from './MedicalMonitor'
 
 /**
@@ -65,6 +66,8 @@ export default function App() {
 
       <main className="content">
         <MedicalMonitor bridge={bridge} />
+
+        <AuditStream bridge={bridge} />
 
         <section className="card">
           <h2>桥接状态</h2>
