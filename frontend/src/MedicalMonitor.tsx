@@ -904,6 +904,23 @@ function drawEcg(canvas: HTMLCanvasElement | null, data: number[], t: number) {
   void t
 }
 
+/**
+ * 扫描线的渐变每帧重建会把 CanvasGradient 一直堆在 Web 进程里（实测 30 fps 下
+ * RSS 约 1 MB/s 线性上涨）。改成建一次「单位空间」渐变，绘制时用 translate/rotate/scale
+ * 把它映射到当前角度与半径——视觉一致，但不再产生每帧的原生对象。
+ */
+const sweepGradientCache = new WeakMap<CanvasRenderingContext2D, CanvasGradient>()
+function sweepGradient(ctx: CanvasRenderingContext2D): CanvasGradient {
+  let g = sweepGradientCache.get(ctx)
+  if (!g) {
+    g = ctx.createLinearGradient(0, 0, 1, 0)
+    g.addColorStop(0, 'rgba(180,240,255,0.9)')
+    g.addColorStop(1, 'rgba(180,240,255,0)')
+    sweepGradientCache.set(ctx, g)
+  }
+  return g
+}
+
 /** 按画布尺寸缓存径向渐变（createRadialGradient 每帧重建是纯浪费） */
 const backdropCache = new WeakMap<HTMLCanvasElement, { w: number; h: number; g: CanvasGradient }>()
 function backdropGradient(
@@ -987,16 +1004,17 @@ function drawUltrasound(canvas: HTMLCanvasElement | null, t: number, dt: number)
   // 扫描线（往复摆动）
   ctx.globalAlpha = 1
   const sweep = -Math.PI / 2 + Math.sin(t * 1.4) * spread * 0.9
-  const grad = ctx.createLinearGradient(cx, cy,
-    cx + Math.cos(sweep) * radius, cy + Math.sin(sweep) * radius)
-  grad.addColorStop(0, 'rgba(180,240,255,0.9)')
-  grad.addColorStop(1, 'rgba(180,240,255,0)')
-  ctx.strokeStyle = grad
-  ctx.lineWidth = 2
+  ctx.save()
+  ctx.translate(cx, cy)
+  ctx.rotate(sweep)
+  ctx.scale(radius, radius)
+  ctx.strokeStyle = sweepGradient(ctx)
+  ctx.lineWidth = 2 / radius
   ctx.beginPath()
-  ctx.moveTo(cx, cy)
-  ctx.lineTo(cx + Math.cos(sweep) * radius, cy + Math.sin(sweep) * radius)
+  ctx.moveTo(0, 0)
+  ctx.lineTo(1, 0)
   ctx.stroke()
+  ctx.restore()
 
   ctx.globalAlpha = 1
   ctx.restore()

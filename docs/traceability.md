@@ -27,6 +27,7 @@
 | QRS-T-010 | 体积视图必须支持去骨与正交切面，且不能把整条光线误裁 | `src/volumeview.cpp` `src/mainwindow.cpp` | 骨窗 + 去骨实测画面全黑（证明 HU≥300 被剔除）；矢状面 50% 实测半剖可见内部；`QTRS_VOLUME_BONE=1`、`QTRS_VOLUME_CLIP=0,0.5` 均入日志 | 已验证 |
 | QRS-T-011 | 窗位/窗宽、自适应分位与手动调窗边界必须有不依赖 GL 的纯函数单测 | `src/volumestats.cpp` `tests/volume_stats_test.cpp` | `ctest` 2/2：CT 四档窗值、非 CT 映射、clamp 边界、CT 剔空气 p50、MR 剔背景 p5、全空气回退；重构后分位日志与改造前逐字一致 | 已验证 |
 | QRS-T-012 | 审计台账必须按大小/日期轮转，旧证据不得被覆盖或丢弃 | `src/auditsink.cpp` `tests/bridge_test.cpp` | 单测预置 >1 MB 台账后 `open()`，断言旧文件改名为 `.001`、新文件从空开始且写入计数为 1；跨天切文件逻辑在 `record()` 内 | 已验证 |
+| QRS-T-013 | 连续运行 10 分钟不得出现主进程内存增长、线程漂移或看门狗误报 | `docs/soak-2026-11-06.md` | 每 30 s 采样：主进程 537→554→491 MB、线程 40→34、CPU 稳态 5–6%；10 分钟 0 次红条；渲染进程 RSS 线性增长（26–60 MB/min，JS 堆恒定 31 MB） | 部分验证 |
 | QRS-T-005 | 关键通路的设计必须在「WebView 投递不可靠」这一实测结论上成立 | `src/vitalstrip.cpp` | 原生 P50 0.24ms vs 前端 291–367ms（约 1000 倍量级差） | 已验证 |
 
 > QRS-T-004 标为部分验证：开关确实生效，但挡不住 macOS 窗口非前台时 QWebChannel 批量迟发。
@@ -114,6 +115,7 @@
 | 本批（去骨与切面） | QRS-T-010 |
 | 本批（窗计算单测） | QRS-T-011 |
 | 本批（台账轮转） | QRS-T-012 |
+| 本批（长时间浸泡） | QRS-T-013 |
 
 统计不手写：`make trace` 每次重新数一遍，缺口或引用失效会直接报错。
 
