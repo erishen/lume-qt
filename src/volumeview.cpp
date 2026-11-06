@@ -451,15 +451,63 @@ bool VolumeView::ensureGl()
 
 void VolumeView::uploadTexture()
 {
-    if (!m_textureDirty || !m_hasData) return;
-    m_gl->glBindTexture(GL_TEXTURE_3D, m_texture);
-    m_gl->glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
-    const int uploadedKb = static_cast<int>(m_bytes.size() / 1024);
-    m_gl->glTexImage3D(GL_TEXTURE_3D, 0, GL_R16, m_texDim, m_texDim, m_texDim, 0,
-                       GL_RED, GL_UNSIGNED_SHORT, m_bytes.constData());
+    if ((!m_textureDirty && !m_uploadPending) || !m_hasData) return;
+    if (m_bytes.isEmpty()) return;
+
+    const int sliceBytes = m_texDim * m_texDim * static_cast<int>(sizeof(uint16_t));
+    if (!m_uploadPending) {
+        // 先只分配存储（最后参数传 nullptr）：一次 256³ 的 glTexImage3D 带数据，
+        // 主线程要连着搬 32 MB，换序列那一瞬间界面就定住了。
+        m_gl->glBindTexture(GL_TEXTURE_3D, m_texture);
+        m_gl->glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
+        m_gl->glTexImage3D(GL_TEXTURE_3D, 0, GL_R16, m_texDim, m_texDim, m_texDim, 0,
+                           GL_RED, GL_UNSIGNED_SHORT, nullptr);
+        m_uploadPending = true;
+        m_uploadZ = 0;
+        m_uploadMaxChunkMs = 0;
+        m_uploadTimer.start();
+        qInfo().noquote() << QStringLiteral("[Volume] 纹理存储已分配：%1³（R16），开始分帧上传")
+                                 .arg(m_texDim);
+    }
+
+    // 每帧最多搬约 16 MB：256³ 一层 128 KB → 128 层（2 块）；128³ 一层 32 KB
+    // → 一层就搬完。4 MB/8 MB 时首帧分别多等 130/70 ms（每次让出主线程约 15 ms），
+    // 16 MB 单块实测 6–7 ms，仍在 16.7 ms 帧预算内，取 16 MB。
+    // QTRS_VOLUME_UPLOAD_MB：调试/对照用，0 表示回到「一次传完」（旧行为）。
+    static const int budget = []() {
+        bool ok = false;
+        const int mb = qEnvironmentVariableIntValue("QTRS_VOLUME_UPLOAD_MB", &ok);
+        if (!ok) return 16 * 1024 * 1024;
+        return mb <= 0 ? INT_MAX : mb * 1024 * 1024;
+    }();
+    const int slicesPerChunk = std::max(1, budget / sliceBytes);
+    const int n = std::min(slicesPerChunk, m_texDim - m_uploadZ);
+    QElapsedTimer chunk;
+    chunk.start();
+    m_gl->glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, m_uploadZ, m_texDim, m_texDim, n,
+                          GL_RED, GL_UNSIGNED_SHORT,
+                          m_bytes.constData() + static_cast<qint64>(m_uploadZ) * sliceBytes);
+    m_uploadZ += n;
+    m_uploadMaxChunkMs = std::max(m_uploadMaxChunkMs, static_cast<int>(chunk.elapsed()));
+
+    if (m_uploadZ < m_texDim) {
+        // 让出主线程，下一帧接着搬；这段时间界面照常响应，旧画面保持不动。
+        QTimer::singleShot(0, this, [this]() {
+            if (m_hasData) renderFrame();
+        });
+        return;
+    }
+
+    m_uploadPending = false;
     m_textureDirty = false;
-    qInfo().noquote() << QStringLiteral("[Volume] 16-bit 3D 纹理上传完成：%1³ = %2 KB（R16，线性过滤）")
-                             .arg(m_texDim).arg(uploadedKb);
+    const int uploadedKb = static_cast<int>(m_bytes.size() / 1024);
+    qInfo().noquote() << QStringLiteral("[Volume] 16-bit 3D 纹理上传完成：%1³ = %2 KB（R16，线性过滤；"
+                                        "分帧 %3 块，总 %4 ms，单块最长 %5 ms）")
+                             .arg(m_texDim)
+                             .arg(uploadedKb)
+                             .arg((m_texDim + slicesPerChunk - 1) / slicesPerChunk)
+                             .arg(m_uploadTimer.elapsed())
+                             .arg(m_uploadMaxChunkMs);
 
     // 纹理已经在显存里：这份打包副本只服务于上传（256³ = 32 MB）。
     // 以前它跟着面板活一辈子，是 RSS 里最没道理的一块。QTRS_KEEP_VOLUME_BYTES=1
@@ -506,6 +554,9 @@ void VolumeView::renderFrame()
     }
 
     uploadTexture();
+    // 分帧上传还没搬完：这一帧只搬数据，不重画（避免把半个体数据画成缺层）。
+    // 画面保持上一帧，下一帧会由 singleShot(0) 接着来。
+    if (m_uploadPending) return;
 
     m_gl->glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
     m_gl->glViewport(0, 0, m_fboWidth, m_fboHeight);

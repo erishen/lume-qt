@@ -105,6 +105,10 @@ private:
     QImage m_frame;
 
     QByteArray m_bytes;
+    bool m_uploadPending = false;
+    int m_uploadZ = 0;
+    int m_uploadMaxChunkMs = 0;
+    QElapsedTimer m_uploadTimer;
     QVariantMap m_meta;
     bool m_hasData = false;
     bool m_textureDirty = false;
