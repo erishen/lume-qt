@@ -113,6 +113,7 @@ export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
     let stopObserve: (() => void) | null = null
 
     const usLimiter = createFrameLimiter(30)
+    const ecgLimiter = createFrameLimiter(5)
     let inView = true
     if (rootRef.current) stopObserve = observeInViewport(rootRef.current, (v) => { inView = v })
 
@@ -124,7 +125,7 @@ export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
       if (!inView || document.hidden) return
       // 只统计真正可见的帧：掉帧（rAF 间隔超 33ms）意味着画面在等帧，不是算得慢
       recordFrame(rawMs)
-      if (ecgDirty.current) {
+      if (ecgDirty.current && ecgLimiter(t)) {
         ecgDirty.current = false
         recordPainted('ecg', lastEcgTs.current)
         drawEcg(ecgRef.current, ecgBuf.current, t)
@@ -294,9 +295,10 @@ function NeurologyPanel({ bridge }: { bridge: Bridge | null }) {
     let stopObserve: (() => void) | null = null
     if (rootRef.current) stopObserve = observeInViewport(rootRef.current, (v) => { inView = v })
 
-    const draw = () => {
+    const waveLimiter = createFrameLimiter(15)
+    const draw = (t: number) => {
       raf = requestAnimationFrame(draw)
-      if (!inView || document.hidden || !waveDirty.current) return
+      if (!inView || document.hidden || !waveDirty.current || !waveLimiter(t)) return
       waveDirty.current = false
       drawWave(eegRef.current, eegBuf.current, '#5ee7df', -2, 2)
       drawWave(emgRef.current, emgBuf.current, '#ff8a65', 0, 1)
@@ -375,7 +377,7 @@ function drawWave(canvas: HTMLCanvasElement | null, data: number[], color: strin
   if (!ctx) return
   const { width: w, height: h } = canvas
 
-  ctx.drawImage(gridLayer(canvas, '#08121a', 'rgba(40,80,110,0.2)', 20, false), 0, 0)
+  paintGrid(ctx, canvas, '#08121a', 'rgba(40,80,110,0.2)', 20, false)
 
   const n = data.length
   if (n < 2) return
@@ -510,7 +512,7 @@ function WatchdogStrip({ hasBridge, bridge }: { hasBridge: boolean; bridge: Brid
       }
     }
     update()
-    const timer = window.setInterval(update, 500)
+    const timer = window.setInterval(update, 1000)
     return () => window.clearInterval(timer)
   }, [bridge])
 
@@ -815,51 +817,48 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
 // ---------------------------------------------------------------------------
 
 /**
- * 背景 + 网格是静态的，但原先每帧都重画一遍（十几个 beginPath/stroke）。
- * 尺寸与配色不变时缓存成一张离屏图，每帧只做一次 drawImage。
+ * 背景 + 网格是静态的。原先缓存成离屏 canvas、每帧 drawImage 贴一次——但 canvas→canvas
+ * 的 blit 每帧都要在 Skia 侧做一次快照（渲染进程 RSS 持续上涨的来源之一）。改成缓存
+ * Path2D，每帧 fillRect + stroke 一次路径：没有快照、也没有每帧重建路径对象。
  */
-const gridLayerCache = new WeakMap<HTMLCanvasElement, { key: string; layer: HTMLCanvasElement }>()
+const gridPathCache = new WeakMap<HTMLCanvasElement, { key: string; path: Path2D }>()
 
-function gridLayer(
+function gridPath(canvas: HTMLCanvasElement, step: number, horizontal: boolean): Path2D {
+  const key = `${canvas.width}x${canvas.height}|${step}|${horizontal}`
+  const hit = gridPathCache.get(canvas)
+  if (hit && hit.key === key) return hit.path
+
+  const path = new Path2D()
+  for (let x = 0; x < canvas.width; x += step) {
+    path.moveTo(x + 0.5, 0)
+    path.lineTo(x + 0.5, canvas.height)
+  }
+  if (horizontal) {
+    for (let y = 0; y < canvas.height; y += step) {
+      path.moveTo(0, y + 0.5)
+      path.lineTo(canvas.width, y + 0.5)
+    }
+  } else {
+    path.moveTo(0, canvas.height / 2 + 0.5)
+    path.lineTo(canvas.width, canvas.height / 2 + 0.5)
+  }
+  gridPathCache.set(canvas, { key, path })
+  return path
+}
+
+function paintGrid(
+  ctx: CanvasRenderingContext2D,
   canvas: HTMLCanvasElement,
   bg: string,
   grid: string,
   step: number,
   horizontal: boolean,
-): HTMLCanvasElement {
-  const key = `${canvas.width}x${canvas.height}|${bg}|${grid}|${step}|${horizontal}`
-  const hit = gridLayerCache.get(canvas)
-  if (hit && hit.key === key) return hit.layer
-
-  const layer = document.createElement('canvas')
-  layer.width = canvas.width
-  layer.height = canvas.height
-  const ctx = layer.getContext('2d')!
+) {
   ctx.fillStyle = bg
-  ctx.fillRect(0, 0, layer.width, layer.height)
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
   ctx.strokeStyle = grid
   ctx.lineWidth = 1
-  for (let x = 0; x < layer.width; x += step) {
-    ctx.beginPath()
-    ctx.moveTo(x + 0.5, 0)
-    ctx.lineTo(x + 0.5, layer.height)
-    ctx.stroke()
-  }
-  if (horizontal) {
-    for (let y = 0; y < layer.height; y += step) {
-      ctx.beginPath()
-      ctx.moveTo(0, y + 0.5)
-      ctx.lineTo(layer.width, y + 0.5)
-      ctx.stroke()
-    }
-  } else {
-    ctx.beginPath()
-    ctx.moveTo(0, layer.height / 2 + 0.5)
-    ctx.lineTo(layer.width, layer.height / 2 + 0.5)
-    ctx.stroke()
-  }
-  gridLayerCache.set(canvas, { key, layer })
-  return layer
+  ctx.stroke(gridPath(canvas, step, horizontal))
 }
 
 /** 滚动 ECG 波形 */
@@ -869,8 +868,8 @@ function drawEcg(canvas: HTMLCanvasElement | null, data: number[], t: number) {
   if (!ctx) return
   const { width: w, height: h } = canvas
 
-  // 背景 + 网格（静态层，缓存后一次 drawImage 贴上）
-  ctx.drawImage(gridLayer(canvas, '#060a10', 'rgba(40,80,110,0.25)', 20, true), 0, 0)
+  // 背景 + 网格（缓存 Path2D，每帧只 stroke 一次）
+  paintGrid(ctx, canvas, '#060a10', 'rgba(40,80,110,0.25)', 20, true)
 
   const mid = h / 2
   const amp = h * 0.38

@@ -67,9 +67,36 @@ Bridge::Bridge(QObject *parent)
 
     // Bridge 只做转发：设备发出的每个样本原样进 QWebChannel 与原生条。
     // 时间戳由 provider 在采集时刻打，转发过程不重新计时。
-    connect(provider, &DeviceProvider::ecgSample, this, &Bridge::ecgSample);
-    connect(provider, &DeviceProvider::spo2Sample, this, &Bridge::spo2Sample);
-    connect(provider, &DeviceProvider::vitalsReady, this, &Bridge::vitalsReady);
+    // 诊断开关：QTRS_MUTE_SIGNALS=1 时不把样本转发给 QWebChannel，用于区分
+    // 「渲染进程内存增长」是消息传输导致还是 Chromium 自身分配（原生条仍照常刷新）。
+    if (qgetenv("QTRS_MUTE_SIGNALS") != "1") {
+        // QTRS_SAMPLE_DIV=N：只把每 N 个波形样本转发一个给网页侧（诊断/降频用，
+        // 用来确认渲染进程内存增长是否随消息条数等比变化；原生条不受影响）。
+        const int div = qMax(1, qgetenv("QTRS_SAMPLE_DIV").toInt());
+        auto *cEcg = new int(0);
+        auto *cEeg = new int(0);
+        auto *cEmg = new int(0);
+        auto *cSpo2 = new int(0);
+        connect(provider, &DeviceProvider::ecgSample, this, [this, div, cEcg](double v, double ts) {
+            if (div > 1 && (++*cEcg % div) != 0) return;
+            emit ecgSample(v, ts);
+        });
+        connect(provider, &DeviceProvider::eegSample, this, [this, div, cEeg](double v, double ts) {
+            if (div > 1 && (++*cEeg % div) != 0) return;
+            emit eegSample(v, ts);
+        });
+        connect(provider, &DeviceProvider::emgSample, this, [this, div, cEmg](double v, double ts) {
+            if (div > 1 && (++*cEmg % div) != 0) return;
+            emit emgSample(v, ts);
+        });
+        connect(provider, &DeviceProvider::spo2Sample, this, [this, div, cSpo2](double v, double ts) {
+            if (div > 1 && (++*cSpo2 % div) != 0) return;
+            emit spo2Sample(v, ts);
+        });
+        connect(provider, &DeviceProvider::vitalsReady, this, &Bridge::vitalsReady);
+        connect(provider, &DeviceProvider::neuralSpike, this, &Bridge::neuralSpike);
+        connect(provider, &DeviceProvider::interventionReady, this, &Bridge::interventionReady);
+    }
 
     // 调试入口：QTRS_VOLUME_DIR=<dir> 启动后加载指定 DICOM 序列（验证窗预设用）。
     // 延后 6 s：网页侧启动时会自动加载演示样例，等它落地后再覆盖，验证才不会看错数据。
@@ -80,11 +107,6 @@ Bridge::Bridge(QObject *parent)
             loadDicomVolume(dir);
         });
     }
-    connect(provider, &DeviceProvider::eegSample, this, &Bridge::eegSample);
-    connect(provider, &DeviceProvider::emgSample, this, &Bridge::emgSample);
-    connect(provider, &DeviceProvider::neuralSpike, this, &Bridge::neuralSpike);
-    connect(provider, &DeviceProvider::interventionReady, this, &Bridge::interventionReady);
-
     qInfo().noquote() << "[Bridge] provider:" << provider->kind() << "·" << provider->description()
                       << "· 硬件时基:" << (provider->hasHardwareClock() ? "是" : "否（宿主墙钟）");
 

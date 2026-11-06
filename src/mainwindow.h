@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QUrl>
 
 class QWebEngineView;
 class QWebEngineProfile;
@@ -28,6 +29,8 @@ class QComboBox;
 class QDoubleSpinBox;
 class QSlider;
 class QLabel;
+class QWebChannel;
+class QWebEngineProfile;
 class VolumeView;
 
 class MainWindow : public QMainWindow
@@ -43,10 +46,14 @@ private:
     void setupNativeVolume();
     void setupConsoleBridge();
     void setupNativeStrip();
+    void reloadWebView();
+    void installDiagnosticsScript(QWebEngineProfile *profile);
 
     QWebEngineView *m_view = nullptr;
     QWebEngineProfile *m_profile = nullptr;
     QWebEnginePage *m_page = nullptr;
+    QWebChannel *m_channel = nullptr;
+    QUrl m_url;
     AppSchemeHandler *m_schemeHandler = nullptr;
     Bridge *m_bridge = nullptr;
     NativeVitalStrip *m_strip = nullptr;

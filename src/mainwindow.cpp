@@ -347,6 +347,7 @@ MainWindow::MainWindow(QWidget *parent)
         }
         qInfo().noquote() << "[WebEngine] 前端已加载：" << url.toString();
     });
+    m_url = url;
     m_view->load(url);
 }
 
@@ -356,9 +357,9 @@ void MainWindow::setupWebChannel()
 {
     m_bridge = new Bridge(this);
 
-    QWebChannel *channel = new QWebChannel(this);
-    channel->registerObject(QStringLiteral("bridge"), m_bridge);
-    m_page->setWebChannel(channel);
+    m_channel = new QWebChannel(this);
+    m_channel->registerObject(QStringLiteral("bridge"), m_bridge);
+    m_page->setWebChannel(m_channel);
 }
 
 void MainWindow::setupNativeVolume()
@@ -515,16 +516,7 @@ void MainWindow::setupConsoleBridge()
     // 若用默认 profile，页面将因找不到 scheme handler 而加载失败。
     m_page = new ConsolePage(m_profile, m_view);
     m_view->setPage(m_page);
-
-    // 以 DocumentCreation 注入诊断脚本：在 React 挂载与 three.js 编译着色器
-    // 之前完成拦截，才能捕获到首帧的着色器编译错误。
-    QWebEngineScript script;
-    script.setName(QStringLiteral("qt-react-shell-diagnostics"));
-    script.setSourceCode(QByteArray(kFrontendDiagnostics));
-    script.setInjectionPoint(QWebEngineScript::DocumentCreation);
-    script.setWorldId(0); // 主世界，与前端脚本共享全局对象
-    script.setRunsOnSubFrames(false);
-    m_profile->scripts()->insert(script);
+    installDiagnosticsScript(m_profile);
 
     // loadFinished(false) 只有一个 bool，排查「页面空白」时信息量太少。
     // loadingChanged 会带出 Chromium 侧的真实错误域/错误码/错误文本，
@@ -540,5 +532,79 @@ void MainWindow::setupConsoleBridge()
                              << "code=" << info.errorCode()
                              << "detail=" << info.errorString();
     });
+
+    // 渲染进程内存兜底：QTRS_RELOAD_MIN=N 时每 N 分钟重载一次网页（波形在原生条上不受影响）。
+    // Ctrl+R 可手动重载，用于长台次里把渲染进程的 RSS 拉回基线。
+    auto *reloadShortcut = new QShortcut(QKeySequence(QStringLiteral("Ctrl+R")), this);
+    reloadShortcut->setContext(Qt::ApplicationShortcut);
+    connect(reloadShortcut, &QShortcut::activated, this, &MainWindow::reloadWebView);
+    auto *refreshShortcut = new QShortcut(QKeySequence::Refresh, this);
+    refreshShortcut->setContext(Qt::ApplicationShortcut);
+    connect(refreshShortcut, &QShortcut::activated, this, &MainWindow::reloadWebView);
+    // 默认 30 分钟重建一次渲染进程；QTRS_RELOAD_MIN=0 可关闭（严格执行台次时长时不必重建）。
+    int reloadMinutes = 30;
+    if (const QByteArray envMinutes = qgetenv("QTRS_RELOAD_MIN"); !envMinutes.isEmpty())
+        reloadMinutes = envMinutes.toInt();
+    if (reloadMinutes > 0) {
+        const int minutes = reloadMinutes;
+        auto *reloadTimer = new QTimer(this);
+        reloadTimer->setInterval(minutes * 60000);
+        connect(reloadTimer, &QTimer::timeout, this, &MainWindow::reloadWebView);
+        reloadTimer->start();
+        qInfo().noquote() << "[WebEngine] 每" << minutes << "分钟自动重载界面";
+    }
+}
+
+void MainWindow::installDiagnosticsScript(QWebEngineProfile *profile)
+{
+    // 以 DocumentCreation 注入诊断脚本：在 React 挂载与 three.js 编译着色器
+    // 之前完成拦截，才能捕获到首帧的着色器编译错误。
+    QWebEngineScript script;
+    script.setName(QStringLiteral("qt-react-shell-diagnostics"));
+    script.setSourceCode(QByteArray(kFrontendDiagnostics));
+    script.setInjectionPoint(QWebEngineScript::DocumentCreation);
+    script.setWorldId(0); // 主世界，与前端脚本共享全局对象
+    script.setRunsOnSubFrames(false);
+    profile->scripts()->insert(script);
+}
+
+void MainWindow::reloadWebView()
+{
+    if (!m_view || !m_bridge || m_url.isEmpty())
+        return;
+    // 单纯的 reload() 复用同一个渲染进程，RSS 不会回落（实测重载后仍按原速上涨）。
+    // 要真正回收，只能换成独立 profile + 新 page：Chromium 会为它起一个新的渲染进程，
+    // 旧进程随旧 page/profile 销毁。波形在原生条上，期间不中断。
+    qInfo().noquote() << "[WebEngine] 重建渲染进程（内存兜底）";
+    auto *oldPage = m_page;
+    auto *oldProfile = m_profile;
+    auto *oldChannel = m_channel;
+
+    m_profile = new QWebEngineProfile(this);
+    m_profile->installUrlSchemeHandler(QByteArrayLiteral("app"), m_schemeHandler);
+    m_page = new ConsolePage(m_profile, m_view);
+    installDiagnosticsScript(m_profile);
+    connect(m_page, &QWebEnginePage::loadingChanged, this,
+            [](const QWebEngineLoadingInfo &info) {
+        if (info.status() != QWebEngineLoadingInfo::LoadFailedStatus)
+            return;
+        qWarning().noquote() << "[WebEngine] 加载错误详情："
+                             << info.url().toString()
+                             << "domain=" << info.errorDomain()
+                             << "code=" << info.errorCode()
+                             << "detail=" << info.errorString();
+    });
+    m_channel = new QWebChannel(this);
+    m_channel->registerObject(QStringLiteral("bridge"), m_bridge);
+    m_page->setWebChannel(m_channel);
+
+    m_view->setPage(m_page);
+    m_view->load(m_url);
+
+    oldPage->deleteLater();
+    if (oldChannel)
+        oldChannel->deleteLater();
+    // 旧 profile 必须等旧 page 真正销毁后再删，否则渲染进程会带着半关闭状态退出。
+    QTimer::singleShot(400, oldProfile, [oldProfile]() { delete oldProfile; });
 }
 

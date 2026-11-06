@@ -211,7 +211,8 @@ bridge.dataFromCpp.connect((payload) => {
 
 长时间浸泡（10 分钟稳态）的记录见 [`docs/soak-2026-11-06.md`](docs/soak-2026-11-06.md)：
 主进程 RSS/线程稳定、看门狗 0 误报；但 Web 渲染进程 RSS 线性增长（JS 堆恒为 31 MB，
-属 Chromium 原生侧），长时间连续运行仍需处理。
+属 Chromium 原生侧）。已做运行期兜底：默认每 30 分钟换 profile+page 重建一次渲染进程，
+内存回到基线（实测 3 轮均 93 MB），`QTRS_RELOAD_MIN` 可调间隔、0 关闭。
 
 页面上同时跑着两个 WebGL 场景（神经脉络、DICOM 体渲染）加 5 个 2D canvas。原先它们各自按
 `requestAnimationFrame` 全速重绘，即使整块面板滚出视口也不停——这是"整页卡顿"的主因。现在的约定：
