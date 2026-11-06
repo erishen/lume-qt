@@ -151,6 +151,12 @@ NativeVitalStrip::NativeVitalStrip(QWidget *parent)
 
 NativeVitalStrip::~NativeVitalStrip() = default;
 
+void NativeVitalStrip::setAlarmThresholds(const AlarmThresholds &thresholds)
+{
+    m_thresholds = thresholds;
+    update();
+}
+
 bool NativeVitalStrip::alarmsMuted() const
 {
     return m_muteTimer.isValid() && m_muteSeconds > 0
@@ -393,13 +399,14 @@ void NativeVitalStrip::paintEvent(QPaintEvent *event)
                    .arg(spo2P99, 0, 'f', 2));
 
     // 报警判定在原生侧完成：不依赖前端是否渲染成功。
-    // 两级：高（SpO₂<90 或 HR<50）/ 中（SpO₂<92 或 HR<55）。阈值是演示级，不做医学声明。
-    const bool highAlarm = m_hasVitals && (m_spo2Value < 90.0 || m_hr < 50.0);
-    const bool midAlarm = m_hasVitals && (m_spo2Value < 92.0 || m_hr < 55.0);
-    const int level = highAlarm ? 2 : (midAlarm ? 1 : 0);
+    // 两级：高（SpO₂<spo2High 或 HR<hrHigh）/ 中（SpO₂<spo2Mid 或 HR<hrMid）。
+    // 阈值来自 AlarmThresholds（默认与改造前一致），可由 env/Lume 覆盖；演示级口径，不做医学声明。
+    const int level = alarmLevelFor(m_spo2Value, m_hr, m_hasVitals, m_thresholds);
+    const bool highAlarm = level == 2;
     if (level != m_alarmLevel) {
-        // 级别边沿记入台账：什么时候报的、哪一级、依据哪个值，事后能复核
-        const bool spo2Culprit = highAlarm ? (m_spo2Value < 90.0) : (m_spo2Value < 92.0);
+        // 级别边沿记入台账：什么时候报的、哪一级、依据哪个值、当时用的是哪套阈值，事后能复核
+        const bool spo2Culprit = highAlarm ? (m_spo2Value < m_thresholds.spo2High)
+                                           : (m_spo2Value < m_thresholds.spo2Mid);
         m_alarmLevel = level;
         emit auditEvent(QVariantMap{
             {QStringLiteral("type"), level > 0 ? QStringLiteral("alarm.on") : QStringLiteral("alarm.off")},
@@ -412,6 +419,10 @@ void NativeVitalStrip::paintEvent(QPaintEvent *event)
             {QStringLiteral("hr"), m_hr},
             {QStringLiteral("spo2"), m_spo2Value},
             {QStringLiteral("source"), QStringLiteral("native-strip")},
+            {QStringLiteral("spo2High"), m_thresholds.spo2High},
+            {QStringLiteral("spo2Mid"), m_thresholds.spo2Mid},
+            {QStringLiteral("hrHigh"), m_thresholds.hrHigh},
+            {QStringLiteral("hrMid"), m_thresholds.hrMid},
         });
     }
     if (m_alarmLevel > 0) {
@@ -431,7 +442,10 @@ void NativeVitalStrip::paintEvent(QPaintEvent *event)
         p.setPen(tone);
         p.setFont(QFont(QStringLiteral("Helvetica"), 10, QFont::Bold));
         const QString prefix = m_alarmLevel == 2 ? QStringLiteral("高优先级") : QStringLiteral("中优先级");
-        const QString what = (m_spo2Value < (m_alarmLevel == 2 ? 90.0 : 92.0))
+        // 文案里的「是哪一项触发」必须跟判定用同一套阈值：否则会出现
+        // 「中优先级 · 心率偏低 75 bpm」这种自相矛盾的提示（实测踩到）。
+        const double spo2Limit = (m_alarmLevel == 2) ? m_thresholds.spo2High : m_thresholds.spo2Mid;
+        const QString what = (m_spo2Value < spo2Limit)
                                  ? QStringLiteral("血氧偏低 %1%").arg(m_spo2Value, 0, 'f', 0)
                                  : QStringLiteral("心率偏低 %1 bpm").arg(m_hr, 0, 'f', 0);
         const QString label = muted

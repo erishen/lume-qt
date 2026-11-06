@@ -46,6 +46,8 @@ private:
     void setupNativeVolume();
     void setupConsoleBridge();
     void setupNativeStrip();
+    /// 报警阈值：env 兜底 → Lume 下发覆盖；每次生效都记一条 alarm.config 台账。
+    void applyAlarmConfig();
     void reloadWebView();
     void installDiagnosticsScript(QWebEngineProfile *profile);
 

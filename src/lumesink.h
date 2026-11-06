@@ -6,6 +6,8 @@
 #include <QString>
 #include <QUrl>
 
+#include <functional>
+
 /**
  * LumeSink — 把术中审计事件上行到 Lume 事件总线（HTTP/JSON）。
  *
@@ -32,6 +34,10 @@ public:
     /// 投递一条事件（来自 AuditSink 的观察者回调）。线程：主线程。
     void post(const QJsonObject &event);
 
+    /// 拉取 Lume 下发的配置（`GET <base>/api/medmon/config`）。
+    /// 未启用 / 请求失败时回调不会被调用——调用方保留本地默认值即可。
+    void fetchConfig(std::function<void(const QJsonObject &)> callback);
+
     int sent() const { return m_sent; }
     int dropped() const { return m_dropped; }
     int failed() const { return m_failed; }
@@ -40,6 +46,7 @@ private:
     void flush();
 
     bool m_enabled = false;
+    QUrl m_base;
     QUrl m_url;
     class QNetworkAccessManager *m_nam = nullptr;
     QJsonArray m_queue;

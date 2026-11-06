@@ -3,6 +3,8 @@
 // 启动：cd tools/lume-medmon && lume app.lume   → http://127.0.0.1:8090
 //   GET  /health                 存活探针
 //   POST /api/medmon/audit       桌面壳上行审计事件（body: { app, sentAt, events:[…] }）
+//   GET  /api/medmon/config      报警阈值下发（spo2High/spo2Mid/hrHigh/hrMid）
+//   POST /api/medmon/config      写入报警阈值（范围校验；非法值 400，不落库）
 //   GET  /api/medmon/summary     按类型汇总（给看板/KPI 用）
 //   GET  /api/medmon/events      最近事件（?limit=，默认 50，按 id 倒序）
 //
@@ -47,7 +49,8 @@ func ensure_db() {
     }
   }
   let ddl = [
-    "CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, ts_us INTEGER, session TEXT, type TEXT, level TEXT, payload TEXT, created INTEGER)"
+    "CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, ts_us INTEGER, session TEXT, type TEXT, level TEXT, payload TEXT, created INTEGER)",
+    "CREATE TABLE IF NOT EXISTS config (k TEXT PRIMARY KEY, v TEXT, updated INTEGER)"
   ];
   for (s in ddl) {
     let r = try(() => sql_write(db, s));
@@ -113,6 +116,54 @@ func count_like(pattern) {
   }
   return int(r.ok[0], "n", 0);
 }
+
+// ------------------------------------------------ 报警阈值：集中下发
+// 桌面壳启动时 GET 一次；拿不到就用自己的 env/默认值，绝不因配置服务不可用而停摆。
+get "/api/medmon/config", (req) => {
+  let cfg = {};
+  let r = try(() => sql_query(db, "SELECT v FROM config WHERE k = ?", ["alarm"]));
+  if (r.ok != null and len(r.ok) > 0) {
+    let p = try(() => json(get(r.ok[0], "v", "{}")));
+    if (p.err == null) {
+      cfg = p.ok;
+    }
+  }
+  return { body: cfg };
+};
+
+// 写侧做同样的范围校验：坏配置宁可不落库，也不能让这一台的告警变钝或变吵。
+post "/api/medmon/config", (req) => {
+  let b = body_of(req);
+  if (b.err != null) {
+    return { status: 400, body: { err: b.err } };
+  }
+  let v = b.ok;
+  let spo2_high = get(v, "spo2High", 90.0);
+  let spo2_mid = get(v, "spo2Mid", 92.0);
+  let hr_high = get(v, "hrHigh", 50.0);
+  let hr_mid = get(v, "hrMid", 55.0);
+  if (spo2_high < 50.0 or spo2_high > 100.0 or spo2_mid < 50.0 or spo2_mid > 100.0) {
+    return { status: 400, body: { err: "SpO₂ 阈值必须在 [50,100]" } };
+  }
+  if (hr_high < 20.0 or hr_high > 200.0 or hr_mid < 20.0 or hr_mid > 200.0) {
+    return { status: 400, body: { err: "HR 阈值必须在 [20,200]" } };
+  }
+  if (spo2_mid < spo2_high or hr_mid < hr_high) {
+    return { status: 400, body: { err: "中优先级阈值不得低于高优先级阈值" } };
+  }
+  let stored = { spo2High: spo2_high, spo2Mid: spo2_mid, hrHigh: hr_high, hrMid: hr_mid };
+  let d = try(() => sql_write(db, "DELETE FROM config WHERE k = ?", ["alarm"]));
+  if (d.err != null) {
+    return { status: 500, body: { err: d.err } };
+  }
+  let w = try(() => sql_write(db,
+    "INSERT INTO config (k, v, updated) VALUES (?, ?, ?)",
+    ["alarm", stringify(stored), int(now())]));
+  if (w.err != null) {
+    return { status: 500, body: { err: w.err } };
+  }
+  return { body: { ok: true, config: stored } };
+};
 
 get "/api/medmon/summary", (req) => {
   let last = null;

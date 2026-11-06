@@ -38,6 +38,7 @@
 | ID | 需求 | 实现 | 验证方式 | 状态 |
 | --- | --- | --- | --- | --- |
 | QRS-X-001 | 术中事件必须能上行到跨端事件总线，且网络故障不得影响本地证据链与业务 | `src/lumesink.cpp` `src/auditsink.cpp` `tools/lume-medmon/app.lume` | `QTRS_LUME_URL` + `QTRS_SIM_SPO2=86`：上行 9 条（session/provider/dicom/watchdog/alarm），Lume `summary` 报 `alarm=1`、`last.type=alarm.on`；两轮重启累计 18 条；单测 `AuditSinkObserver`、`LumeSinkTest`；未设 URL 时不建网络栈 | 已验证 |
+| QRS-X-002 | 报警阈值必须可集中配置，越界/矛盾值不得生效，配置服务不可用时回退本地默认 | `src/alarmconfig.cpp` `src/vitalstrip.cpp` `src/mainwindow.cpp` `tools/lume-medmon/app.lume` | Lume 下发 `spo2Mid=95` + `QTRS_SIM_SPO2=93`：原生条「中优先级 · 血氧偏低 93%」、`alarm.config(source=lume)` 入账；POST 改回 90/92 重启后同值无报警；单测 `AlarmThresholdTest` 覆盖边界（严格小于）、越界拒绝、中<高对齐 | 已验证 |
 
 ## B. 关键波形与报警原生化
 
@@ -123,6 +124,7 @@
 | 本批（台账轮转） | QRS-T-012 |
 | 本批（长时间浸泡） | QRS-T-013 |
 | 本批（Lume 事件上行） | QRS-X-001 |
+| 本批（报警阈值配置） | QRS-X-002 |
 
 统计不手写：`make trace` 每次重新数一遍，缺口或引用失效会直接报错。
 

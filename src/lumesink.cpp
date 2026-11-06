@@ -25,10 +25,37 @@ LumeSink::LumeSink(QObject *parent)
         return;
     }
 
+    m_base = QUrl(base);
     m_url = url;
     m_enabled = true;
     m_nam = new QNetworkAccessManager(this);
     qInfo().noquote() << "[Lume] 审计上行已启用：" << m_url.toString();
+}
+
+void LumeSink::fetchConfig(std::function<void(const QJsonObject &)> callback)
+{
+    if (!m_enabled || !m_nam || !m_base.isValid() || !callback)
+        return;
+
+    QUrl url(m_base.toString() + QStringLiteral("/api/medmon/config"));
+    QNetworkRequest request(url);
+    request.setTransferTimeout(2000);
+    QNetworkReply *reply = m_nam->get(request);
+    connect(reply, &QNetworkReply::finished, this, [reply, callback]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning().noquote() << "[Lume] 拉取报警配置失败：" << reply->errorString()
+                                 << "（继续用本地默认阈值）";
+            return;
+        }
+        QJsonParseError err{};
+        const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll(), &err);
+        if (err.error != QJsonParseError::NoError || !doc.isObject()) {
+            qWarning().noquote() << "[Lume] 报警配置不是合法 JSON 对象：" << err.errorString();
+            return;
+        }
+        callback(doc.object());
+    });
 }
 
 void LumeSink::post(const QJsonObject &event)

@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "../src/bridge.h"
+#include "../src/alarmconfig.h"
 #include "../src/auditsink.h"
 #include "../src/lumesink.h"
 #include "../src/pacsclient.h"
@@ -483,6 +484,66 @@ TEST(AuditSinkTest, WritesParsableJsonLinesWithFixedFields)
     EXPECT_FALSE(obj.value(QStringLiteral("ts")).toString().isEmpty());
     // 业务字段里的 type 不得覆盖事件类型
     EXPECT_NE(obj.value(QStringLiteral("type")).toString(), QStringLiteral("fake.type"));
+}
+
+/**
+ * 报警阈值判定：边界必须精确按「小于」而不是「小于等于」，
+ * 89/91/93 三个值分别落在高/中/正常；没有数据时不能凭 0 值报警。
+ */
+TEST(AlarmThresholdTest, LevelBoundariesUseStrictLessThan)
+{
+    const AlarmThresholds t = defaultAlarmThresholds();
+    EXPECT_EQ(alarmLevelFor(89.0, 70.0, true, t), 2);
+    EXPECT_EQ(alarmLevelFor(90.0, 70.0, true, t), 1); // 等于高阈值 → 落中档
+    EXPECT_EQ(alarmLevelFor(91.0, 70.0, true, t), 1);
+    EXPECT_EQ(alarmLevelFor(92.0, 70.0, true, t), 0); // 等于中阈值 → 正常
+    EXPECT_EQ(alarmLevelFor(93.0, 49.0, true, t), 2);
+    EXPECT_EQ(alarmLevelFor(93.0, 52.0, true, t), 1);
+    EXPECT_EQ(alarmLevelFor(93.0, 60.0, true, t), 0);
+    // 无生命体征样本：不能因为成员变量初值 0 就报「高优先级」
+    EXPECT_EQ(alarmLevelFor(0.0, 0.0, false, t), 0);
+}
+
+/**
+ * 配置解析必须「坏的拒掉、好的生效」，且中优先级不得低于高优先级。
+ * 阈值配错会把报警变钝（漏报）或变吵（误报），所以不接受静默生效。
+ */
+TEST(AlarmThresholdTest, EnvAndJsonRejectOutOfRangeValues)
+{
+    AlarmThresholds t = defaultAlarmThresholds();
+    QStringList warnings;
+
+    qputenv("QTRS_ALARM_SPO2_HIGH", "95");
+    qputenv("QTRS_ALARM_SPO2_MID", "120"); // 越界 → 拒绝，保持原值
+    applyAlarmEnv(t, &warnings);
+    EXPECT_DOUBLE_EQ(t.spo2High, 95.0);
+    // 95 的高阈值高于默认中阈值 92 → 中优先级被对齐到 95（不是留在 92）
+    EXPECT_DOUBLE_EQ(t.spo2Mid, 95.0);
+    EXPECT_FALSE(warnings.isEmpty());
+    qunsetenv("QTRS_ALARM_SPO2_HIGH");
+    qunsetenv("QTRS_ALARM_SPO2_MID");
+
+    // 中优先级低于高优先级 → 自动对齐，避免「中」永远先触发
+    const AlarmThresholds fallback = defaultAlarmThresholds();
+    QJsonObject json{{QStringLiteral("spo2High"), 96.0},
+                     {QStringLiteral("spo2Mid"), 93.0},
+                     {QStringLiteral("hrHigh"), 45.0},
+                     {QStringLiteral("hrMid"), 60.0}};
+    QStringList rejected;
+    const AlarmThresholds applied = alarmThresholdsFromJson(json, fallback, &rejected);
+    EXPECT_DOUBLE_EQ(applied.spo2High, 96.0);
+    EXPECT_DOUBLE_EQ(applied.spo2Mid, 96.0);
+    EXPECT_DOUBLE_EQ(applied.hrHigh, 45.0);
+    EXPECT_DOUBLE_EQ(applied.hrMid, 60.0);
+
+    // 非数字/越界：沿用 fallback，不抛异常
+    QJsonObject bad{{QStringLiteral("spo2High"), QStringLiteral("abc")},
+                    {QStringLiteral("hrHigh"), 999.0}};
+    QStringList badWarnings;
+    const AlarmThresholds kept = alarmThresholdsFromJson(bad, fallback, &badWarnings);
+    EXPECT_DOUBLE_EQ(kept.spo2High, fallback.spo2High);
+    EXPECT_DOUBLE_EQ(kept.hrHigh, fallback.hrHigh);
+    EXPECT_EQ(badWarnings.size(), 2);
 }
 
 /**

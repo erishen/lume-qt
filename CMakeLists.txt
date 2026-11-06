@@ -81,6 +81,7 @@ qt_add_executable(qt-react-shell
     src/mainwindow.h
     src/bridge.cpp
     src/bridge.h
+    src/alarmconfig.cpp
     src/auditsink.cpp
     src/lumesink.cpp
     src/auditsink.h

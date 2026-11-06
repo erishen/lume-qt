@@ -28,6 +28,7 @@
 #include "appschemehandler.h"
 #include "auditsink.h"
 #include "bridge.h"
+#include "lumesink.h"
 #include "consolepage.h"
 #include "vitalstrip.h"
 #include "volumeview.h"
@@ -480,6 +481,61 @@ void MainWindow::setupNativeVolume()
     });
 }
 
+void MainWindow::applyAlarmConfig()
+{
+    QStringList warnings;
+    AlarmThresholds local = defaultAlarmThresholds();
+    applyAlarmEnv(local, &warnings);
+    m_strip->setAlarmThresholds(local);
+    for (const QString &w : warnings)
+        qWarning().noquote() << "[Alarm] 阈值配置：" << w;
+
+    if (m_bridge) {
+        QVariantMap fields{
+            {QStringLiteral("type"), QStringLiteral("alarm.config")},
+            {QStringLiteral("source"), QStringLiteral("env")},
+            {QStringLiteral("spo2High"), local.spo2High},
+            {QStringLiteral("spo2Mid"), local.spo2Mid},
+            {QStringLiteral("hrHigh"), local.hrHigh},
+            {QStringLiteral("hrMid"), local.hrMid},
+        };
+        if (!warnings.isEmpty())
+            fields.insert(QStringLiteral("rejected"), warnings.join(QStringLiteral("; ")));
+        m_bridge->logAuditEvent(fields);
+    }
+
+    // Lume 下发优先：配置集中在一处，术中各台不必各自 export 环境变量。
+    // 拉不到就保持 env/默认值——配置服务不可用绝不改变本地判定能力。
+    LumeSink *lume = m_bridge ? m_bridge->lumeSink() : nullptr;
+    if (!lume || !lume->enabled())
+        return;
+
+    lume->fetchConfig([this](const QJsonObject &cfg) {
+        QStringList rejected;
+        const AlarmThresholds applied =
+            alarmThresholdsFromJson(cfg, m_strip->alarmThresholds(), &rejected);
+        m_strip->setAlarmThresholds(applied);
+        for (const QString &w : rejected)
+            qWarning().noquote() << "[Alarm] Lume 配置被拒：" << w;
+        qInfo().noquote() << QStringLiteral("[Alarm] 阈值来源 Lume：SpO₂<%1/%2 · HR<%3/%4")
+                                     .arg(applied.spo2High).arg(applied.spo2Mid)
+                                     .arg(applied.hrHigh).arg(applied.hrMid);
+        if (m_bridge) {
+            QVariantMap fields{
+                {QStringLiteral("type"), QStringLiteral("alarm.config")},
+                {QStringLiteral("source"), QStringLiteral("lume")},
+                {QStringLiteral("spo2High"), applied.spo2High},
+                {QStringLiteral("spo2Mid"), applied.spo2Mid},
+                {QStringLiteral("hrHigh"), applied.hrHigh},
+                {QStringLiteral("hrMid"), applied.hrMid},
+            };
+            if (!rejected.isEmpty())
+                fields.insert(QStringLiteral("rejected"), rejected.join(QStringLiteral("; ")));
+            m_bridge->logAuditEvent(fields);
+        }
+    });
+}
+
 void MainWindow::setupNativeStrip()
 {
     // 关键波形直连 Bridge 信号：不经过 QWebChannel，因此这里同时也是
@@ -507,6 +563,8 @@ void MainWindow::setupNativeStrip()
         fields.remove(QStringLiteral("type"));
         audit->record(type, fields);
     });
+
+    applyAlarmConfig();
 }
 
 void MainWindow::setupConsoleBridge()

@@ -1307,3 +1307,31 @@ curl -s http://127.0.0.1:8090/api/medmon/summary
 
 **安全边界**：`server{}` 默认 `bind 127.0.0.1`，只在同机/内网用；对外必须加 htpasswd
 或反代鉴权，且 `QTRS_LUME_URL` 目前是明文 HTTP，不要跨公网直连。
+
+### 23.7 报警阈值可配：env 兜底、Lume 下发
+
+阈值原来硬编码在 `NativeVitalStrip::paintEvent`（SpO₂ 90/92、HR 50/55），换科室口径就要重编。
+现在抽到 `src/alarmconfig.{h,cpp}`，判定与文案共用同一套值：
+
+- **默认值不变**（90/92、50/55），不配也能按原行为跑；
+- **env 兜底**：`QTRS_ALARM_SPO2_HIGH` / `SPO2_MID` / `HR_HIGH` / `HR_MID`；
+- **Lume 下发优先**：启动时 `GET <QTRS_LUME_URL>/api/medmon/config`，拿到就覆盖 env 默认；
+  拿不到/超时（2 s）就保持本地值——配置服务不可用绝不改变本地判定能力。
+
+越界或矛盾值一律**不生效**并记 warning：SpO₂ 限 `[50,100]`、HR 限 `[20,200]`；
+`spo2Mid < spo2High`（或 HR 同理）会自动对齐到高优先级，避免「中」永远先触发。
+每次生效都写一条 `alarm.config` 台账（`source=env|lume` + 四个值 + 被拒原因），
+`alarm.on` 也带上当时的四个阈值，事后能回答「这条报警是按哪套阈值报的」。
+
+实测（Lume 下发 `spo2Mid=95`、`QTRS_SIM_SPO2=93`）：
+
+```
+[Alarm] 阈值来源 Lume：SpO₂<90/95 · HR<50/55
+[Alarm] tone level=1 …            ← 中优先级（默认 92 时这个值本不报警）
+原生条文案：中优先级 · 血氧偏低 93%
+```
+
+把 Lume 配置改回 `90/92` 重启，同值 93 不再触发（`alarm.on` 0 条、无提示音）。
+
+**顺手修掉一个文案 bug**：触发项文案原来硬编码 `90/92`，与可配阈值脱节，
+会出现「中优先级 · 心率偏低 75 bpm」这种自相矛盾提示；现在文案与判定同源。

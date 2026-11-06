@@ -1,5 +1,7 @@
 #pragma once
 
+#include "alarmconfig.h"
+
 #include <QColor>
 #include <memory>
 #include <QElapsedTimer>
@@ -50,6 +52,9 @@ public:
     int defaultMuteSeconds() const;
     /// 当前报警级别：0 无 / 1 中 / 2 高（供测试与外部状态展示）
     int alarmLevel() const;
+    /// 报警阈值（原生判定用）。默认值与改造前一致；Lume/env 下发后覆盖。
+    void setAlarmThresholds(const AlarmThresholds &thresholds);
+    AlarmThresholds alarmThresholds() const { return m_thresholds; }
 
 public slots:
     /// 与 Bridge::ecgSample(double, double) 直连（不经过 QWebChannel）
@@ -99,6 +104,7 @@ private:
 
     /// 当前报警级别：0 无 / 1 中 / 2 高。只在级别变化时产生审计事件。
     int m_alarmLevel = 0;
+    AlarmThresholds m_thresholds = defaultAlarmThresholds();
     /// 声音节流：同级报警按固定间隔复鸣，避免每帧都响
     QElapsedTimer m_beepTimer;
     // 两个可区分的报警音：高优先级急促三连（1000 Hz），中优先级两声（620 Hz）。

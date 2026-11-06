@@ -17,6 +17,7 @@ if (GTest_FOUND)
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/bridge.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/simulatorprovider.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/bridge.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/alarmconfig.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/auditsink.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/lumesink.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/pacsclient.cpp

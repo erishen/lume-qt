@@ -82,10 +82,15 @@ curl -s http://127.0.0.1:8090/api/medmon/summary
 单测（不依赖网络）：`AuditSinkObserver.ReceivesEveryWrittenEventAfterPersist`、
 `LumeSinkTest.DisabledWithoutUrlAndNormalizesEndpoint`。
 
-## 下一步（按需推进，不是本轮范围）
+## 配置下行（已落地，2026-11-06 第二批）
 
-1. **下行**：Lume 存阈值/静音策略，桌面壳启动时 `GET /api/medmon/config` 覆盖默认值
-   （对应清单第 15 项「报警阈值配置」）。
+`GET/POST /api/medmon/config`（默认值 `spo2High=90, spo2Mid=92, hrHigh=50, hrMid=55`）：
+
+- 桌面壳启动时 GET 一次，覆盖 env 默认；服务不可用则保持本地值（2 s 超时）。
+- POST 侧做与客户端相同的范围校验，非法值 400 且不落库；`alarm.config` 台账记录来源与生效值。
+- 实测：`spo2Mid=95` + `QTRS_SIM_SPO2=93` → 中优先级「血氧偏低 93%」；改回 92 → 同值不报警。
+
+## 下一步（按需推进，不是本轮范围）
 2. **SSE**：Lume 推 `alarm.mute` / `case.select` 指令，`QNetworkReply::readyRead` 逐行解析。
 3. **A2A / Agent**：把 `summary` 注册成 Lume agent 的只读工具，术后问答「这台手术断了几次」。
 4. **鉴权**：`htpasswd` 或 `X-*` 头门禁；`QTRS_LUME_URL` 目前明文，仅限本机/内网。
