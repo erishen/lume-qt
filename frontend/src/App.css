@@ -192,6 +192,16 @@ body {
   flex: 0 0 auto;
 }
 
+.nonclinical-pill {
+  padding: 0.2rem 0.6rem;
+  border: 1px solid rgba(255, 193, 94, 0.38);
+  border-radius: 999px;
+  background: rgba(255, 193, 94, 0.08);
+  color: #ffd89a;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
 .conn-pill {
   display: inline-flex;
   align-items: center;

@@ -72,6 +72,25 @@ func body_of(req) {
   return { ok: r.ok, err: null };
 }
 
+// 先定义脱敏函数：POST /audit 落库、GET /events 与 Agent 工具都依赖它。
+func redact_event(ev) {
+  let keys = ["ts", "tsUs", "type", "level", "priority", "channel", "spo2", "hr",
+              "ms", "ageMs", "p50", "p95", "host", "port", "studies",
+              "layers", "parseMs", "source", "message", "session", "event"];
+  let out = {};
+  let i = 0;
+  while (i < len(keys)) {
+    let k = keys[i];
+    let v = get(ev, k, null);
+    if (v != null) {
+      out = put(out, k, v);
+    }
+    i = i + 1;
+  }
+  return out;
+}
+
+
 get "/health", (req) => {
   return { body: { ok: true, app: "lume-medmon" } };
 };
@@ -92,10 +111,12 @@ post "/api/medmon/audit", (req) => {
     let t = get(ev, "type", "");
     // 只收有 type 的事件：type 是整条事件线的锚，缺了它无法统计也无法复核。
     if (t != "") {
+      // Lume 只是跨端镜像：落库前先做字段白名单，原文仍以本地 JSONL 台账为准。
+      let safe = redact_event(ev);
       let r = try(() => sql_write(db,
         "INSERT INTO events (ts, ts_us, session, type, level, payload, created) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [get(ev, "ts", ""), int(ev, "tsUs", 0), get(ev, "session", ""), t,
-         get(ev, "level", ""), stringify(ev), int(now())]));
+        [get(safe, "ts", ""), int(safe, "tsUs", 0), get(safe, "session", ""), t,
+         get(safe, "level", ""), stringify(safe), int(now())]));
       if (r.err != null) {
         return { status: 500, body: { err: r.err, accepted: accepted } };
       }
@@ -193,22 +214,6 @@ get "/api/medmon/summary", (req) => {
 // 模型能填的参数越少，越不容易编造或误查。
 // 只把“能回答复盘问题”的字段交给模型：studyUid / dir / 患者相关键一律不出端。
 // 这条边界必须在 Lume 侧做，不能依赖前端 prompt——模型看不到的工具返回值才安全。
-func redact_event(ev) {
-  let keys = ["ts", "type", "level", "priority", "channel", "spo2", "hr",
-              "ms", "ageMs", "p50", "p95", "host", "port", "studies",
-              "layers", "parseMs", "source", "message", "session", "event"];
-  let out = {};
-  let i = 0;
-  while (i < len(keys)) {
-    let k = keys[i];
-    let v = get(ev, k, null);
-    if (v != null) {
-      out = put(out, k, v);
-    }
-    i = i + 1;
-  }
-  return out;
-}
 
 func medmon_summary_payload() {
   let last = null;
@@ -216,7 +221,7 @@ func medmon_summary_payload() {
   if (r.ok != null and len(r.ok) > 0) {
     let p = try(() => json(get(r.ok[0], "payload", "")));
     if (p.err == null) {
-      last = p.ok;
+      last = redact_event(p.ok);
     }
   }
   return {

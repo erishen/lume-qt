@@ -2,6 +2,9 @@
 
 Lume 的 Qt 桌面工作台（医疗监护演示）· Qt WebEngine / C++ / React（Vite + TypeScript）。
 
+> **非临床用途**：本项目是科研/工程演示，不是医疗器械，不能用于诊断、治疗或临床决策。
+> 隐私与合规审计、数据流向和上线前检查表见 [`docs/privacy-compliance.md`](docs/privacy-compliance.md)。
+
 ## 技术栈
 
 | 层 | 技术 |
@@ -1392,8 +1395,9 @@ curl -s http://127.0.0.1:8090/api/agent/ready
 # {"ok":true,"tools":["medmon_summary","medmon_events","medmon_review"],"chat":"/react/api/chat"}
 ```
 
-隐私边界：工具返回值在 Lume 侧做字段白名单，`studyUid`、`dir` 与患者相关键不会送去模型；
-模型回答只用于工程复盘，不是诊断/治疗建议。实测桌面壳日志：
+隐私边界：桌面壳上行前就把 `studyUid` / `dir` 换成不可逆摘要、移除患者相关键，并把消息里的
+绝对路径与 DICOM UID 替换掉；Lume 落库和读接口再做一次字段白名单。本地 JSONL 台账保留完整字段，
+按 PHI 保护，不能直接外发。模型回答只用于工程复盘，不是诊断/治疗建议。实测桌面壳日志：
 
 ```
 [Lume] AI 复盘请求： http://127.0.0.1:8090/react/api/chat

@@ -32,7 +32,12 @@ public:
     QUrl endpoint() const { return m_url; }
 
     /// 投递一条事件（来自 AuditSink 的观察者回调）。线程：主线程。
+    /// 投递前会做一次脱敏：studyUid/dir 换成不可逆摘要，患者相关键直接移除，
+    /// 消息里的绝对路径与 DICOM UID 也会被替换。本地台账不受影响。
     void post(const QJsonObject &event);
+
+    /// 纯函数，供 post() 与单测使用；不修改入参。
+    static QJsonObject sanitizedForLume(const QJsonObject &event);
 
     /// 拉取 Lume 下发的配置（`GET <base>/api/medmon/config`）。
     /// 未启用 / 请求失败时回调不会被调用——调用方保留本地默认值即可。

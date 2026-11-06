@@ -129,8 +129,10 @@ curl -s http://127.0.0.1:8090/api/agent/ready
 界面显示一段 200 字内的复盘（报警 / 信号 / PACS / 体数据 / 看门狗计数），
 单工具版本端到端约 35–90 s（受模型侧波动）；多工具版本约 90 s，所以生产提示词固定只开 `medmon_review`。
 
-**隐私边界**：`medmon_events_payload` 在 Lume 侧做字段白名单，`studyUid`、`dir`、
-患者相关键不会进入工具返回值，也就不会被送到模型；`session` 是本地会话号，不含姓名。
+**隐私边界**：桌面壳 `LumeSink::sanitizedForLume()` 在发端把 `studyUid` / `dir` 换成
+不可逆摘要、移除患者相关键，并把消息里的绝对路径与 DICOM UID 替换掉；Lume 落库前
+`redact_event()` 再做一次白名单，`/api/medmon/events` 与 Agent 工具都只返回白名单字段。
+本地 JSONL 台账仍保留完整字段，按 PHI 保护。`session` 是本地会话号，不含姓名。
 模型回答只作为工程复盘，不是诊断/治疗建议；异常仍以本地台账与报警为准。
 
 ## 下一步（按需推进，不是本轮范围）

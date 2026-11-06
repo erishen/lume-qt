@@ -1,11 +1,101 @@
 #include "lumesink.h"
 
 #include <QDateTime>
+#include <QCryptographicHash>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QRegularExpression>
+#include <QStringList>
 #include <QTimer>
+
+namespace {
+
+QString digestForLume(const QString &value)
+{
+    const QByteArray hash = QCryptographicHash::hash(
+        QByteArrayLiteral("lume-qt|") + value.toUtf8(), QCryptographicHash::Sha256);
+    return QString::fromLatin1(hash.toHex().left(16));
+}
+
+QString scrubText(const QString &text)
+{
+    QString out = text;
+    static const QRegularExpression pathRe(
+        QStringLiteral("(?:/Users|/home|/private|/tmp|/var/folders)/[^\\s,;\"']+"));
+    static const QRegularExpression uidRe(QStringLiteral("\\b\\d+(?:\\.\\d+){4,}\\b"));
+    out.replace(pathRe, QStringLiteral("<path>"));
+    out.replace(uidRe, QStringLiteral("<uid>"));
+    return out;
+}
+
+bool isPatientKey(const QString &key)
+{
+    const QString k = key.toLower();
+    return k.startsWith(QStringLiteral("patient"))
+        || k == QStringLiteral("accessionnumber")
+        || k == QStringLiteral("medicalrecordnumber")
+        || k == QStringLiteral("issuerofpatientid");
+}
+
+bool isIdentifierKey(const QString &key)
+{
+    const QString k = key.toLower();
+    return k == QStringLiteral("studyuid")
+        || k == QStringLiteral("studyinstanceuid")
+        || k == QStringLiteral("dir")
+        || k == QStringLiteral("destdir")
+        || k == QStringLiteral("sourcedir")
+        || k == QStringLiteral("filepath")
+        || k == QStringLiteral("path");
+}
+
+QJsonValue sanitizeValue(const QJsonValue &value);
+
+QJsonObject sanitizeObject(const QJsonObject &input)
+{
+    QJsonObject out;
+    for (auto it = input.begin(); it != input.end(); ++it) {
+        const QString key = it.key();
+        if (isPatientKey(key)) {
+            continue;
+        }
+        if (isIdentifierKey(key)) {
+            const QString raw = it.value().toString();
+            if (!raw.isEmpty()) {
+                const QString hashKey = key + QStringLiteral("Hash");
+                if (!out.contains(hashKey)) {
+                    out.insert(hashKey, digestForLume(raw));
+                }
+            }
+            continue;
+        }
+        out.insert(key, sanitizeValue(it.value()));
+    }
+    return out;
+}
+
+QJsonValue sanitizeValue(const QJsonValue &value)
+{
+    if (value.isObject()) {
+        return sanitizeObject(value.toObject());
+    }
+    if (value.isArray()) {
+        QJsonArray array;
+        for (const QJsonValue &item : value.toArray()) {
+            array.append(sanitizeValue(item));
+        }
+        return array;
+    }
+    if (value.isString()) {
+        return scrubText(value.toString());
+    }
+    return value;
+}
+
+} // namespace
 
 LumeSink::LumeSink(QObject *parent)
     : QObject(parent)
@@ -30,6 +120,11 @@ LumeSink::LumeSink(QObject *parent)
     m_enabled = true;
     m_nam = new QNetworkAccessManager(this);
     qInfo().noquote() << "[Lume] 审计上行已启用：" << m_url.toString();
+}
+
+QJsonObject LumeSink::sanitizedForLume(const QJsonObject &event)
+{
+    return sanitizeObject(event);
 }
 
 void LumeSink::fetchConfig(std::function<void(const QJsonObject &)> callback)
@@ -67,7 +162,7 @@ void LumeSink::post(const QJsonObject &event)
         m_queue.removeFirst();
         ++m_dropped;
     }
-    m_queue.append(event);
+    m_queue.append(sanitizedForLume(event));
     if (!m_busy)
         flush();
 }

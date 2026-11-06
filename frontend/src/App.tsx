@@ -66,6 +66,9 @@ export default function App() {
           </div>
         </div>
         <div className="topbar-right">
+          <span className="nonclinical-pill" title="科研/演示界面，不用于临床诊断或治疗">
+            演示 · 非临床
+          </span>
           <span className={`conn-pill ${bridge ? 'ok' : 'idle'}`}>
             <i aria-hidden="true" />
             {bridge ? '桥接在线' : '桥接离线'}

@@ -830,6 +830,52 @@ TEST(PacsTlsConfigTest, UnknownVerifyIsRejected)
 }
 
 
+TEST(LumeSinkPrivacyTest, IdentifiersAreHashedAndPatientFieldsRemoved)
+{
+    QJsonObject event{
+        {QStringLiteral("type"), QStringLiteral("pacs.retrieve")},
+        {QStringLiteral("studyUid"), QStringLiteral("1.2.826.0.1.3680043.2.1143.2592092611698916978113112155415165916")},
+        {QStringLiteral("dir"), QStringLiteral("/tmp/qtrs-ct-phantom/1.2.826.0.1.3680043")},
+        {QStringLiteral("patientName"), QStringLiteral("Jane_Doe")},
+        {QStringLiteral("patientId"), QStringLiteral("20130717")},
+        {QStringLiteral("message"), QStringLiteral("取回失败：/Users/example/pacs/1.2.826.0.1.3680043")},
+        {QStringLiteral("files"), 8},
+        {QStringLiteral("nested"), QJsonObject{
+            {QStringLiteral("patientBirthDate"), QStringLiteral("19700101")},
+            {QStringLiteral("studyInstanceUid"), QStringLiteral("1.2.3.4.5.6")},
+        }},
+    };
+
+    const QJsonObject safe = LumeSink::sanitizedForLume(event);
+    EXPECT_FALSE(safe.contains(QStringLiteral("studyUid")));
+    EXPECT_FALSE(safe.contains(QStringLiteral("dir")));
+    EXPECT_FALSE(safe.contains(QStringLiteral("patientName")));
+    EXPECT_FALSE(safe.contains(QStringLiteral("patientId")));
+    EXPECT_TRUE(safe.contains(QStringLiteral("studyUidHash")));
+    EXPECT_TRUE(safe.contains(QStringLiteral("dirHash")));
+    EXPECT_EQ(safe.value(QStringLiteral("files")).toInt(), 8);
+    EXPECT_FALSE(safe.value(QStringLiteral("message")).toString().contains(QStringLiteral("/Users/")));
+    EXPECT_FALSE(safe.value(QStringLiteral("message")).toString().contains(QStringLiteral("1.2.826")));
+    const QJsonObject nested = safe.value(QStringLiteral("nested")).toObject();
+    EXPECT_FALSE(nested.contains(QStringLiteral("patientBirthDate")));
+    EXPECT_FALSE(nested.contains(QStringLiteral("studyInstanceUid")));
+    EXPECT_TRUE(nested.contains(QStringLiteral("studyInstanceUidHash")));
+    // 本地台账对象不被修改。
+    EXPECT_TRUE(event.contains(QStringLiteral("patientName")));
+    EXPECT_EQ(event.value(QStringLiteral("studyUid")).toString().left(5), QStringLiteral("1.2.8"));
+}
+
+TEST(LumeSinkPrivacyTest, SanitizationIsStableForCorrelation)
+{
+    QJsonObject event{{QStringLiteral("type"), QStringLiteral("pacs.retrieve")},
+                      {QStringLiteral("studyUid"), QStringLiteral("1.2.3.4.5")}};
+    const QJsonObject a = LumeSink::sanitizedForLume(event);
+    const QJsonObject b = LumeSink::sanitizedForLume(event);
+    EXPECT_EQ(a.value(QStringLiteral("studyUidHash")).toString(),
+              b.value(QStringLiteral("studyUidHash")).toString());
+    EXPECT_EQ(a.value(QStringLiteral("studyUidHash")).toString().size(), 16);
+}
+
 TEST(VolumePreferenceKeyTest, UnknownModalityKeepsLegacyGlobalKey)
 {
     // 启动时还不知道这批是 CT 还是 MR：写入仍用旧全局键，避免猜错桶。
