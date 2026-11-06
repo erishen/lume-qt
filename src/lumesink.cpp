@@ -83,7 +83,7 @@ void LumeSink::flush()
         batch.append(m_queue.takeAt(0));
 
     QJsonObject body;
-    body.insert(QStringLiteral("app"), QStringLiteral("qt-react-shell"));
+    body.insert(QStringLiteral("app"), QStringLiteral("lume-qt"));
     body.insert(QStringLiteral("sentAt"), QDateTime::currentDateTime().toString(Qt::ISODateWithMs));
     body.insert(QStringLiteral("events"), batch);
 

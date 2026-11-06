@@ -1,5 +1,5 @@
 # ============================================================================
-# qt-react-shell — Makefile
+# lume-qt — Makefile
 #
 # 常用目标:
 #   make             完整构建（前端 + C++）
@@ -14,7 +14,7 @@
 
 ROOT      := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 BUILD_DIR := $(ROOT)/build
-BIN       := $(BUILD_DIR)/qt-react-shell
+BIN       := $(BUILD_DIR)/lume-qt
 WEB_ROOT  := $(ROOT)/resources/web
 
 QT_PREFIX ?= /opt/homebrew/opt/qt
@@ -215,7 +215,7 @@ test-all: run-tests frontend-tests
 
 ## 帮助
 help:
-	@echo "qt-react-shell 可用目标:"
+	@echo "lume-qt 可用目标:"
 	@awk '/^## / { desc = substr($$0, 4); next } \
 	      /^[a-zA-Z_][a-zA-Z0-9_-]*:/ { if (desc != "") { \
 	          target = $$0; sub(/:.*/, "", target); \

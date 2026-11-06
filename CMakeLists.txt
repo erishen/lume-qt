@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(qt-react-shell VERSION 0.1.0 LANGUAGES CXX)
+project(lume-qt VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -75,7 +75,7 @@ endif()
 # ---------------------------------------------------------------------------
 # 可执行目标
 # ---------------------------------------------------------------------------
-qt_add_executable(qt-react-shell
+qt_add_executable(lume-qt
     src/main.cpp
     src/mainwindow.cpp
     src/mainwindow.h
@@ -111,7 +111,7 @@ qt_add_executable(qt-react-shell
 
 # 设置编译器警告（目标定义后设置）
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(qt-react-shell PRIVATE
+    target_compile_options(lume-qt PRIVATE
         -Wall
         -Wextra
         -Werror
@@ -125,15 +125,15 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 # 检查并设置 C++ 标准
-target_compile_features(qt-react-shell PRIVATE cxx_std_17)
+target_compile_features(lume-qt PRIVATE cxx_std_17)
 
 # 添加医疗模拟支持
-target_compile_definitions(qt-react-shell PRIVATE
+target_compile_definitions(lume-qt PRIVATE
     HAS_MEDICAL_SIMULATION=1
     QT_WEBENGINE_IMPLEMENTATION
 )
 
-target_link_libraries(qt-react-shell PRIVATE
+target_link_libraries(lume-qt PRIVATE
     Qt6::Widgets
     Qt6::WebEngineWidgets
     Qt6::WebChannel
@@ -147,19 +147,19 @@ target_link_libraries(qt-react-shell PRIVATE
 )
 
 # 让 C++ 侧能在运行时定位 resources/web 目录
-target_compile_definitions(qt-react-shell PRIVATE
+target_compile_definitions(lume-qt PRIVATE
     WEB_ROOT_PATH="${WEB_ROOT}"
 )
 
 # DICOM 样例数据目录（经 QWebChannel 暴露给前端，用于演示体积加载）
-target_compile_definitions(qt-react-shell PRIVATE
+target_compile_definitions(lume-qt PRIVATE
     DICOM_SAMPLE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/resources/dicom/brain-t1"
 )
 
 # macOS 应用打包（可选，未启用 bundle）
-# set_target_properties(qt-react-shell PROPERTIES
+# set_target_properties(lume-qt PROPERTIES
 #     MACOSX_BUNDLE TRUE
-#     MACOSX_BUNDLE_BUNDLE_NAME "qt-react-shell"
+#     MACOSX_BUNDLE_BUNDLE_NAME "lume-qt"
 # )
 
 # ---------------------------------------------------------------------------

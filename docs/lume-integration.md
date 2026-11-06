@@ -21,7 +21,7 @@ POST <QTRS_LUME_URL>/api/medmon/audit
 Content-Type: application/json
 
 {
-  "app": "qt-react-shell",
+  "app": "lume-qt",
   "sentAt": "2026-11-06T11:22:49.025",
   "events": [
     { "ts": "2026-11-06T11:22:49.020", "tsUs": 1793935369020038,
@@ -71,7 +71,7 @@ CREATE TABLE events (
 
 ```bash
 cd tools/lume-medmon && lume app.lume &
-QTRS_LUME_URL=http://127.0.0.1:8090 QTRS_SIM_SPO2=86 ./build/qt-react-shell
+QTRS_LUME_URL=http://127.0.0.1:8090 QTRS_SIM_SPO2=86 ./build/lume-qt
 curl -s http://127.0.0.1:8090/api/medmon/summary
 ```
 

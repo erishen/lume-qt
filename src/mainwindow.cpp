@@ -112,7 +112,7 @@ const char *kFrontendDiagnostics = R"JS(
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
-    setWindowTitle(QStringLiteral("qt-react-shell"));
+    setWindowTitle(QStringLiteral("Lume 围术期影像工作台"));
     resize(1280, 800);
 
     // 必须用「命名（持久化）」profile，不能用 off-the-record 的无参构造：
@@ -120,10 +120,10 @@ MainWindow::MainWindow(QWidget *parent)
     // installUrlSchemeHandler 注册的 handler（loadFinished(false)、无 404、
     // 无 JS 日志），页面直接空白。自定义 scheme 与 off-the-record 不兼容。
     //
-    // 代价是会在 ~/Library/Application Support/research/qt-react-shell/ 留下
+    // 代价是会在 ~/Library/Application Support/research/lume-qt/ 留下
     // History / Cookies / Session Storage。并发启动多个实例实测仍能加载，
     // 但会共享/覆盖这份缓存；排查异常时先确认没有残留进程（见 README「已知事项」）。
-    m_profile = new QWebEngineProfile(QStringLiteral("qt-react-shell"), this);
+    m_profile = new QWebEngineProfile(QStringLiteral("lume-qt"), this);
     m_schemeHandler = new AppSchemeHandler(QStringLiteral(WEB_ROOT_PATH), this);
     // 体积二进制由 scheme handler 直接供数（见 AppSchemeHandler::serveVolume）
     m_schemeHandler->setVolumeProvider([this]() {
@@ -1011,7 +1011,7 @@ void MainWindow::installDiagnosticsScript(QWebEngineProfile *profile)
     // 以 DocumentCreation 注入诊断脚本：在 React 挂载与 three.js 编译着色器
     // 之前完成拦截，才能捕获到首帧的着色器编译错误。
     QWebEngineScript script;
-    script.setName(QStringLiteral("qt-react-shell-diagnostics"));
+    script.setName(QStringLiteral("lume-qt-diagnostics"));
     script.setSourceCode(QByteArray(kFrontendDiagnostics));
     script.setInjectionPoint(QWebEngineScript::DocumentCreation);
     script.setWorldId(0); // 主世界，与前端脚本共享全局对象

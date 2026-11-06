@@ -61,8 +61,8 @@ export default function App() {
         <div className="brand">
           <span className="brand-mark" aria-hidden="true">Q</span>
           <div className="brand-text">
-            <h1>术中影像工作台</h1>
-            <p>qt-react-shell · Qt WebEngine / C++ / React</p>
+            <h1>围术期影像工作台</h1>
+            <p>Lume 的 Qt 桌面工作台 · Qt WebEngine / C++ / React</p>
           </div>
         </div>
         <div className="topbar-right">

@@ -55,7 +55,7 @@ TEST_F(BridgeTest, BasicOperations) {
 
 TEST_F(BridgeTest, PlatformInfo) {
     EXPECT_FALSE(bridge->getPlatformInfo().isEmpty());
-    EXPECT_EQ(bridge->appName(), "qt-react-shell");
+    EXPECT_EQ(bridge->appName(), "lume-qt");
     EXPECT_FALSE(bridge->platform().isEmpty());
 }
 

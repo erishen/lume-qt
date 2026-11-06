@@ -6,6 +6,8 @@
 #include <QDebug>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QSettings>
 #include <QStandardPaths>
 
 #include "mainwindow.h"
@@ -75,6 +77,42 @@ void releaseInstanceLock()
     existing.close();
     if (pid == static_cast<qint64>(::getpid())) QFile::remove(gInstanceLockPath);
 }
+/**
+ * 从旧的 qt-react-shell 迁移本机数据与偏好。
+ *
+ * 改名会改变 QStandardPaths::AppDataLocation 和 QSettings 的文件名；不迁移的话，
+ * 用户看到的就是「台账、PACS 落盘、窗口/体渲染偏好全没了」。只在目标不存在时
+ * 整个搬一次，失败则保留旧目录并继续启动，绝不删除任何证据。
+ */
+void migrateLegacyProfile()
+{
+    const QString oldData = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
+                            + QStringLiteral("/research/qt-react-shell");
+    const QString newData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (QFileInfo::exists(oldData) && !QFileInfo::exists(newData)) {
+        QDir().mkpath(QFileInfo(newData).absolutePath());
+        if (QDir().rename(oldData, newData)) {
+            qInfo().noquote() << "[Migrate] 旧应用数据已迁移：" << oldData << "→" << newData;
+        } else {
+            qWarning().noquote() << "[Migrate] 旧应用数据迁移失败，保留原目录：" << oldData;
+        }
+    }
+
+    QSettings oldSettings(QStringLiteral("research"), QStringLiteral("qt-react-shell"));
+    QSettings newSettings;
+    int copied = 0;
+    for (const QString &key : oldSettings.allKeys()) {
+        if (!newSettings.contains(key)) {
+            newSettings.setValue(key, oldSettings.value(key));
+            ++copied;
+        }
+    }
+    if (copied > 0) {
+        newSettings.sync();
+        qInfo().noquote() << "[Migrate] 已迁移" << copied << "项设置到 lume-qt";
+    }
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
@@ -98,8 +136,11 @@ int main(int argc, char *argv[])
     QWebEngineUrlScheme::registerScheme(scheme);
 
     QApplication app(argc, argv);
-    app.setApplicationName(QStringLiteral("qt-react-shell"));
+    app.setApplicationName(QStringLiteral("lume-qt"));
     app.setOrganizationName(QStringLiteral("research"));
+
+    // 必须在任何 QSettings / AppDataLocation 读取之前完成迁移。
+    migrateLegacyProfile();
 
     // 台账、体数据状态、PACS 落地目录都是「一个应用一份」：两个实例同时跑会互相
     // 覆盖 session.end、重复写事件、抢同一个体积文件。宁可在启动时明确拒绝，
@@ -120,7 +161,7 @@ int main(int argc, char *argv[])
     gInstanceLockPath = lockPath;
     std::atexit(releaseInstanceLock);
 
-    qInfo() << "Starting qt-react-shell with web root:" << WEB_ROOT_PATH;
+    qInfo() << "Starting lume-qt with web root:" << WEB_ROOT_PATH;
 
     MainWindow window;
     // 临时验证开关：置顶可避免 macOS 遮挡检测把 WebView 的渲染/定时器节流，

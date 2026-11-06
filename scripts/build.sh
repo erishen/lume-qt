@@ -17,4 +17,4 @@ echo "==> [3/3] 编译 C++"
 cmake --build "${BUILD_DIR}"
 
 echo ""
-echo "构建完成。运行: ${BUILD_DIR}/qt-react-shell"
+echo "构建完成。运行: ${BUILD_DIR}/lume-qt"

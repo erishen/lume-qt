@@ -1110,7 +1110,7 @@ void Bridge::loadDicomVolume(const QString &directory)
 
 QString Bridge::appName() const
 {
-    return QStringLiteral("qt-react-shell");
+    return QStringLiteral("lume-qt");
 }
 
 bool Bridge::nativeVolume() const

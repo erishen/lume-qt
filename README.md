@@ -1,6 +1,6 @@
-# qt-react-shell
+# lume-qt
 
-Qt WebEngine · C++ · React（Vite + TypeScript）桌面前后端一体壳项目。
+Lume 的 Qt 桌面工作台（医疗监护演示）· Qt WebEngine / C++ / React（Vite + TypeScript）。
 
 ## 技术栈
 
@@ -15,7 +15,7 @@ Qt WebEngine · C++ · React（Vite + TypeScript）桌面前后端一体壳项�
 ## 架构
 
 ```
-┌─────────────────────────── qt-react-shell ───────────────────────────┐
+┌──────────────────────────── lume-qt ────────────────────────────┐
 │  C++ (Qt)                                    │  React (Vite)         │
 │                                             │                       │
 │  MainWindow ── QWebEngineView                │  App.tsx              │
@@ -33,7 +33,7 @@ Qt WebEngine · C++ · React（Vite + TypeScript）桌面前后端一体壳项�
 ## 目录结构
 
 ```
-qt-react-shell/
+lume-qt/
 ├── CMakeLists.txt              # 构建配置：Qt6 + 前端构建集成
 ├── src/
 │   ├── main.cpp                # 入口：注册 app:// scheme
@@ -88,7 +88,7 @@ make help       # 查看所有目标
 
 ```bash
 ./scripts/build.sh
-./build/qt-react-shell
+./build/lume-qt
 ```
 
 ### 分步构建
@@ -102,7 +102,7 @@ cmake -S . -B build -DCMAKE_PREFIX_PATH=/opt/homebrew/opt/qt -G Ninja
 cmake --build build
 
 # 3. 运行
-./build/qt-react-shell
+./build/lume-qt
 ```
 
 > CMake 的 `frontend-build` 目标带有 staleness 检查：仅当前端源码比 `resources/web/` 新时才重新跑 `npm run build`，所以改 C++ 一行不会触发整次前端构建。它会同时把 `qwebchannel.js`（Qt 安装的 `share/qt6/webchannel/` 下）拷贝到 `resources/web/`。
@@ -111,7 +111,7 @@ cmake --build build
 
 ```bash
 make dev        # 一条命令：清理残留 → 启动 Vite dev server（5173）+ Qt 应用，Ctrl-C 一并退出
-make dev-hot    # 只起 Vite（同样先清残留），另开终端执行：QTRS_DEV_URL=http://localhost:5173 ./build/qt-react-shell
+make dev-hot    # 只起 Vite（同样先清残留），另开终端执行：QTRS_DEV_URL=http://localhost:5173 ./build/lume-qt
 make dev-stop   # 单独清理残留；也可用于排查端口状态
 DEV_KILL_STALE=0 make dev   # 关闭自动清理：端口被占用时改为报错退出
 ```
@@ -121,7 +121,7 @@ DEV_KILL_STALE=0 make dev   # 关闭自动清理：端口被占用时改为报�
 - **QWebChannel 在 HTTP 模式下同样可用**：transport 由 `QWebEnginePage::setWebChannel` 注入，与页面 scheme 无关。`qwebchannel.js` 由 `frontend/vite.config.ts` 在启动时同步到 `frontend/public/`（Vite 静态根），与生产构建同源；该文件是生成物，已 gitignored。
 - **dev server 固定 5173 端口**（`strictPort: true`）：`make dev` / `make dev-hot` 启动前会**自动清理残留**——按监听端口找到旧进程、打印 `lsof` 明细（进程名 / PID / 监听地址）后结束，并等待端口真正释放（最多 5 秒）再启动新服务，避免应用静默连到过期页面。退出时按监听端口清理，不会残留孤儿 Vite 进程。若不想自动结束进程，用 `DEV_KILL_STALE=0 make dev` 退回严格报错模式。
 - `make dev-stop` 是同一套清理逻辑的独立入口：空闲时直接返回，遇到结束不掉（如权限不足）的进程会报错并以非零码退出，方便脚本判断。
-- **Qt 侧必须用命名（持久化）`QWebEngineProfile`**：实测 Qt 6.12 下 off-the-record profile（无 name 构造）不会把 `app://` 请求投递给自定义 scheme handler，页面会直接空白。代价是状态写在 `~/Library/Application Support/research/qt-react-shell/`，因此不要同时运行多个实例；`make dev` 已做启动前自动清理与退出清理，避免残留实例。
+- **Qt 侧必须用命名（持久化）`QWebEngineProfile`**：实测 Qt 6.12 下 off-the-record profile（无 name 构造）不会把 `app://` 请求投递给自定义 scheme handler，页面会直接空白。代价是状态写在 `~/Library/Application Support/research/lume-qt/`，因此不要同时运行多个实例；`make dev` 已做启动前自动清理与退出清理，避免残留实例。
 - `make dev-rebuild` 保留旧的「清空后全量重建再运行」行为，不依赖 dev server，适合排查构建产物相关问题。
 
 ### 运行参数一览（环境变量）
@@ -309,7 +309,7 @@ bridge.dataFromCpp.connect((payload) => {
 
 > 测量陷阱：macOS 上窗口被遮挡/失焦时，Chromium 会把渲染与定时器节流到秒级，积压样本会让
 > 看板读数涨到几百毫秒甚至数秒（且各通道 P50 会几乎相同）。这类数字是环境产物，不是链路性能。
-> 测的时候把窗口置前后再读；调试可用 `QTRS_TOPMOST=1 ./build/qt-react-shell` 让窗口置顶。
+> 测的时候把窗口置前后再读；调试可用 `QTRS_TOPMOST=1 ./build/lume-qt` 让窗口置顶。
 
 ### 2. DICOM 体积改二进制直传（去掉 base64）
 
@@ -422,7 +422,7 @@ bridge.dataFromCpp.connect((payload) => {
 故障注入开关（演示/回归都用得上）：
 
 ```bash
-QTRS_FAULT=spo2,ecg ./build/qt-react-shell   # 启动 3 秒后停掉指定通道
+QTRS_FAULT=spo2,ecg ./build/lume-qt   # 启动 3 秒后停掉指定通道
 ```
 
 ### 6. 设备接入抽象层（DeviceProvider）
@@ -491,7 +491,7 @@ raw = 宿主now − tsUs = 时钟偏移 + 真实延迟
 验证开关（模拟设备时基与宿主不同源）：
 
 ```bash
-QTRS_CLOCK_OFFSET_MS=5000 ./build/qt-react-shell
+QTRS_CLOCK_OFFSET_MS=5000 ./build/lume-qt
 # 日志： [Bridge] provider: ... 设备时钟时基，偏移 5000ms ... · 硬件时基: 是
 ```
 
@@ -515,8 +515,8 @@ QTRS_CLOCK_OFFSET_MS=5000 ./build/qt-react-shell
 - **`src/auditsink.h/.cpp`**：JSON Lines 台账，一行一条。固定字段
   `ts`（ISO 带毫秒）/ `tsUs`（epoch 微秒）/ `session`（会话 id）/ `type`，
   业务字段原样并入且**不能覆盖固定字段**。按天切分：
-  `~/Library/Application Support/research/qt-react-shell/audit/audit-YYYYMMDD.jsonl`
-  （Linux 上是 `~/.local/share/research/qt-react-shell/audit/`）。
+  `~/Library/Application Support/research/lume-qt/audit/audit-YYYYMMDD.jsonl`
+  （Linux 上是 `~/.local/share/research/lume-qt/audit/`）。
 - **两个独立来源都写进同一份台账**，用 `source` 区分：
   - `native-strip`：原生条的中断 / 恢复 / 报警边沿（`signal.stale` / `signal.recover` /
     `alarm.on` / `alarm.off`，带 `channel`、`ageMs`、`thresholdMs`）；
@@ -543,7 +543,7 @@ QTRS_CLOCK_OFFSET_MS=5000 ./build/qt-react-shell
 排查与统计：
 
 ```bash
-f=~/Library/Application\ Support/research/qt-react-shell/audit/audit-$(date +%Y%m%d).jsonl
+f=~/Library/Application\ Support/research/lume-qt/audit/audit-$(date +%Y%m%d).jsonl
 python3 -c "import json,sys;[print(json.loads(l)['type']) for l in open(sys.argv[1])]" "$f" | sort | uniq -c
 ```
 
@@ -621,7 +621,7 @@ C-ECHO / C-FIND 只解决「通不通、有没有」。术中真正需要的是�
 
 - **`PacsClient::retrieveStudy()`**：同一个关联上发 C-GET、收对方推来的 C-STORE，
   存储模式 `DCMSCU_STORAGE_DISK` + `setStorageDir(destDir)`；
-  落盘目录 `~/Library/Application Support/research/qt-react-shell/pacs/<StudyInstanceUID>/`。
+  落盘目录 `~/Library/Application Support/research/lume-qt/pacs/<StudyInstanceUID>/`。
 - **`Bridge::pacsRetrieveStudy()`**：C-GET 完成后自动 `loadDicomVolume(destDir)`，
   后台解析、不阻塞 UI；单次 DIMSE 超时 15 s。
 - **前端**：看板头部 PACS chip 旁一枚「取回该例」按钮（取回按钮用的 StudyInstanceUID 来自
@@ -983,11 +983,11 @@ PACS 侧新增检查需要重新查询；体积通道的「到达」在事件型
 $ cat state/instance.lock        # 伪造 pid 999999（死进程）
 999999
 demo-host.local
-qt-react-shell
-$ ./build/qt-react-shell &       # 正常启动，锁被接管
+lume-qt
+$ ./build/lume-qt &       # 正常启动，锁被接管
 $ cat state/instance.lock
 98868
-$ ./build/qt-react-shell        # 第二个实例
+$ ./build/lume-qt        # 第二个实例
 [Single] 已有实例在运行（pid= 98868 ，锁： …/state/instance.lock ），本次启动中止。
 exit=1
 ```
@@ -1090,7 +1090,7 @@ TEST_F(BridgeTest, BasicOperations) {
 
 TEST_F(BridgeTest, PlatformInfo) {
     EXPECT_FALSE(bridge->getPlatformInfo().isEmpty());
-    EXPECT_EQ(bridge->appName(), "qt-react-shell");
+    EXPECT_EQ(bridge->appName(), "lume-qt");
 }
 ```
 
@@ -1333,14 +1333,14 @@ RSS 从 519 MB 降到约 408 MB（少了一份网页侧体数据与 Three.js 场
 启用只需一个环境变量（不设则完全不建网络栈）：
 
 ```bash
-QTRS_LUME_URL=http://127.0.0.1:8090 ./build/qt-react-shell
+QTRS_LUME_URL=http://127.0.0.1:8090 ./build/lume-qt
 ```
 
 上行契约（桌面壳 → Lume）：
 
 ```json
 POST /api/medmon/audit
-{ "app": "qt-react-shell", "sentAt": "2026-11-06T11:22:49.025", 
+{ "app": "lume-qt", "sentAt": "2026-11-06T11:22:49.025",
   "events": [ { "ts": "…", "tsUs": 1793935369025374, "session": "…", "type": "alarm.on", "channel": "SpO2" } ] }
 ```
 
@@ -1549,7 +1549,7 @@ export QTRS_PACS_TLS_VERIFY=require   # require（默认）/ check / ignore
 手动调窗是术中最容易留下的「脏状态」：调完忘了回临床预设，下一次开机还是上一台的 W/L，
 读片时病灶可能正好落在窗边界外。这一批把窗位状态做成可持久化、可一键回退：
 
-- **持久化键**（`QSettings`，macOS 落 `~/Library/Preferences/com.research.qt-react-shell.plist`）：
+- **持久化键**（`QSettings`，macOS 落 `~/Library/Preferences/com.research.lume-qt.plist`）：
   `volume/<ct|mr>/preset`（0–4，4 = 自定义）、`volume/<ct|mr>/lastPreset`（手动前那一档 0–3）、
   `volume/<ct|mr>/manualW` / `volume/<ct|mr>/manualL`、`overlay`、`bone`、`clipAxis`、`clipPos`。
 - **按模态分桶**：CT 与 MR/a.u. 各存一套。CT 的 `W1500/L300` 切到 MR 会被夹到组织强度范围
