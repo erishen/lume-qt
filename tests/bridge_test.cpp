@@ -23,6 +23,7 @@
 
 #include "../src/bridge.h"
 #include "../src/auditsink.h"
+#include "../src/lumesink.h"
 #include "../src/pacsclient.h"
 #include "../src/simulatorprovider.h"
 #include "../src/dicomreader.h"
@@ -482,6 +483,58 @@ TEST(AuditSinkTest, WritesParsableJsonLinesWithFixedFields)
     EXPECT_FALSE(obj.value(QStringLiteral("ts")).toString().isEmpty());
     // 业务字段里的 type 不得覆盖事件类型
     EXPECT_NE(obj.value(QStringLiteral("type")).toString(), QStringLiteral("fake.type"));
+}
+
+/**
+ * 上行观察者契约：台账落盘之后才通知观察者，且通知内容与落盘对象一致。
+ * 这样 Lume 侧拿到的就是本地证据的镜像，不会出现「云端有、本地没有」的错位。
+ */
+TEST(AuditSinkObserver, ReceivesEveryWrittenEventAfterPersist)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+
+    AuditSink sink;
+    ASSERT_TRUE(sink.open(dir.path()));
+
+    QVector<QJsonObject> seen;
+    sink.setObserver([&seen, &sink](const QJsonObject &event) {
+        // 观察者被调用时事件必须已经落盘，否则断网/崩溃会丢证据。
+        EXPECT_FALSE(sink.filePath().isEmpty());
+        seen.append(event);
+    });
+
+    sink.record(QStringLiteral("session.start"), {{QStringLiteral("provider"), QStringLiteral("simulator")}});
+    sink.record(QStringLiteral("alarm.on"), {{QStringLiteral("channel"), QStringLiteral("SpO2")}});
+
+    ASSERT_EQ(seen.size(), 2);
+    EXPECT_EQ(seen.at(0).value(QStringLiteral("type")).toString(), QStringLiteral("session.start"));
+    EXPECT_EQ(seen.at(1).value(QStringLiteral("channel")).toString(), QStringLiteral("SpO2"));
+    EXPECT_EQ(seen.at(0).value(QStringLiteral("session")).toString(), sink.sessionId());
+}
+
+/**
+ * Lume 上行默认关闭：没配 QTRS_LUME_URL 时不能建网络栈、不能阻止业务。
+ * 这是「本地台账唯一权威」的实现保证——现场没 Lume 也能正常手术。
+ */
+TEST(LumeSinkTest, DisabledWithoutUrlAndNormalizesEndpoint)
+{
+    qunsetenv("QTRS_LUME_URL");
+    {
+        LumeSink sink;
+        EXPECT_FALSE(sink.enabled());
+        EXPECT_TRUE(sink.endpoint().isEmpty());
+        sink.post(QJsonObject{{QStringLiteral("type"), QStringLiteral("probe")}});
+        EXPECT_EQ(sink.sent(), 0);
+    }
+
+    qputenv("QTRS_LUME_URL", "http://127.0.0.1:8090/");
+    {
+        LumeSink sink;
+        EXPECT_TRUE(sink.enabled());
+        EXPECT_EQ(sink.endpoint().toString(), QStringLiteral("http://127.0.0.1:8090/api/medmon/audit"));
+    }
+    qunsetenv("QTRS_LUME_URL");
 }
 
 /**

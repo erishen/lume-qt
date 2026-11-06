@@ -125,6 +125,7 @@ public:
     Q_INVOKABLE void logAuditEvent(const QVariantMap &event);
     /// 台账本体：MainWindow 把原生条的事件也写到同一份文件
     class AuditSink *auditSink() const { return m_audit; }
+    class LumeSink *lumeSink() const { return m_lume; }
 
     // ---- 当前设备数据源（前端据此判断时间戳时基） ----
     // 返回 {kind, description, hasHardwareClock}。hasHardwareClock=true 时 tsUs 来自
@@ -195,6 +196,7 @@ private:
 
     /// 事件台账（JSON Lines）。一行一条，按天切分。
     class AuditSink *m_audit = nullptr;
+    class LumeSink *m_lume = nullptr;
     /// 上次运行异常结束的摘要（空表示上次是正常退出或没有历史）
     QVariantMap m_recovery;
     QElapsedTimer m_volumeParseTimer;

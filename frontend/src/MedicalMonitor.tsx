@@ -113,7 +113,7 @@ export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
     let stopObserve: (() => void) | null = null
 
     const usLimiter = createFrameLimiter(30)
-    const ecgLimiter = createFrameLimiter(5)
+    const ecgLimiter = createFrameLimiter(30)
     let inView = true
     if (rootRef.current) stopObserve = observeInViewport(rootRef.current, (v) => { inView = v })
 

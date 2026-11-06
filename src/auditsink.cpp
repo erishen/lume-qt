@@ -115,6 +115,9 @@ QJsonObject AuditSink::record(const QString &type, const QVariantMap &fields)
         obj.insert(it.key(), QJsonValue::fromVariant(it.value()));
     }
 
+    if (m_observer)
+        m_observer(obj);
+
     // 跨天要切新文件，否则第二天的事件会写进昨天的台账。
     const QString today = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd"));
     if (today != m_day) {

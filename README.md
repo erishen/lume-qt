@@ -1260,3 +1260,50 @@ RSS 从 519 MB 降到约 408 MB（少了一份网页侧体数据与 Three.js 场
 重构后实测自适应分位不变（CT 体模 `低 38 高 1200 → W1161 / L619`，MR 样例 `低 0 高 96 → W95 / L48`），
 骨窗画面与改造前一致。
 
+
+### 23.6 接入 Lume：审计事件上行到事件总线
+
+`work/lume` 那套自研框架（.lume 语言 + 单二进制 HTTP/服务器）适合当**跨端事件汇聚点**，
+不适合直接替桌面壳做实时渲染。所以这里按「本地权威、云端镜像」接：
+
+- 本地 `AuditSink` 仍是唯一权威：事件先落盘（JSON Lines），落盘之后才通知观察者；
+- 观察者把事件投给 `LumeSink`，由它批量 POST 到 `<base>/api/medmon/audit`；
+- 网络断开/超时只影响镜像，不影响本地证据链，也不阻塞业务线程。
+
+启用只需一个环境变量（不设则完全不建网络栈）：
+
+```bash
+QTRS_LUME_URL=http://127.0.0.1:8090 ./build/qt-react-shell
+```
+
+上行契约（桌面壳 → Lume）：
+
+```json
+POST /api/medmon/audit
+{ "app": "qt-react-shell", "sentAt": "2026-11-06T11:22:49.025", 
+  "events": [ { "ts": "…", "tsUs": 1793935369025374, "session": "…", "type": "alarm.on", "channel": "SpO2" } ] }
+```
+
+队列上限 500 条、单批 50 条、请求超时 3 s、失败 5 s 后重试（失败批次放回队首）；
+溢出时丢最旧的并计数，绝不无界增长。
+
+Lume 侧参考实现（`tools/lume-medmon/app.lume`，用本机 `~/.local/bin/lume` 0.12.2 实测）：
+
+```bash
+cd tools/lume-medmon && lume app.lume     # → http://127.0.0.1:8090
+curl -s http://127.0.0.1:8090/api/medmon/summary
+# {"total":9,"alarm":1,"session":2,"pacs":0,"watchdog":1,"dicom":2,"lume":0,"last":{…"type":"alarm.on"}}
+```
+
+- 事件落 SQLite（`.data/medmon.db`）。**不要用进程内数组**：lume 的 `run()` 每请求 fork，
+  POST 写在子进程里，GET 读不到（实测 accepted=2 而 summary total=0）。
+- 参考实现另外给了 `GET /api/medmon/events?limit=`（按 id 倒序）与 `GET /health`。
+- `env()` 对含 `TOKEN`/`SECRET`/`KEY` 的变量名一律返回 null，别用它判断「鉴权配好了没」。
+
+实测链路（`QTRS_LUME_URL=http://127.0.0.1:8090 QTRS_SIM_SPO2=86`）：
+启动后上行 `session.start`、`provider.start`（医疗/神内两路）、`dicom.volumeReady`、
+`dicom.volumeNativeFrame`、`watchdog.bad`，报警触发后 `alarm.on`（`channel=SpO2`、
+`priority=high`）也到达，Lume 侧汇总 `alarm=1`。界面本身不变（三面板 + 原生条照常）。
+
+**安全边界**：`server{}` 默认 `bind 127.0.0.1`，只在同机/内网用；对外必须加 htpasswd
+或反代鉴权，且 `QTRS_LUME_URL` 目前是明文 HTTP，不要跨公网直连。

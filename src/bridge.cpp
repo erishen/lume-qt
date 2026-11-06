@@ -1,5 +1,6 @@
 #include "bridge.h"
 #include "auditsink.h"
+#include "lumesink.h"
 #include "deviceprovider.h"
 #include "dicomreader.h"
 #include "pacsclient.h"
@@ -113,6 +114,14 @@ Bridge::Bridge(QObject *parent)
     // 台账在 Bridge 构造时打开，会话 id 从这一刻起贯穿整次运行。
     m_audit = new AuditSink(this);
     m_audit->open();
+
+    // 术语对照：本地台账是唯一权威；Lume 是跨端可见的事件镜像（QTRS_LUME_URL 才启用）。
+    // 观察者在落盘之后调用，网络故障不会影响本地证据链。
+    m_lume = new LumeSink(this);
+    m_audit->setObserver([this](const QJsonObject &event) {
+        if (m_lume)
+            m_lume->post(event);
+    });
     m_audit->record(QStringLiteral("session.start"), {
         {QStringLiteral("provider"), provider->kind()},
         {QStringLiteral("providerDescription"), provider->description()},

@@ -26,3 +26,6 @@ resources/web/
 
 # Qt Creator
 CMakeLists.txt.user*
+
+# Lume 参考实现的本地 SQLite 库
+tools/lume-medmon/.data/

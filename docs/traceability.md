@@ -33,6 +33,12 @@
 > QRS-T-004 标为部分验证：开关确实生效，但挡不住 macOS 窗口非前台时 QWebChannel 批量迟发。
 > 结论是「实时通路不建立在这套 WebView 投递上」，而不是「开关解决了问题」——这条结论直接支撑 QRS-N-001。
 
+## E. 跨端事件总线（Lume）
+
+| ID | 需求 | 实现 | 验证方式 | 状态 |
+| --- | --- | --- | --- | --- |
+| QRS-X-001 | 术中事件必须能上行到跨端事件总线，且网络故障不得影响本地证据链与业务 | `src/lumesink.cpp` `src/auditsink.cpp` `tools/lume-medmon/app.lume` | `QTRS_LUME_URL` + `QTRS_SIM_SPO2=86`：上行 9 条（session/provider/dicom/watchdog/alarm），Lume `summary` 报 `alarm=1`、`last.type=alarm.on`；两轮重启累计 18 条；单测 `AuditSinkObserver`、`LumeSinkTest`；未设 URL 时不建网络栈 | 已验证 |
+
 ## B. 关键波形与报警原生化
 
 | ID | 需求 | 实现 | 验证方式 | 状态 |
@@ -116,6 +122,7 @@
 | 本批（窗计算单测） | QRS-T-011 |
 | 本批（台账轮转） | QRS-T-012 |
 | 本批（长时间浸泡） | QRS-T-013 |
+| 本批（Lume 事件上行） | QRS-X-001 |
 
 统计不手写：`make trace` 每次重新数一遍，缺口或引用失效会直接报错。
 

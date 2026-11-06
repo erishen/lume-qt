@@ -6,6 +6,8 @@
 #include <QString>
 #include <QVariantMap>
 
+#include <functional>
+
 /**
  * AuditSink — 结构化事件台账（JSON Lines，一行一条）。
  *
@@ -33,6 +35,11 @@ public:
     /// 返回写下去的对象（调用方一般不用管）。只允许主线程调用。
     QJsonObject record(const QString &type, const QVariantMap &fields = {});
 
+    /// 观察者：每条事件落盘后回调（用于上行到 Lume 等外部事件总线）。
+    /// 同步调用，实现方必须自己保证不阻塞、不抛异常；本地写盘不依赖观察者。
+    using Observer = std::function<void(const QJsonObject &)>;
+    void setObserver(Observer observer) { m_observer = std::move(observer); }
+
     QString filePath() const { return m_path; }
     QString sessionId() const { return m_session; }
     int count() const { return m_count; }
@@ -49,4 +56,5 @@ private:
     QString m_session;
     int m_count = 0;
     bool m_openFailed = false;
+    Observer m_observer;
 };

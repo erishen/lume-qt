@@ -82,6 +82,7 @@ qt_add_executable(qt-react-shell
     src/bridge.cpp
     src/bridge.h
     src/auditsink.cpp
+    src/lumesink.cpp
     src/auditsink.h
     src/pacsclient.cpp
     src/pacsclient.h
