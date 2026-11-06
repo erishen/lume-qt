@@ -141,16 +141,15 @@ MainWindow::MainWindow(QWidget *parent)
     m_profile->settings()->setAttribute(
         QWebEngineSettings::JavascriptCanOpenWindows, true);
 
-    // 中央区 = WebView（弹性）+ 右侧原生体渲染（固定宽度）+ 底部原生波形条。
-    // 体渲染放在 WebView 外面是刻意的：同一份 128³ 数据同时走两条路径，
-    // 哪条在遮挡/后台时停更，一眼就能对比出来。
+    // 中央区 = 顶层 Tab 页头 + QStackedWidget。Web 页只放 WebView；原生页放体渲染与
+    // 原生波形条。两套内容不再同屏并排，避免 Web 和原生控件互相挤占。
     auto *central = new QWidget(this);
     auto *centralLayout = new QVBoxLayout(central);
     centralLayout->setContentsMargins(0, 0, 0, 0);
     centralLayout->setSpacing(0);
 
-    // 顶层用 Tab 切开两种呈现：Web 页面与原生 OpenGL 页面不再并排挤在一屏。
-    // 底部原生波形条不属于任何一页，它始终常驻（切到影像页也要能看到心率/血氧/报警）。
+    // 顶层用 Tab 切开两种呈现：Web 页面与原生 OpenGL 页面各自独立。
+    // 原生波形条归入原生页，Web 页不再显示原生绘制内容。
     // 用「深色页头 + QTabBar + QStackedWidget」而不是 QTabWidget：
     // macOS 的 QTabWidget 在标签右侧会露出一条浅色原生底，和深色工作台割裂。
     auto *tabHeader = new QWidget(central);
@@ -563,7 +562,9 @@ QSlider::handle:horizontal {
                     : QStringLiteral("灰阶显示 · 亮度 = 窗内位置（伪彩关闭）"));
         }
     }
-    nativePageLayout->addWidget(volumePanel);
+    nativePageLayout->addWidget(volumePanel, 1);
+    m_strip = new NativeVitalStrip(nativePage);
+    nativePageLayout->addWidget(m_strip, 0);
 
     m_pages->addWidget(webPage);
     m_pages->addWidget(nativePage);
@@ -598,9 +599,6 @@ QSlider::handle:horizontal {
 
     centralLayout->addWidget(tabHeader, 0);
     centralLayout->addWidget(m_pages, 1);
-
-    m_strip = new NativeVitalStrip(central);
-    centralLayout->addWidget(m_strip, 0);
 
     setCentralWidget(central);
     // 原生页在启动时可能还没拿到最终尺寸，先画出的帧会偏小；布局稳定后再补一帧。

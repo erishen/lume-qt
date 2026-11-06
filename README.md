@@ -1654,15 +1654,18 @@ export QTRS_PACS_TLS_VERIFY=require   # require（默认）/ check / ignore
 
 - **监护台**：`QWebEngineView` + React 前端，负责生命体征、ECG/超声、神经监测、链路诊断、
   审计与开发者工具。
-- **原生影像**：原生离屏 OpenGL 体渲染 + 窗值/去骨/切面/伪彩控制。
-- 底部 `NativeVitalStrip` 不属于任何一页，**始终常驻**；切到影像页仍能看到心率、血氧、
-  NIBP 与报警，不会因为切 Tab 丢掉关键波形。
+- **原生影像**：原生离屏 OpenGL 体渲染 + 窗值/去骨/切面/伪彩控制 + 底部
+  `NativeVitalStrip`（原生 ECG/SpO₂ 波形与 HR/SpO₂/NIBP）。
+- Web 和原生内容严格分页：**Web 页只放 `QWebEngineView`，不含任何原生绘制控件；
+  原生波形条只在原生影像页显示。**
 
 实现细节：
 
 - 没有用 `QTabWidget`，而是 `QTabBar` + `QStackedWidget`，外面套一层深色 `tabHeader`。
   原因：macOS 的 `QTabWidget` 在标签右侧会露出一条浅色原生底，和深色工作台割裂；
   自定义页头可把整条 Tab 栏压成 `#0b1017`，选中页用 `#57a6ff` 下划线标识。
+- **原生页装配**：`nativePageLayout` 里 `volumePanel` 占 stretch 1，`NativeVitalStrip`
+  占 stretch 0；Web 页只有 `WebView`。切回监护台时原生条随原生页一起隐藏。
 - 快捷键 `Ctrl+1` / `Ctrl+2` 切换（macOS 上 Qt 把 `Ctrl` 映射为 Command，即 ⌘1/⌘2）。
 - **标签接缝**：macOS 原生 `QTabBar` 会在标签之间和最后一个标签右侧露出系统浅色底，
   只写 QSS `background` 在 `documentMode` 下填不满整个控件。现在用
@@ -1687,7 +1690,7 @@ export QTRS_PACS_TLS_VERIFY=require   # require（默认）/ check / ignore
 
 | 检查 | 结果 |
 | --- | --- |
-| Web 页首屏 | 顶栏 + 5 项生命体征 + ECG/超声并排 + 神经三通道卡片完整可见；底部原生条未遮挡；更下方的 3D 视图/诊断区需滚动 |
+| Web 页首屏 | 整页由 WebView 占满，顶栏 + 5 项生命体征 + ECG/超声并排 + 神经三通道卡片完整可见；底部不再出现原生条；更下方的 3D 视图/诊断区需滚动 |
 | 原生页 | 256³ `brain-t1`：体渲染占左侧，预设/W-L/去骨/切面/图例/状态均在右侧栏可见；底部原生条未被遮挡 |
 | Tab 切换 | 鼠标点击两个标签来回切换正常；切回 Web 后 ECG 重新更新；`ui/mainTab` 跟随 0/1 |
 | 快捷键 | ⌘2 后 `ui/mainTab=1`，⌘1 后回到 0 |
