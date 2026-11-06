@@ -785,14 +785,13 @@ void MainWindow::setupNativeVolume()
                                         .arg(m_volumeSourceText, m_volumeView->windowText()));
         }
         if (m_boneBox) {
-            // 去骨阈值是按 HU 定的；MR/a.u. 没有这个语义，直接禁用并写明原因，
-            // 而不是让它悄悄按 a.u. 300 去切。禁用时在控件下方常驻一行说明，
-            // 不只依赖 hover tooltip，避免用户以为「勾了没反应」。
+            // 去骨阈值是按 HU 定的；MR/a.u. 没有这个语义。
+            // 非 CT 时直接隐藏复选框：留一个灰掉的框会让人一直尝试点击，
+            // 改成只显示下面的只读说明，避免「勾了没反应」的错觉。
+            m_boneBox->setVisible(isCt);
             m_boneBox->setEnabled(isCt);
-            m_boneBox->setText(isCt ? QStringLiteral("去骨（CT）")
-                                    : QStringLiteral("去骨（仅 CT）"));
-            m_boneBox->setToolTip(isCt ? QStringLiteral("HU ≥ 300 的骨体素透明")
-                                       : QStringLiteral("当前数据不是 CT，没有 HU 骨阈值"));
+            m_boneBox->setText(QStringLiteral("去骨（CT）"));
+            m_boneBox->setToolTip(QStringLiteral("HU ≥ 300 的骨体素透明"));
             if (!isCt) m_boneBox->setChecked(false);
             if (m_boneHint) {
                 m_boneHint->setVisible(!isCt);
