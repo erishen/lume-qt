@@ -1145,6 +1145,109 @@ button:disabled {
   font-size: 0.72rem;
 }
 
+.audit-head-right {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.audit-ai {
+  padding: 0.28rem 0.65rem;
+  border: 1px solid #2b3c54;
+  border-radius: 8px;
+  background: #132235;
+  color: #cfe4ff;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.audit-ai:hover:not(:disabled) {
+  border-color: #4a6f9d;
+  background: #172b43;
+}
+
+.audit-ai:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.audit-ai.busy {
+  border-color: #3a6b9e;
+  color: #9dc4ee;
+}
+
+.audit-ai-panel {
+  margin: 0.15rem 0 0.75rem;
+  padding: 0.62rem 0.75rem;
+  border: 1px solid #22364f;
+  border-radius: 10px;
+  background: #0b111b;
+}
+
+.audit-ai-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-bottom: 0.4rem;
+  margin-bottom: 0.45rem;
+  border-bottom: 1px solid #1d2a3b;
+}
+
+.audit-ai-panel-head strong {
+  font-size: 0.78rem;
+  color: #d6e4f5;
+}
+
+.audit-ai-state {
+  color: #7f8da3;
+  font-size: 0.66rem;
+}
+
+.audit-ai-close {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #7f8da3;
+  font-size: 0.68rem;
+  cursor: pointer;
+}
+
+.audit-ai-close:hover {
+  color: #b9c8da;
+}
+
+.audit-ai-hint {
+  margin: 0.25rem 0 0;
+  color: #7f8da3;
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+.audit-ai-error {
+  margin: 0.1rem 0 0;
+  color: #ffb4a8;
+  font-size: 0.74rem;
+  line-height: 1.5;
+}
+
+.audit-ai-answer {
+  margin: 0.1rem 0 0.45rem;
+  color: #d7e3f2;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.audit-ai-notes {
+  margin: 0.4rem 0 0;
+  color: #65758b;
+  font-size: 0.66rem;
+  line-height: 1.45;
+  word-break: break-all;
+}
+
 .audit-controls {
   margin: 0.65rem 0 0.5rem;
 }

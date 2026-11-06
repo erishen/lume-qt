@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Bridge } from './qwebchannel'
+import type { Bridge, LumeAnswer } from './qwebchannel'
 
 /**
  * AuditStream — 台账事件流（本地 JSONL 是唯一权威，这里只是它的检索视图）。
@@ -22,6 +22,24 @@ const TYPE_FILTERS = [
 ] as const
 
 const ROW_LIMIT = 8
+
+/** 只让模型读台账并写复盘；工具名与 tools/lume-medmon/app.lume 注册的一致。 */
+const AI_PROMPT = [
+  '请调用 medmon_review 工具（limit=12），用中文写一段术中监护复盘。',
+  '要求：先用一句话给结论；再列报警、信号中断、PACS、体数据、看门狗的关键数字；',
+  '只引用工具返回的事实，没有发生的写“未发生”；200 字以内。',
+].join('')
+
+/** 把 Lume 的 note 轨迹收成「工具名 + 轮次」，不把整段 JSON 参数摊在界面上。 */
+function toolTraceOf(notes: string[]): string {
+  const names = Array.from(new Set(
+    notes
+      .map((note) => /^tool\s+([a-zA-Z0-9_]+)/.exec(note)?.[1])
+      .filter((name): name is string => Boolean(name)),
+  ))
+  const rounds = notes.filter((note) => note.startsWith('round ')).length
+  return [names.join(' · '), rounds > 0 ? `${rounds} 轮` : null].filter(Boolean).join(' · ')
+}
 
 interface AuditEvent {
   type?: string
@@ -119,6 +137,13 @@ export default function AuditStream({ bridge }: { bridge: Bridge | null }) {
   const [result, setResult] = useState<AuditQueryResult | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>('')
+  const [lumeReady, setLumeReady] = useState<boolean | null>(null)
+  const [aiOpen, setAiOpen] = useState(false)
+  const [aiBusy, setAiBusy] = useState(false)
+  const [aiAnswer, setAiAnswer] = useState('')
+  const [aiNotes, setAiNotes] = useState<string[]>([])
+  const [aiError, setAiError] = useState('')
+  const [aiMode, setAiMode] = useState<'model' | 'demo' | ''>('')
   const seq = useRef(0)
 
   useEffect(() => {
@@ -146,19 +171,98 @@ export default function AuditStream({ bridge }: { bridge: Bridge | null }) {
     return () => window.clearTimeout(id)
   }, [bridge, typeFilter, text])
 
+  // Lume 是否启用 + 复盘结果：按钮点击后只发一次请求，结果经 QWebChannel 信号回来。
+  useEffect(() => {
+    if (!bridge) {
+      setLumeReady(null)
+      return
+    }
+    let alive = true
+    bridge.lumeReady().then((ready) => {
+      if (alive) setLumeReady(ready)
+    }).catch(() => {
+      if (alive) setLumeReady(false)
+    })
+    const onAnswer = (answer: LumeAnswer) => {
+      if (!alive) return
+      setAiBusy(false)
+      setAiAnswer(answer.answer ?? '')
+      setAiNotes(Array.isArray(answer.notes) ? answer.notes : [])
+      setAiError(answer.ok ? '' : (answer.error || 'Lume 没有返回可用回答'))
+      setAiMode(answer.mode ?? '')
+    }
+    bridge.lumeAnswer.connect(onAnswer)
+    return () => {
+      alive = false
+      bridge.lumeAnswer.disconnect(onAnswer)
+    }
+  }, [bridge])
+
+  const startAiReview = () => {
+    if (!bridge || aiBusy || lumeReady === false) return
+    setAiOpen(true)
+    setAiBusy(true)
+    setAiAnswer('')
+    setAiNotes([])
+    setAiError('')
+    setAiMode('')
+    bridge.askLume(AI_PROMPT)
+  }
+
   const events = result?.events ?? []
 
   return (
     <section className="card audit-stream">
       <div className="audit-head">
         <h2>事件流 · 台账检索</h2>
-        <span className="audit-meta">
-          {result ? `命中 ${result.returned} / 扫描 ${result.scanned}${result.truncated ? '（近 5000 条）' : ''}` : '读取中…'}
-        </span>
+        <div className="audit-head-right">
+          <span className="audit-meta">
+            {result ? `命中 ${result.returned} / 扫描 ${result.scanned}${result.truncated ? '（近 5000 条）' : ''}` : '读取中…'}
+          </span>
+          <button
+            type="button"
+            className={`audit-ai ${aiBusy ? 'busy' : ''}`}
+            onClick={startAiReview}
+            disabled={!bridge || lumeReady === false || aiBusy}
+            title={lumeReady === false ? '启动时未设置 QTRS_LUME_URL' : '让 Lume Agent 读取台账并生成复盘'}
+          >
+            {aiBusy ? 'Lume 复盘中…' : (lumeReady === false ? 'Lume 未连接' : 'Lume AI 复盘')}
+          </button>
+        </div>
       </div>
       <p className="monitor-note">
         本地 JSONL 台账是唯一权威 · 最新在前 · 类型、通道、数值都参与搜索
       </p>
+
+      {aiOpen && (
+        <div className="audit-ai-panel" data-testid="audit-ai-panel">
+          <div className="audit-ai-panel-head">
+            <strong>Lume AI 复盘</strong>
+            <span className="audit-ai-state">
+              {aiBusy ? '读取台账中（约 30–90 秒）' : aiError ? '复盘失败' : aiMode === 'demo' ? '离线演示（未配置大模型）' : aiMode === 'model' ? '只读台账 · 非诊疗' : ''}
+            </span>
+            <button
+              type="button"
+              className="audit-ai-close"
+              onClick={() => setAiOpen(false)}
+              aria-label="收起 AI 复盘"
+            >
+              收起
+            </button>
+          </div>
+          {aiBusy && !aiAnswer && !aiError && (
+            <p className="audit-ai-hint">Agent 正在调用 medmon_summary / medmon_events 读取台账…</p>
+          )}
+          {aiError && <p className="audit-ai-error">{aiError}</p>}
+          {aiAnswer && <p className="audit-ai-answer">{aiAnswer}</p>}
+          {aiMode === 'demo' && !aiError && (
+            <p className="audit-ai-hint">当前 Lume 没有配置大模型，显示的是离线演示内容。</p>
+          )}
+          {aiNotes.length > 0 && (
+            <p className="audit-ai-notes">工具轨迹：{toolTraceOf(aiNotes) || '已读取台账'}</p>
+          )}
+        </div>
+      )}
 
       <div className="audit-controls">
         <div className="audit-chips">

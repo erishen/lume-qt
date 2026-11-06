@@ -110,6 +110,12 @@ export interface Bridge {
   /** 最近一次报警边沿耗时（报警是事件型通道，补首行用） */
   lastAlarmTiming(): Promise<Partial<AlarmTiming>>
 
+  // ---- Lume AI 复盘（只读台账，不阻塞 UI）----
+  /** Lume 是否已启用（启动时设置了 QTRS_LUME_URL） */
+  lumeReady(): Promise<boolean>
+  /** 把问题交给 Lume Agent；回答通过 lumeAnswer 信号异步返回 */
+  askLume(message: string): void
+
   dataFromCpp: QtSignal<(payload: Record<string, unknown>) => void>
   // 标量信号的第二个参数是采集时刻（epoch 微秒）
   ecgSample: QtSignal<(value: number, tsUs: number) => void>
@@ -129,6 +135,16 @@ export interface Bridge {
   pacsStudies: QtSignal<(studies: PacsStudy[], meta: PacsQueryMeta) => void>
   sessionRecovered: QtSignal<(info: SessionRecovery) => void>
   pacsRetrieve: QtSignal<(status: PacsRetrieveStatus) => void>
+  /** Lume Agent 的复盘结果（工具轨迹在 notes 里，mode=demo 表示未配置大模型） */
+  lumeAnswer: QtSignal<(answer: LumeAnswer) => void>
+}
+
+export interface LumeAnswer {
+  ok: boolean
+  answer: string
+  notes: string[]
+  error?: string
+  mode?: 'model' | 'demo'
 }
 
 /** PACS 连通性结果（与 C++ Bridge::pacsStatus 对应） */

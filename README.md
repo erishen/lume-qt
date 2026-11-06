@@ -930,9 +930,9 @@ PACS 侧新增检查需要重新查询；体积通道的「到达」在事件型
 前面十七节记录的是「做了什么、怎么验证」，但审阅时还会问：「如果它错了，会伤到什么？」
 这一批按 ISO 14971 的推理顺序把这些失败模式落成一张表（危险情况 → 伤害 → 原因 → 控制 → 验证 → 剩余风险）：
 
-- `docs/risk-analysis.md` 共 14 条危害（H-01…H-14），全部来自本项目实际发生过的故障或实测结论：
+- `docs/risk-analysis.md` 共 24 条危害（H-01…H-24），全部来自本项目实际发生过的故障或实测结论：
   遮挡下 WebView 迟发、设备时钟偏移造成假延迟、体积二进制被序列化破坏、永远取第一例、
-  部分取回当成功、静音被遗忘、进程被杀后无人知道上次状态等。
+  部分取回当成功、静音被遗忘、进程被杀后无人知道上次状态、AI 复盘误答/数据出端等。
 - 每条危害都指回控制措施的代码与对应的 `QRS-*` 需求，因此「风险 → 需求 → 实现 → 验证」是一条闭环，
   `make trace` 仍会校验被引用的文件存在。
 - 明确标注没做的部分：没有伤害概率与严重度评分、没有临床用户参与、没有 IEC 62304 安全分类，
@@ -1321,7 +1321,7 @@ RSS 从 519 MB 降到约 408 MB（少了一份网页侧体数据与 Three.js 场
 骨窗画面与改造前一致。
 
 
-### 23.6 接入 Lume：审计事件上行到事件总线
+### 23.6 接入 Lume：审计上行 + AI 复盘
 
 `work/lume` 那套自研框架（.lume 语言 + 单二进制 HTTP/服务器）适合当**跨端事件汇聚点**，
 不适合直接替桌面壳做实时渲染。所以这里按「本地权威、云端镜像」接：
@@ -1367,6 +1367,38 @@ curl -s http://127.0.0.1:8090/api/medmon/summary
 
 **安全边界**：`server{}` 默认 `bind 127.0.0.1`，只在同机/内网用；对外必须加 htpasswd
 或反代鉴权，且 `QTRS_LUME_URL` 目前是明文 HTTP，不要跨公网直连。
+
+#### Lume AI 复盘（已落地）
+
+Lume 框架原生自带 Agent：`.lume` 里注册只读工具，框架驱动 ReAct 多轮，浏览器侧走
+`POST /react/api/chat` 的 SSE。桌面壳没有让前端直连 Lume（避免跨域/凭据暴露），
+而是 `Bridge::askLume()` → `LumeSink::ask()` 在 C++ 里 POST，解析 SSE 后经
+`lumeAnswer` 信号回前端：
+
+- 工具：`medmon_summary`、`medmon_events`、`medmon_review`（一次返回汇总 + 最近 12 条事件）；
+- 桌面壳只开 `medmon_review` 一个工具，避免模型多轮重复查同一批事件（实测单工具 35–90 s（模型侧有波动），
+  双工具 ~90 s）；
+- UI 在「事件流 · 台账检索」标题右侧加 `Lume AI 复盘`，结果显示报警 / 信号 / PACS /
+  体数据 / 看门狗计数与「工具轨迹」；未设 `QTRS_LUME_URL` 时按钮显示「Lume 未连接」并禁用；
+- 未配置模型（`LLM_API_KEY` 空）时 Lume 走离线演示引擎，界面明确提示「未配置大模型」，
+  不会把演示内容伪装成模型回答。
+
+启动 Lume 的模型配置放在 `tools/lume-medmon/.env`（仓库只提交 `.env.example`）：
+
+```bash
+cp /path/to/your/lume/.env tools/lume-medmon/.env   # 仅本机，别提交
+cd tools/lume-medmon && lume app.lume
+curl -s http://127.0.0.1:8090/api/agent/ready
+# {"ok":true,"tools":["medmon_summary","medmon_events","medmon_review"],"chat":"/react/api/chat"}
+```
+
+隐私边界：工具返回值在 Lume 侧做字段白名单，`studyUid`、`dir` 与患者相关键不会送去模型；
+模型回答只用于工程复盘，不是诊断/治疗建议。实测桌面壳日志：
+
+```
+[Lume] AI 复盘请求： http://127.0.0.1:8090/react/api/chat
+[Lume] AI 复盘完成：162 字，工具轨迹 1 条，模式 model
+```
 
 ### 23.7 报警阈值可配：env 兜底、Lume 下发
 

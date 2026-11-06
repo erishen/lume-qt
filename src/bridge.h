@@ -134,6 +134,13 @@ public:
     class AuditSink *auditSink() const { return m_audit; }
     class LumeSink *lumeSink() const { return m_lume; }
 
+    // ---- Lume AI 复盘（只读，不阻塞 UI）----
+    /// Lume 是否已启用（启动时设置了 QTRS_LUME_URL）；前端据此决定按钮可用性。
+    Q_INVOKABLE bool lumeReady() const;
+    /// 把问题交给 Lume Agent；回答通过 lumeAnswer 信号异步返回。
+    /// { ok, answer, notes:[...], error, mode:"model"|"demo" }
+    Q_INVOKABLE void askLume(const QString &message);
+
     // ---- 当前设备数据源（前端据此判断时间戳时基） ----
     // 返回 {kind, description, hasHardwareClock}。hasHardwareClock=true 时 tsUs 来自
     // 设备时钟，与宿主墙钟存在未知常量偏移：前端必须先估偏移再算延迟，否则看到的
@@ -184,6 +191,9 @@ signals:
     void pacsStudies(const QVariantList &studies, const QVariantMap &meta);
     // 取回结果：{ok, studyUid, files, dir, ms, message, detail}
     void pacsRetrieve(const QVariantMap &status);
+
+    /// Lume Agent 的复盘结果（见 askLume 的字段说明）
+    void lumeAnswer(const QVariantMap &answer);
 
 private:
     /// 扫描台账找出未闭合的会话（进程被杀/崩溃时没有 session.end）

@@ -42,6 +42,7 @@
 | QRS-X-001 | 术中事件必须能上行到跨端事件总线，且网络故障不得影响本地证据链与业务 | `src/lumesink.cpp` `src/auditsink.cpp` `tools/lume-medmon/app.lume` | `QTRS_LUME_URL` + `QTRS_SIM_SPO2=86`：上行 9 条（session/provider/dicom/watchdog/alarm），Lume `summary` 报 `alarm=1`、`last.type=alarm.on`；两轮重启累计 18 条；单测 `AuditSinkObserver`、`LumeSinkTest`；未设 URL 时不建网络栈 | 已验证 |
 | QRS-X-002 | 报警阈值必须可集中配置，越界/矛盾值不得生效，配置服务不可用时回退本地默认 | `src/alarmconfig.cpp` `src/vitalstrip.cpp` `src/mainwindow.cpp` `tools/lume-medmon/app.lume` | Lume 下发 `spo2Mid=95` + `QTRS_SIM_SPO2=93`：原生条「中优先级 · 血氧偏低 93%」、`alarm.config(source=lume)` 入账；POST 改回 90/92 重启后同值无报警；单测 `AlarmThresholdTest` 覆盖边界（严格小于）、越界拒绝、中<高对齐 | 已验证 |
 | QRS-X-003 | 体数据交接完成后必须释放只用一次的 CPU 副本，且显示不得回退 | `src/bridge.cpp` `src/volumeview.cpp` | 256³ 稳态物理足迹：释放侧 455.9 / 457.7 MB，保留侧 515.5 / 559.3 MB；`volume.memory` 入账 `bytes8/bytesHu/keptWeb`；体渲染区域截图 diff 0.32/255 | 已验证 |
+| QRS-X-004 | 术后复盘必须能由 Lume Agent 只读台账生成，且不把患者标识/本地路径送给模型、不阻塞本地报警与判定 | `src/lumesink.cpp` `src/bridge.cpp` `frontend/src/AuditStream.tsx` `tools/lume-medmon/app.lume` | `GET /api/agent/ready` 返回 3 个工具；`POST /react/api/chat` + `tools:["medmon_review"]` 实测 35 s、`[Lume] AI 复盘完成：162 字，工具轨迹 1 条，模式 model`；Lume 侧字段白名单过滤 `studyUid/dir`；未设 `QTRS_LUME_URL` 时按钮禁用、离线引擎明确提示未配置模型 | 已验证 |
 
 ## B. 关键波形与报警原生化
 
@@ -98,7 +99,7 @@
 | ID | 需求 | 实现 | 验证方式 | 状态 |
 | --- | --- | --- | --- | --- |
 | QRS-R-001 | 软件按 IEC 62304 做安全分类并形成需求—实现—验证追溯 | `docs/traceability.md` `scripts/check-traceability.py` | `make trace` 校验本表结构完整、引用文件存在 | 部分验证 |
-| QRS-R-002 | 按 ISO 14971 形成风险分析（危害、原因、控制措施、剩余风险） | `docs/risk-analysis.md` | 14 条危害，每条指回控制代码与 QRS 需求；缺概率量化与临床输入 | 部分验证 |
+| QRS-R-002 | 按 ISO 14971 形成风险分析（危害、原因、控制措施、剩余风险） | `docs/risk-analysis.md` | 24 条危害，每条指回控制代码与 QRS 需求；缺概率量化与临床输入 | 部分验证 |
 | QRS-R-003 | 报警系统满足 IEC 60601-1-8（优先级、声音、视觉编码、延迟） | `src/vitalstrip.cpp` | 两级优先级 + 可区分音调（三连/两声）；缺声压级与脉冲群验证、视觉编码规范、报警延迟量化 | 部分验证 |
 | QRS-R-004 | 临床场景验证（真实术式、真实设备、真实 PACS） | — | — | 缺口 |
 
@@ -133,6 +134,7 @@
 | 本批（Lume 事件上行） | QRS-X-001 |
 | 本批（报警阈值配置） | QRS-X-002 |
 | 本批（体数据副本释放） | QRS-X-003 |
+| 本批（Lume AI 复盘） | QRS-X-004 |
 | 本批（纹理分帧上传） | QRS-T-014 |
 | 本批（PACS TLS） | QRS-I-007 |
 | 本批（窗值持久化） | QRS-T-015 |

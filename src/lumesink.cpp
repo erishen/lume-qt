@@ -122,3 +122,128 @@ void LumeSink::flush()
         QTimer::singleShot(m_retryMs, this, &LumeSink::flush);
     });
 }
+
+
+void LumeSink::ask(const QString &message, std::function<void(const QJsonObject &)> callback)
+{
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), false);
+    result.insert(QStringLiteral("answer"), QString());
+    result.insert(QStringLiteral("notes"), QJsonArray());
+    result.insert(QStringLiteral("error"), QString());
+    result.insert(QStringLiteral("mode"), QStringLiteral("model"));
+
+    if (!m_enabled || !m_nam || !m_base.isValid()) {
+        result.insert(QStringLiteral("error"),
+                      QStringLiteral("Lume 未启用：启动时没有设置 QTRS_LUME_URL"));
+        if (callback)
+            callback(result);
+        return;
+    }
+
+    QUrl url(m_base.toString() + QStringLiteral("/react/api/chat"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setRawHeader("Accept", "text/event-stream");
+    // 模型 + 一次工具调用实测约 35–90 秒；给 90 秒，超时仍走明确错误分支。
+    request.setTransferTimeout(90000);
+
+    QJsonObject body;
+    body.insert(QStringLiteral("message"), message);
+    // 只开放一次性复盘工具，避免模型在多轮里反复查同一批事件（实测一轮约 30–60 秒）。
+    QJsonArray tools;
+    tools.append(QStringLiteral("medmon_review"));
+    body.insert(QStringLiteral("tools"), tools);
+    // 每次点击都用独立会话，避免上一轮的上下文污染这一段复盘结论。
+    body.insert(QStringLiteral("sessionId"),
+                QStringLiteral("sess-qt-rs-%1").arg(QDateTime::currentMSecsSinceEpoch()));
+
+    qInfo().noquote() << "[Lume] AI 复盘请求：" << url.toString();
+    QNetworkReply *reply = m_nam->post(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [reply, callback, result]() mutable {
+        reply->deleteLater();
+        const QByteArray raw = reply->readAll();
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        QString answer;
+        QString error;
+        QStringList notes;
+
+        if (reply->error() != QNetworkReply::NoError) {
+            if (reply->error() == QNetworkReply::TimeoutError)
+                error = QStringLiteral("模型响应超时（约 90 秒），可稍后重试");
+            else {
+                error = reply->errorString();
+                if (status > 0)
+                    error += QStringLiteral("（HTTP %1）").arg(status);
+            }
+        } else if (status >= 400) {
+            error = QStringLiteral("Lume 返回 HTTP %1").arg(status);
+            const QJsonObject obj = QJsonDocument::fromJson(raw).object();
+            if (obj.contains(QStringLiteral("error")))
+                error += QStringLiteral("：") + obj.value(QStringLiteral("error")).toString();
+        }
+
+        // SSE 解析：每行一个 data: {...}，delta 拼回答，note 收工具轨迹/演示提示。
+        // 即使 HTTP 失败也扫一遍，某些代理会把错误塞在 SSE 里而不是状态码里。
+        const QString text = QString::fromUtf8(raw);
+        for (const QString &lineRaw : text.split(QLatin1Char('\n'))) {
+            QString line = lineRaw;
+            if (line.endsWith(QLatin1Char('\r')))
+                line.chop(1);
+            if (!line.startsWith(QStringLiteral("data:")))
+                continue;
+            const QByteArray payload = line.mid(5).trimmed().toUtf8();
+            if (payload == "[DONE]")
+                continue;
+            QJsonParseError parseError{};
+            const QJsonDocument doc = QJsonDocument::fromJson(payload, &parseError);
+            if (parseError.error != QJsonParseError::NoError || !doc.isObject())
+                continue;
+            const QJsonObject event = doc.object();
+            const QString type = event.value(QStringLiteral("t")).toString();
+            const QString data = event.value(QStringLiteral("d")).toString();
+            if (type == QStringLiteral("delta")) {
+                answer += data;
+            } else if (type == QStringLiteral("note")) {
+                if (!data.isEmpty())
+                    notes.append(data);
+            } else if (type == QStringLiteral("error")) {
+                if (data.isEmpty())
+                    error = QStringLiteral("Lume 返回错误");
+                else if (error.isEmpty())
+                    error = data;
+            }
+        }
+
+        if (answer.isEmpty() && error.isEmpty()) {
+            // 有些错误只出现在 notes 里（例如模型未配置），别把它伪装成空成功。
+            for (const QString &note : notes) {
+                if (note.contains(QStringLiteral("demo engine"), Qt::CaseInsensitive)
+                    || note.contains(QStringLiteral("LLM_API_KEY"), Qt::CaseInsensitive)) {
+                    error = QStringLiteral("Lume 未配置大模型（当前只返回离线演示内容）");
+                    break;
+                }
+            }
+            if (error.isEmpty())
+                error = QStringLiteral("Lume 没有返回回答");
+        }
+
+        QJsonArray notesArray;
+        for (const QString &note : notes)
+            notesArray.append(note);
+        const bool demo = notes.join(QLatin1Char(' ')).contains(QStringLiteral("demo engine"),
+                                                                Qt::CaseInsensitive);
+
+        result.insert(QStringLiteral("ok"), error.isEmpty() && !answer.isEmpty());
+        result.insert(QStringLiteral("answer"), answer);
+        result.insert(QStringLiteral("notes"), notesArray);
+        result.insert(QStringLiteral("error"), error);
+        result.insert(QStringLiteral("mode"), demo ? QStringLiteral("demo") : QStringLiteral("model"));
+        qInfo().noquote() << QStringLiteral("[Lume] AI 复盘完成：%1 字，工具轨迹 %2 条，模式 %3")
+                                 .arg(answer.size())
+                                 .arg(notes.size())
+                                 .arg(demo ? QStringLiteral("demo") : QStringLiteral("model"));
+        if (callback)
+            callback(result);
+    });
+}

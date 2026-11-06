@@ -171,7 +171,7 @@ get "/api/medmon/summary", (req) => {
   if (r.ok != null and len(r.ok) > 0) {
     let p = try(() => json(get(r.ok[0], "payload", "")));
     if (p.err == null) {
-      last = p.ok;
+      last = redact_event(p.ok);
     }
   }
   return {
@@ -184,6 +184,110 @@ get "/api/medmon/summary", (req) => {
       dicom: count_like("dicom.%"),
       lume: count_like("lume.%"),
       last: last
+    }
+  };
+};
+
+// ── Agent 只读工具：让 Lume 的 /react/api/chat 能自己查台账 ──────────────
+// 只暴露汇总和最近事件两个工具，不给“任意 SQL/任意事件”入口：
+// 模型能填的参数越少，越不容易编造或误查。
+// 只把“能回答复盘问题”的字段交给模型：studyUid / dir / 患者相关键一律不出端。
+// 这条边界必须在 Lume 侧做，不能依赖前端 prompt——模型看不到的工具返回值才安全。
+func redact_event(ev) {
+  let keys = ["ts", "type", "level", "priority", "channel", "spo2", "hr",
+              "ms", "ageMs", "p50", "p95", "host", "port", "studies",
+              "layers", "parseMs", "source", "message", "session", "event"];
+  let out = {};
+  let i = 0;
+  while (i < len(keys)) {
+    let k = keys[i];
+    let v = get(ev, k, null);
+    if (v != null) {
+      out = put(out, k, v);
+    }
+    i = i + 1;
+  }
+  return out;
+}
+
+func medmon_summary_payload() {
+  let last = null;
+  let r = try(() => sql_query(db, "SELECT payload FROM events ORDER BY id DESC LIMIT 1", []));
+  if (r.ok != null and len(r.ok) > 0) {
+    let p = try(() => json(get(r.ok[0], "payload", "")));
+    if (p.err == null) {
+      last = p.ok;
+    }
+  }
+  return {
+    total: count_like("%"),
+    alarm: count_like("alarm.%"),
+    session: count_like("session.%"),
+    pacs: count_like("pacs.%"),
+    watchdog: count_like("watchdog.%"),
+    dicom: count_like("dicom.%"),
+    lume: count_like("lume.%"),
+    last: last
+  };
+}
+
+func medmon_events_payload(limit) {
+  if (limit < 1) {
+    limit = 1;
+  }
+  if (limit > 50) {
+    limit = 50;
+  }
+  let out = [];
+  let r = try(() => sql_query(db, "SELECT payload FROM events ORDER BY id DESC LIMIT ?", [limit]));
+  if (r.ok != null) {
+    let i = 0;
+    while (i < len(r.ok)) {
+      let p = try(() => json(get(r.ok[i], "payload", "")));
+      if (p.err == null) {
+        out = push(out, redact_event(p.ok));
+      }
+      i = i + 1;
+    }
+  }
+  return { events: out };
+}
+
+tool "medmon_summary",
+     "读取术中桌面壳的审计台账汇总：总数、报警、会话、PACS、看门狗、DICOM 体积和最后一条事件。回答“这台手术总共发生了什么/报警几次/链路有没有异常”时使用。",
+     {},
+     (arg) => {
+       return medmon_summary_payload();
+     };
+
+tool "medmon_events",
+     "读取术中桌面壳最近的审计事件（默认 20 条，最多 50 条），按新到旧。回答“最近一次报警是什么/断过几次/取回过几例”时使用；回答必须引用返回的事件，不要编造。",
+     { limit: int },
+     (arg) => {
+       return medmon_events_payload(get(arg, "limit", 20));
+     };
+
+func medmon_review_payload(limit) {
+  return {
+    summary: medmon_summary_payload(),
+    recent: medmon_events_payload(limit).events
+  };
+}
+
+tool "medmon_review",
+     "一次性读取术中桌面壳的台账汇总和最近事件（默认 12 条，最多 30 条）。生成术后复盘时优先用这个工具，避免反复查同一批事件；回答必须引用返回的事实。",
+     { limit: int },
+     (arg) => {
+       return medmon_review_payload(get(arg, "limit", 12));
+     };
+
+// 页面/桌面壳可先探一次：工具是否已经注册，避免等到点击后才报错。
+get "/api/agent/ready", (req) => {
+  return {
+    body: {
+      ok: true,
+      tools: ["medmon_summary", "medmon_events", "medmon_review"],
+      chat: "/react/api/chat"
     }
   };
 };

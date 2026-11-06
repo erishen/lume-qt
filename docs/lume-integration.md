@@ -90,10 +90,55 @@ curl -s http://127.0.0.1:8090/api/medmon/summary
 - POST 侧做与客户端相同的范围校验，非法值 400 且不落库；`alarm.config` 台账记录来源与生效值。
 - 实测：`spo2Mid=95` + `QTRS_SIM_SPO2=93` → 中优先级「血氧偏低 93%」；改回 92 → 同值不报警。
 
+## Agent 复盘（已落地，2026-11-06 第三批）
+
+Lume 框架自带 Agent（`.lume` 注册 `tool`，框架驱动 ReAct 多轮，浏览器侧走
+`POST /react/api/chat` 的 SSE）。这一批把「术后问答」接进了桌面壳：
+
+- Lume 侧注册三个只读工具：`medmon_summary` / `medmon_events` / `medmon_review`；
+  `medmon_review` 一次返回汇总 + 最近 12 条事件，复盘只让它调用一次，避免多轮查同一批数据。
+- `GET /api/agent/ready` 返回已注册工具列表，启动/排查时先探这个端点。
+- 桌面壳 `Bridge::askLume()` → `LumeSink::ask()`：POST `<base>/react/api/chat`，
+  body 带 `message`、`sessionId`、`tools:["medmon_review"]`；解析
+  `{"t":"delta","d":"…"}` / `{"t":"note","d":"…"}` / `{"t":"error"}` / `{"t":"done"}`。
+- 前端「事件流 · 台账检索」标题右侧新增 `Lume AI 复盘` 按钮，结果面板显示回答与
+  「工具轨迹：medmon_review · N 轮」；Lume 未启用（没设 `QTRS_LUME_URL`）时按钮禁用并显示
+  「Lume 未连接」。所有输出只读，不影响本地判定与报警。
+
+启用模型（`.env` 放在 `tools/lume-medmon/` 下；**不要提交**）：
+
+```bash
+cp /path/to/your/lume/.env tools/lume-medmon/.env   # 本机已有配置可直接复制
+cd tools/lume-medmon
+lume app.lume
+curl -s http://127.0.0.1:8090/api/agent/ready
+# {"ok":true,"tools":["medmon_summary","medmon_events","medmon_review"],"chat":"/react/api/chat"}
+```
+
+没有 `tools/lume-medmon/.env`（或 `LLM_API_KEY` 为空）时，Lume 走内置离线演示引擎：
+接口仍能返回 SSE，但不会调用工具；桌面壳会显示「Lume 未配置大模型」而不是假装成功。
+配置模板见 `tools/lume-medmon/.env.example`。
+
+实测（`QTRS_LUME_URL=http://127.0.0.1:8090`，真实模型）：
+
+```
+[Lume] AI 复盘请求： http://127.0.0.1:8090/react/api/chat
+[Lume] AI 复盘完成：162 字，工具轨迹 1 条，模式 model
+```
+
+界面显示一段 200 字内的复盘（报警 / 信号 / PACS / 体数据 / 看门狗计数），
+单工具版本端到端约 35–90 s（受模型侧波动）；多工具版本约 90 s，所以生产提示词固定只开 `medmon_review`。
+
+**隐私边界**：`medmon_events_payload` 在 Lume 侧做字段白名单，`studyUid`、`dir`、
+患者相关键不会进入工具返回值，也就不会被送到模型；`session` 是本地会话号，不含姓名。
+模型回答只作为工程复盘，不是诊断/治疗建议；异常仍以本地台账与报警为准。
+
 ## 下一步（按需推进，不是本轮范围）
-2. **SSE**：Lume 推 `alarm.mute` / `case.select` 指令，`QNetworkReply::readyRead` 逐行解析。
-3. **A2A / Agent**：把 `summary` 注册成 Lume agent 的只读工具，术后问答「这台手术断了几次」。
-4. **鉴权**：`htpasswd` 或 `X-*` 头门禁；`QTRS_LUME_URL` 目前明文，仅限本机/内网。
+
+1. **SSE 指令下行**：Lume 推 `alarm.mute` / `case.select`，`QNetworkReply::readyRead` 逐行解析。
+2. **A2A 跨节点**：把 `medmon_review` 暴露给 A2A 对端，支持值班大屏/多机协同问答。
+3. **鉴权**：`htpasswd` 或 `X-*` 头门禁；`QTRS_LUME_URL` 目前明文，仅限本机/内网。
+4. **流式界面**：当前等 SSE 全部收完再显示；后续可把 `delta` 逐块推到面板。
 
 ## 安全与部署
 

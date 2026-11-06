@@ -13,6 +13,7 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPointer>
 #include <QStandardPaths>
 
 namespace {
@@ -774,6 +775,46 @@ QVariantMap Bridge::queryAuditEvents(const QVariantMap &filter)
     out.insert(QStringLiteral("truncated"), truncated);
     out.insert(QStringLiteral("session"), m_audit ? m_audit->sessionId() : QString());
     return out;
+}
+
+bool Bridge::lumeReady() const
+{
+    return m_lume && m_lume->enabled();
+}
+
+void Bridge::askLume(const QString &message)
+{
+    const QString prompt = message.trimmed();
+    if (prompt.isEmpty()) {
+        emit lumeAnswer(QVariantMap{
+            {QStringLiteral("ok"), false},
+            {QStringLiteral("answer"), QString()},
+            {QStringLiteral("notes"), QVariantList()},
+            {QStringLiteral("error"), QStringLiteral("问题为空")},
+            {QStringLiteral("mode"), QStringLiteral("model")},
+        });
+        return;
+    }
+
+    if (!m_lume || !m_lume->enabled()) {
+        emit lumeAnswer(QVariantMap{
+            {QStringLiteral("ok"), false},
+            {QStringLiteral("answer"), QString()},
+            {QStringLiteral("notes"), QVariantList()},
+            {QStringLiteral("error"),
+             QStringLiteral("Lume 未启用：启动时没有设置 QTRS_LUME_URL")},
+            {QStringLiteral("mode"), QStringLiteral("model")},
+        });
+        return;
+    }
+
+    // 网络回调可能晚于窗口销毁；用 QPointer 守住 Bridge，别向已析构对象 emit。
+    QPointer<Bridge> guard(this);
+    m_lume->ask(prompt, [this, guard](const QJsonObject &payload) {
+        if (!guard)
+            return;
+        emit lumeAnswer(payload.toVariantMap());
+    });
 }
 
 QVariantMap Bridge::providerInfo() const

@@ -29,3 +29,7 @@ CMakeLists.txt.user*
 
 # Lume 参考实现的本地 SQLite 库
 tools/lume-medmon/.data/
+
+# Lume 参考实现的本地模型配置与自动同步的 skill 缓存（不入库）
+tools/lume-medmon/.env
+tools/lume-medmon/skills/

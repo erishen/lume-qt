@@ -38,6 +38,12 @@ public:
     /// 未启用 / 请求失败时回调不会被调用——调用方保留本地默认值即可。
     void fetchConfig(std::function<void(const QJsonObject &)> callback);
 
+    /// 让 Lume 的 Agent 读本机台账并生成一段复盘（`POST <base>/react/api/chat`）。
+    /// 这是异步调用：reply 的 SSE 全部收完后回调一次，结果结构：
+    ///   { ok, answer, notes:[...], error, mode:"model"|"demo" }
+    /// 未启用或网络失败也回调，由调用方决定怎么显示；不会阻塞 UI。
+    void ask(const QString &message, std::function<void(const QJsonObject &)> callback);
+
     int sent() const { return m_sent; }
     int dropped() const { return m_dropped; }
     int failed() const { return m_failed; }
