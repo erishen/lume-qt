@@ -78,6 +78,7 @@ private:
     QDoubleSpinBox *m_windowWidthBox = nullptr;
     QDoubleSpinBox *m_windowLevelBox = nullptr;
     QCheckBox *m_boneBox = nullptr;
+    QLabel *m_boneHint = nullptr;
     QComboBox *m_clipCombo = nullptr;
     QSlider *m_clipSlider = nullptr;
     bool m_syncingWindow = false;
