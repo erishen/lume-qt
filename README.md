@@ -1237,3 +1237,17 @@ RSS 从 519 MB 降到约 408 MB（少了一份网页侧体数据与 Three.js 场
 **局限**：去骨是纯阈值，不含连通域/区域生长，强化血管（HU 也可能 ≥300）会被一并去掉；
 切面是「不画」，没有生成封闭切面盖，所以剖开后看进去是空心，不适合当测量截面用。
 
+### 23.5 窗计算的纯函数与单测
+
+窗位/窗宽这块最容易「改一行算法，整屏变白或变黑」，而且问题往往不在 GL，而在换算。
+所以把不依赖 GL / Qt 的部分抽到 `src/volumestats.{h,cpp}`，由 `tests/volume_stats_test.cpp` 覆盖：
+
+- `ctPreset()`：四档临床窗（80/40、1500/300、400/100、自适应），越界 preset 走软组织窗
+- `nonCtPreset()`：把 CT 档位映射到组织强度跨度，跨度不足 20 按 20 兜底
+- `clampManualWindow()`：窗宽 `[1, max(4000, 2*span)]`、窗位 `[min-span, max+span]`
+- `tissuePercentile()`：CT 剔空气（< -500 HU）、MR 剔背景零；全空气时退回整个值域
+
+`ctest` 现在是 2 个用例：`VolumeStatsUnitTests`（0.7 s）+ `BridgeUnitTests`（4.8 s）。
+重构后实测自适应分位不变（CT 体模 `低 38 高 1200 → W1161 / L619`，MR 样例 `低 0 高 96 → W95 / L48`），
+骨窗画面与改造前一致。
+

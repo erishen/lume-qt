@@ -1,5 +1,7 @@
 #include "volumeview.h"
 
+#include "volumestats.h"
+
 #include <QDebug>
 #include <QMouseEvent>
 #include <QOffscreenSurface>
@@ -190,44 +192,18 @@ void VolumeView::setVolume(const QByteArray &data, int dim, const QVariantMap &m
     if (!(m_huMax > m_huMin)) { m_huMin = -1000.0f; m_huMax = 1000.0f; }
     const float huRange = m_huMax - m_huMin;
 
-    // 数据自适应窗：直方图的「组织」分位 p50 → p99.9。
-    // CT 里空气（约 -1000 HU）通常占一半以上体素，直接取 p50 会把窗位拖到空气，
-    // 整屏糊成白雾（这坑在 8-bit 时代踩过一次）。所以 CT 统计时先剔掉 < -500 HU。
+    // 数据自适应窗：直方图的「组织」分位 p50 → p99.9（CT 剔空气，MR 剔背景）。
+    // 具体分位算法在 volumestats.cpp，可脱离 GL 单测。
     {
-        const int kBins = 1024;
-        int hist[kBins] = {0};
-        // CT 剔空气（约 -1000）；MR 剔背景零（背景常占大半体素，会把 p50 拖到 0）。
-        const float tissueFloor = m_isCt ? -500.0f : m_huMin + 0.001f * huRange;
-        int tissueCount = 0;
-        for (int i = 0; i < count; ++i) {
-            if (static_cast<float>(hu[i]) < tissueFloor) continue;
-            const int bin = std::clamp(
-                static_cast<int>((static_cast<float>(hu[i]) - m_huMin) / huRange * (kBins - 1)),
-                0, kBins - 1);
-            hist[bin] += 1;
-            tissueCount += 1;
-        }
-        const int total = tissueCount > 0 ? tissueCount : count;
-        auto percentileBin = [&](int num, int den) {
-            const int cut = static_cast<int>(static_cast<long long>(total) * num / den);
-            int acc = 0;
-            for (int i = 0; i < kBins; ++i) {
-                acc += hist[i];
-                if (acc >= cut) return i;
-            }
-            return kBins - 1;
-        };
-        const float binToHu = huRange / static_cast<float>(kBins - 1);
-        const float loHu = m_huMin
-            + static_cast<float>(percentileBin(m_isCt ? 50 : 5, 100)) * binToHu;
-        const float hiHu = m_huMin
-            + static_cast<float>(percentileBin(999, 1000)) * binToHu;
-        m_tissueLoHu = loHu;
-        m_tissueHiHu = hiHu;
-        m_autoCenterHu = (loHu + hiHu) / 2.0f;
-        m_autoWidthHu = std::max(20.0f, hiHu - loHu);
+        const qtrs::TissueRange tissue = qtrs::tissuePercentile(
+            hu, static_cast<std::size_t>(count), static_cast<double>(m_huMin),
+            static_cast<double>(m_huMax), m_isCt);
+        m_tissueLoHu = static_cast<float>(tissue.lo);
+        m_tissueHiHu = static_cast<float>(tissue.hi);
+        m_autoCenterHu = static_cast<float>((tissue.lo + tissue.hi) / 2.0);
+        m_autoWidthHu = static_cast<float>(std::max(20.0, tissue.hi - tissue.lo));
         qInfo().noquote() << QStringLiteral("[Volume] 自适应窗分位：低 %1 高 %2 → W%3 / L%4")
-                                 .arg(static_cast<int>(loHu)).arg(static_cast<int>(hiHu))
+                                 .arg(static_cast<int>(m_tissueLoHu)).arg(static_cast<int>(m_tissueHiHu))
                                  .arg(static_cast<int>(m_autoWidthHu))
                                  .arg(static_cast<int>(m_autoCenterHu));
     }
@@ -263,47 +239,21 @@ void VolumeView::setPreset(int preset)
     if (!m_isCt && m_preset != 3) {
         // 非 CT 没有 HU，但预设仍应「切得动」：把 CT 的四个档换算成组织强度区间，
         // 让它在 a.u. 数据上也有可区分的窗，而不是把选项禁死。
-        const float lo = m_tissueLoHu;
-        const float span = std::max(20.0f, m_tissueHiHu - m_tissueLoHu);
-        switch (m_preset) {
-        case 0:  // 软组织窗 → 组织低段
-            m_windowCenterHu = lo + 0.20f * span;
-            m_windowWidthHu = 0.40f * span;
-            break;
-        case 1:  // 骨窗 → 组织高段
-            m_windowCenterHu = lo + 0.75f * span;
-            m_windowWidthHu = 0.30f * span;
-            break;
-        default: // 血管窗 → 组织中段
-            m_windowCenterHu = lo + 0.50f * span;
-            m_windowWidthHu = 0.35f * span;
-            break;
-        }
+        const qtrs::WindowLevel wl = qtrs::nonCtPreset(
+            m_preset, static_cast<double>(m_tissueLoHu), static_cast<double>(m_tissueHiHu));
+        m_windowWidthHu = static_cast<float>(wl.width);
+        m_windowCenterHu = static_cast<float>(wl.level);
         qInfo().noquote() << "[Volume] 非 CT：按组织强度近似应用预设" << windowText();
         if (m_hasData) renderFrame();
         emit windowChanged(static_cast<double>(m_windowWidthHu),
                            static_cast<double>(m_windowCenterHu), false);
         return;
     }
-    switch (m_preset) {
-    case 1: // 骨窗
-        m_windowCenterHu = 300.0f;
-        m_windowWidthHu = 1500.0f;
-        break;
-    case 2: // 血管/对比剂窗
-        m_windowCenterHu = 100.0f;
-        m_windowWidthHu = 400.0f;
-        break;
-    case 3: // 数据自适应
-        m_windowCenterHu = m_autoCenterHu;
-        m_windowWidthHu = m_autoWidthHu;
-        break;
-    case 0:
-    default: // 软组织窗（临床常用的 W80 / L40）
-        m_windowCenterHu = 40.0f;
-        m_windowWidthHu = 80.0f;
-        break;
-    }
+    const qtrs::WindowLevel adaptive{static_cast<double>(m_autoWidthHu),
+                                     static_cast<double>(m_autoCenterHu)};
+    const qtrs::WindowLevel wl = qtrs::ctPreset(m_preset, adaptive);
+    m_windowWidthHu = static_cast<float>(wl.width);
+    m_windowCenterHu = static_cast<float>(wl.level);
     if (m_hasData && m_windowCenterHu > m_huMax) {
         // 骨窗之类预设可能整段落在数据值域之外（去掉颅骨的脑实质数据 HU 上限只有 249）。
         // 这时画面本就该是空的——但不能让它看起来像渲染坏了。
@@ -320,11 +270,10 @@ void VolumeView::setPreset(int preset)
 void VolumeView::setManualWindow(double width, double level)
 {
     if (!m_hasData) return;
-    const double span = std::max(1.0, static_cast<double>(m_huMax - m_huMin));
-    // 窗宽下限 1，避免除零/全噪声；上下限按数据值域留一倍余量
-    m_windowWidthHu = static_cast<float>(std::clamp(width, 1.0, std::max(4000.0, span * 2.0)));
-    m_windowCenterHu = static_cast<float>(
-        std::clamp(level, static_cast<double>(m_huMin) - span, static_cast<double>(m_huMax) + span));
+    const qtrs::WindowLevel wl = qtrs::clampManualWindow(
+        width, level, static_cast<double>(m_huMin), static_cast<double>(m_huMax));
+    m_windowWidthHu = static_cast<float>(wl.width);
+    m_windowCenterHu = static_cast<float>(wl.level);
     qInfo().noquote() << "[Volume] 手动调窗：" << windowText();
     renderFrame();
     emit windowChanged(static_cast<double>(m_windowWidthHu),

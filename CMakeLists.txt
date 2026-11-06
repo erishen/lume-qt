@@ -98,6 +98,8 @@ qt_add_executable(qt-react-shell
     src/vitalstrip.h
     src/volumeview.cpp
     src/volumeview.h
+    src/volumestats.cpp
+    src/volumestats.h
 )
 
 # 设置编译器警告（目标定义后设置）

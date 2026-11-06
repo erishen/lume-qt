@@ -63,6 +63,22 @@ if (GTest_FOUND)
         )
     endif()
 
+    # 纯函数单测：窗位映射 / 自适应分位 / 手动窗边界。
+    # 不链接 Qt 与 GL，所以能在无显示环境跑；算法回归在这里拦。
+    add_executable(volume_stats_test
+        volume_stats_test.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/volumestats.cpp
+    )
+    target_link_libraries(volume_stats_test GTest::gtest GTest::gtest_main)
+    target_compile_features(volume_stats_test PRIVATE cxx_std_17)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(volume_stats_test PRIVATE
+            -Wall -Wextra -Werror -pedantic -Wshadow -Wformat=2
+            -Wconversion -Wnull-dereference -Wdouble-promotion
+        )
+    endif()
+    add_test(NAME VolumeStatsUnitTests COMMAND volume_stats_test)
+
     # 添加测试
     add_test(NAME BridgeUnitTests
         COMMAND bridge_test
@@ -79,7 +95,7 @@ if (GTest_FOUND)
     # 添加运行测试的目标
     add_custom_target(run_tests
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-        DEPENDS bridge_test
+        DEPENDS bridge_test volume_stats_test
         COMMENT "运行所有单元测试"
         VERBATIM
     )
