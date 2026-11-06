@@ -1352,3 +1352,39 @@ curl -s http://127.0.0.1:8090/api/medmon/summary
 实测（`QTWEBENGINE_REMOTE_DEBUGGING` + CDP 驱动输入框，窗口截图核对）：
 搜索 `93` → 命中 2 条、都是 `alarm.on` 的 `SpO₂ 93%`；切「报警」芯片仍是这 2 条；
 默认视图是最新的会话/体数据事件（不是最早的一批）。
+
+### 23.9 体数据 CPU 副本：交接完就放手
+
+一次 256³ 体数据在进程里同时躺着三份 CPU 副本：网页侧 8-bit（16 MB）、
+原生建纹理用的 int16 HU（32 MB）、`VolumeView` 打包好的 R16（32 MB）。
+原生面板接管后，前两份只在「交接」那一瞬间有用，第三份在上传纹理后就只剩占地方。
+现在都在各自的交接点释放：
+
+- `Bridge`：`dicomVolumeReady` 发射完（`MainWindow` 的槽已同步取走 HU）再清。
+  8-bit 只在网页侧 `Volume3D` 需要时保留（`QTRS_NATIVE_VOLUME=0`）；
+- `VolumeView::uploadTexture()`：`glTexImage3D` 之后清 `m_bytes`，写一条
+  `[Volume] 释放打包副本 … KB（纹理已上传）`；
+- macOS 上补一次 `malloc_zone_pressure_relief`，把空页真正还给系统；
+- 台账 `volume.memory`（`bytes8` / `bytesHu` / `keptWeb` / `rssBeforeMb` / `rssAfterMb`）；
+- `QTRS_KEEP_VOLUME_BYTES=1` 保留全部副本，用于 A/B 对照（默认不保留）。
+
+测量口径比代码更费劲，三条都踩过：
+
+- `top -l 2` 的 MEM 在本机抖 ±50 MB，两个进程互比直接得出相反结论；
+- `MACH_TASK_BASIC_INFO.resident_size` 不含被压缩的脏页——体数据这种「刚写完就释放」
+  的页会被系统压掉，前后读数一模一样；改 `TASK_VM_INFO.phys_footprint` 才看得见；
+- 在捕获 `data/huData` 的 lambda 里量只能量到「引用还没放掉」的假值；
+  300 ms 时进程又正被 WebEngine 首屏抬到 700 MB+，要等 60 s 稳态。
+
+实测（`resources/dicom/brain-t1` 256³，`QTRS_NO_RESTORE=1`，60 s 稳态物理足迹）：
+
+| 模式 | 第 1 次 | 第 2 次 |
+|---|---|---|
+| 默认（释放） | 455.9 MB | 457.7 MB |
+| `QTRS_KEEP_VOLUME_BYTES=1` | 515.5 MB | 559.3 MB |
+
+差 60–100 MB，与台账释放量（16 + 32 + 32 MB）同量级；两次运行的体渲染区域截图
+逐像素对比 mean abs diff 0.32/255（上限 255），画面没有变化。
+
+注意：默认释放后网页侧拿不到 8-bit 体数据（`Volume3D` 在原生接管时本就不拉取）；
+若要做双路对照，用 `QTRS_KEEP_VOLUME_BYTES=1` 或 `QTRS_NATIVE_VOLUME=0`。

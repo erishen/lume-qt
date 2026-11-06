@@ -188,6 +188,15 @@ TEST_F(BridgeTest, DicomVolumePayloadIsRenderable) {
     QSignalSpy readySpy(bridge, SIGNAL(dicomVolumeReady(QVariantMap, QString)));
     QSignalSpy errorSpy(bridge, SIGNAL(dicomVolumeError(QString)));
 
+    // 交接契约：dicomVolumeReady 发射期间 volumeBytes() 必须可读（网页侧 scheme
+    // handler 就是在这个窗口取数）；发完即释放（B4），所以不能事后再读。
+    QByteArray handoff;
+    Bridge *const b = bridge;
+    const QMetaObject::Connection conn = QObject::connect(
+        bridge, &Bridge::dicomVolumeReady, bridge,
+        [&handoff, b](const QVariantMap &, const QString &) { handoff = b->volumeBytes(); });
+    Q_UNUSED(conn);
+
     bridge->loadDicomVolume(bridge->dicomSamplePath());
     ASSERT_TRUE(waitForDicomReady(readySpy, 30000))
         << "未收到 dicomVolumeReady；错误信息："
@@ -201,8 +210,14 @@ TEST_F(BridgeTest, DicomVolumePayloadIsRenderable) {
     EXPECT_TRUE(volumeUrl.startsWith(QStringLiteral("app://app/__volume/")))
         << "体积 URL 应指向 scheme handler 的虚拟资源：" << volumeUrl.toStdString();
 
-    const QByteArray raw = bridge->volumeBytes();
-    ASSERT_FALSE(raw.isEmpty()) << "体数据为空";
+    const QByteArray raw = handoff;
+    ASSERT_FALSE(raw.isEmpty()) << "交接窗口内取不到体数据（scheme handler 会 404）";
+
+    // B4：交接结束后副本应被释放（QTRS_KEEP_VOLUME_BYTES=1 是显式的对照开关）。
+    if (!qEnvironmentVariableIsSet("QTRS_KEEP_VOLUME_BYTES")) {
+        EXPECT_TRUE(bridge->volumeBytes().isEmpty()) << "8-bit 副本交接后未释放";
+        EXPECT_TRUE(bridge->volumeHuBytes().isEmpty()) << "HU 中转副本交接后未释放";
+    }
 
     const QVariantList dims = meta.value("dims").toList();
     ASSERT_EQ(dims.size(), 3) << "meta.dims 应为 [d,d,d]";

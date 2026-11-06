@@ -248,6 +248,7 @@ private:
     std::shared_ptr<DicomThreadHolder> m_dicomHolder;
 
     // 最近一次解析出的体积（主线程写入、主线程读取，无需加锁）
+    double m_rssBeforeLoad = -1.0;
     QByteArray m_volumeBytes;
     QByteArray m_volumeHuBytes;
 };

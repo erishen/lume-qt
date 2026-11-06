@@ -1,5 +1,9 @@
 #include "volumeview.h"
 
+#if defined(Q_OS_MACOS)
+#include <malloc/malloc.h>
+#endif
+
 #include "volumestats.h"
 
 #include <QDebug>
@@ -450,11 +454,24 @@ void VolumeView::uploadTexture()
     if (!m_textureDirty || !m_hasData) return;
     m_gl->glBindTexture(GL_TEXTURE_3D, m_texture);
     m_gl->glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
+    const int uploadedKb = static_cast<int>(m_bytes.size() / 1024);
     m_gl->glTexImage3D(GL_TEXTURE_3D, 0, GL_R16, m_texDim, m_texDim, m_texDim, 0,
                        GL_RED, GL_UNSIGNED_SHORT, m_bytes.constData());
     m_textureDirty = false;
     qInfo().noquote() << QStringLiteral("[Volume] 16-bit 3D 纹理上传完成：%1³ = %2 KB（R16，线性过滤）")
-                             .arg(m_texDim).arg(m_bytes.size() / 1024);
+                             .arg(m_texDim).arg(uploadedKb);
+
+    // 纹理已经在显存里：这份打包副本只服务于上传（256³ = 32 MB）。
+    // 以前它跟着面板活一辈子，是 RSS 里最没道理的一块。QTRS_KEEP_VOLUME_BYTES=1
+    // 时保留，用于 A/B 对照实验；代价是显存与内存各存一份。
+    if (!qEnvironmentVariableIsSet("QTRS_KEEP_VOLUME_BYTES")) {
+        m_bytes = QByteArray();
+#if defined(Q_OS_MACOS)
+        // 同 Bridge：大块释放后要请 malloc 把页还给系统，否则 RSS 读数不变。
+        malloc_zone_pressure_relief(nullptr, 0);
+#endif
+        qInfo().noquote() << QStringLiteral("[Volume] 释放打包副本 %1 KB（纹理已上传）").arg(uploadedKb);
+    }
 }
 
 void VolumeView::renderFrame()

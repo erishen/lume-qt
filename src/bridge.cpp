@@ -16,6 +16,35 @@
 
 namespace {
 
+#ifdef Q_OS_MACOS
+#include <mach/mach.h>
+#include <malloc/malloc.h>
+
+/// 把 free 掉的页真正还给系统。系统 malloc 对大块释放后不保证立即 madvise，
+/// 不刷一次「驻留」读数看不出变化（实测释放 48 MB 前后都停在 536 MB）。
+size_t releaseFreePages()
+{
+    return malloc_zone_pressure_relief(nullptr, 0);
+}
+/// 进程自身物理驻留（MB）。`top`/`ps` 的 MEM 在这里抖动很大，
+/// 验证「释放了多少」只能在同一进程内量前后差，别拿两次启动互相比。
+double residentMb()
+{
+    // phys_footprint 含被压缩的脏页，resident_size 不含：体数据这种「刚写完就
+    // 释放」的页会被系统压缩掉，用 resident_size 量会看到 80 MB 凭空消失。
+    task_vm_info_data_t info;
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO,
+                  reinterpret_cast<task_info_t>(&info), &count) != KERN_SUCCESS) {
+        return -1.0;
+    }
+    return static_cast<double>(info.phys_footprint) / (1024.0 * 1024.0);
+}
+#else
+double residentMb() { return -1.0; }
+size_t releaseFreePages() { return 0; }
+#endif
+
 /// DCMTK 的失败文案是给开发者看的（"Operation now in progress" 其实是被拒连），
 /// 看板上要能让人一眼判读，这里做一层人话映射；原始 detail 仍完整进台账。
 QString humanPacsError(const QString &raw)
@@ -901,6 +930,7 @@ void Bridge::loadDicomVolume(const QString &directory)
         return;
     }
 
+    m_rssBeforeLoad = residentMb();
     qInfo().noquote() << "[Bridge] 开始后台解析 DICOM：" << directory;
     m_volumeParseTimer.start();
 
@@ -942,6 +972,41 @@ void Bridge::loadDicomVolume(const QString &directory)
                 // 记住来源：进程被杀后重启，先把上次这一例恢复出来
                 saveVolumeState(meta.value(QStringLiteral("source")).toString());
                 emit dicomVolumeReady(meta, QStringLiteral("app://app/__volume/current.bin"));
+
+                // 交接完成后释放只在「传递过程」里需要的 CPU 副本：
+                //  - 8-bit：只有网页侧 Volume3D 需要；原生面板接管时它是纯浪费
+                //    （256³ = 16 MB 常驻）；
+                //  - int16 HU：只给原生建纹理，建完就该放手（256³ = 32 MB）。
+                // 用 QTRS_KEEP_VOLUME_BYTES=1 可保留两者做 RSS 对照实验。
+                const int webBytes = static_cast<int>(data.size());
+                const int huBytes = static_cast<int>(huData.size());
+                const bool keepWeb = !nativeVolume() || qEnvironmentVariableIsSet("QTRS_KEEP_VOLUME_BYTES");
+                if (!keepWeb) m_volumeBytes = QByteArray();
+                if (!qEnvironmentVariableIsSet("QTRS_KEEP_VOLUME_BYTES")) m_volumeHuBytes = QByteArray();
+                // 这里的 lambda 自己还捕获着 data/huData：在函数内量驻留只能量到
+                // 「引用还没放掉」的假值。等这次交接彻底返回、网页侧也度过启动高峰
+                // （实测 300 ms 时进程正被 WebEngine 首屏抬到 700 MB+）后再读稳态。
+                QTimer::singleShot(60000, this, [this, webBytes, huBytes, keepWeb]() {
+                    // data/huData 到这一刻早已析构；这里再请 malloc 把空页还给系统。
+                    if (!keepWeb || !qEnvironmentVariableIsSet("QTRS_KEEP_VOLUME_BYTES")) releaseFreePages();
+                    const double rssAfter = residentMb();
+                    const double rssBefore = m_rssBeforeLoad;
+                    if (m_audit) {
+                        m_audit->record(QStringLiteral("volume.memory"), {
+                            {QStringLiteral("bytes8"), static_cast<double>(webBytes)},
+                            {QStringLiteral("bytesHu"), static_cast<double>(huBytes)},
+                            {QStringLiteral("keptWeb"), keepWeb},
+                            {QStringLiteral("rssBeforeMb"), rssBefore},
+                            {QStringLiteral("rssAfterMb"), rssAfter},
+                        });
+                    }
+                    qInfo().noquote() << QStringLiteral("[Volume] 体数据内存稳态：解析前 %1 MB → 60s 后 %2 MB（8-bit %3 KB / HU %4 KB，网页侧%5）")
+                                             .arg(rssBefore, 0, 'f', 1)
+                                             .arg(rssAfter, 0, 'f', 1)
+                                             .arg(webBytes / 1024)
+                                             .arg(huBytes / 1024)
+                                             .arg(keepWeb ? QStringLiteral("保留") : QStringLiteral("不需要"));
+                });
             });
         } else {
             QMetaObject::invokeMethod(this, [this, holder, err]() {
