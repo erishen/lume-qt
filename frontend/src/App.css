@@ -497,7 +497,8 @@ button:disabled {
 }
 
 .latency-table td {
-  padding: 0.4rem 0.85rem;
+  /* 7 行（含事件型「报警呈现」）要在一屏内看全：原 0.4rem 会把最后一行压到底部裁掉 */
+  padding: 0.26rem 0.85rem;
   color: #cfd6e4;
   border-bottom: 1px solid #131a25;
 }

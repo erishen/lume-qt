@@ -41,6 +41,10 @@ signals:
     /// 结构化审计事件（中断/恢复/报警触发与解除）。字段含 type/channel/detail，
     /// 由 MainWindow 转交 AuditSink 落盘；控件本身不直接碰文件。
     void auditEvent(const QVariantMap &event);
+    /// 报警状态边沿的「单次耗时」：从触发它的那帧体征到达本进程，到阈值判定完成/
+    /// 报警框与文案画完。事件型通道没有「年龄」语义，不能拿发布时刻去算延迟。
+    /// auditMs 是这条 alarm.on/off 写台账本身的耗时（同步落盘）。
+    void alarmSpan(int level, double detectMs, double paintedMs, double auditMs);
 
 public:
     /// 静音报警提示（边框与文字降为琥珀色），seconds 秒后自动恢复；传 0 立即解除。
@@ -107,6 +111,12 @@ private:
     AlarmThresholds m_thresholds = defaultAlarmThresholds();
     /// 声音节流：同级报警按固定间隔复鸣，避免每帧都响
     QElapsedTimer m_beepTimer;
+    /// 最近一帧体征到达本进程的时刻；报警边沿用它算「体征到达 → 判定/上屏」的耗时。
+    QElapsedTimer m_vitalsArrival;
+    bool m_alarmSpanPending = false;
+    int m_alarmSpanLevel = 0;
+    double m_alarmDetectMs = 0.0;
+    double m_alarmAuditMs = 0.0;
     // 两个可区分的报警音：高优先级急促三连（1000 Hz），中优先级两声（620 Hz）。
     // 用程序生成的 WAV 而不是系统提示音：系统 beep 的长度、音高都不可控，
     // 也没法保证「高」听起来比「中」更急。

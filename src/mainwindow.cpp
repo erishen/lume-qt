@@ -675,6 +675,13 @@ void MainWindow::setupNativeStrip()
         audit->record(type, fields);
     });
 
+    // 报警边沿耗时转给网页看板：报警是事件型通道，只能量「这一次从体征到达
+    // 到红框/文案可见花了多久」，不能拿发布时刻算年龄。
+    connect(m_strip, &NativeVitalStrip::alarmSpan, this,
+            [this](int level, double detectMs, double paintedMs, double auditMs) {
+        if (m_bridge) m_bridge->notifyAlarmSpan(level, detectMs, paintedMs, auditMs);
+    });
+
     applyAlarmConfig();
 }
 

@@ -50,6 +50,14 @@ export interface ProviderInfo {
   hasHardwareClock: boolean
 }
 
+export interface AlarmTiming {
+  level: number
+  detectMs: number
+  paintedMs: number
+  auditMs: number
+  tsUs: number
+}
+
 export interface Bridge {
   appName: string
   platform: string
@@ -99,6 +107,8 @@ export interface Bridge {
   dicomSamplePath(): Promise<string>
   /** 最近一次体积加载耗时（网页挂载晚于事件时用它补一次） */
   lastVolumeTiming(): Promise<{ parseMs?: number; firstFrameMs?: number }>
+  /** 最近一次报警边沿耗时（报警是事件型通道，补首行用） */
+  lastAlarmTiming(): Promise<Partial<AlarmTiming>>
 
   dataFromCpp: QtSignal<(payload: Record<string, unknown>) => void>
   // 标量信号的第二个参数是采集时刻（epoch 微秒）
@@ -112,6 +122,8 @@ export interface Bridge {
   dicomVolumeReady: QtSignal<(meta: DicomVolumeMeta, volumeUrl: string) => void>
   /** 原生体渲染首帧耗时（ms） */
   volumeNativeFirstFrame: QtSignal<(ms: number) => void>
+  /** 报警边沿的单次耗时：体征到达 → 判定/上屏 */
+  alarmTiming: QtSignal<(timing: AlarmTiming) => void>
   dicomVolumeError: QtSignal<(message: string) => void>
   pacsStatus: QtSignal<(status: PacsStatus) => void>
   pacsStudies: QtSignal<(studies: PacsStudy[], meta: PacsQueryMeta) => void>

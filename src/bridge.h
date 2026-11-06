@@ -111,6 +111,10 @@ public:
     /// 最近一次体积加载的耗时快照：网页可能在事件发出之后才挂载，
     /// 只靠信号会漏掉第一次（看板就显示「—」），所以必须能拉一次当前值。
     Q_INVOKABLE QVariantMap lastVolumeTiming() const;
+    /// 最近一次报警边沿的单次耗时快照（同上，供晚挂载的网页补首行）
+    Q_INVOKABLE QVariantMap lastAlarmTiming() const;
+    /// 原生条 → Bridge：把报警边沿耗时转成 QWebChannel 信号
+    void notifyAlarmSpan(int level, double detectMs, double paintedMs, double auditMs);
 
     /// 上一次运行是否异常结束（没有 session.end）：{previousSession, previousStart, gapSeconds, events}
     Q_INVOKABLE QVariantMap lastRecovery() const;
@@ -168,6 +172,8 @@ signals:
     void dicomVolumeReady(const QVariantMap &meta, const QString &volumeUrl);
     /// 原生侧首帧耗时（ms），与 dicom.volumeNativeFrame 台账同源
     void volumeNativeFirstFrame(int ms);
+    /// 报警边沿的「单次耗时」：{level, detectMs, paintedMs, auditMs}
+    void alarmTiming(const QVariantMap &timing);
     void dicomVolumeError(const QString &message);
     // PACS 结果：{ok, host, port, calledAe, roundTripMs, message, tsUs}
     void pacsStatus(const QVariantMap &status);
@@ -205,6 +211,7 @@ private:
     QElapsedTimer m_volumeParseTimer;
     int m_lastParseMs = -1;
     int m_lastNativeFrameMs = -1;
+    QVariantMap m_lastAlarmTiming;
 
     /// PACS 后台请求（单飞：上一次没回来就不再发，避免网络卡住时堆线程）
     /// 解析在途时的排队目录：PACS 取回与前端样例加载会撞在一起，

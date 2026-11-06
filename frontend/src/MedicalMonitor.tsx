@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Bridge, DicomVolumeMeta, Intervention, PacsQueryMeta, PacsRetrieveStatus, PacsStatus, PacsStudy, SessionRecovery, Vitals } from './qwebchannel'
+import type { AlarmTiming, Bridge, DicomVolumeMeta, Intervention, PacsQueryMeta, PacsRetrieveStatus, PacsStatus, PacsStudy, SessionRecovery, Vitals } from './qwebchannel'
 import Neuro3D from './Neuro3D'
 import Volume3D from './Volume3D'
 import { createSyntheticBrain } from './syntheticVolume'
@@ -464,6 +464,7 @@ const CHANNEL_LABEL: Record<string, string> = {
   neural: '神经元活动',
   vitals: '生命体征',
   volume: 'DICOM 体积',
+  alarm: '报警呈现',
 }
 
 function fmt(ms: number): string {
@@ -618,6 +619,23 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
       bridge.dicomVolumeReady.disconnect(onReady)
       bridge.volumeNativeFirstFrame.disconnect(onFrame)
     }
+  }, [bridge])
+
+  // 报警是事件型通道：报警判定在原生条完成，这里只接收「体征到达 → 判定/红框可见」
+  // 的单次耗时。不能用发布时刻算年龄，否则稳定不报警时反而会积出假延迟。
+  useEffect(() => {
+    if (!bridge) return
+    const apply = (t: Partial<AlarmTiming>) => {
+      if (typeof t.detectMs === 'number' && t.detectMs > 0) {
+        recordSpan('alarm', 'receipt', t.detectMs)
+      }
+      if (typeof t.paintedMs === 'number' && t.paintedMs > 0) {
+        recordSpan('alarm', 'painted', t.paintedMs)
+      }
+    }
+    void bridge.lastAlarmTiming().then(apply)
+    bridge.alarmTiming.connect(apply)
+    return () => bridge.alarmTiming.disconnect(apply)
   }, [bridge])
 
   useEffect(() => {

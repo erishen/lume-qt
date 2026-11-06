@@ -918,6 +918,23 @@ QVariantMap Bridge::lastVolumeTiming() const
     return m;
 }
 
+QVariantMap Bridge::lastAlarmTiming() const
+{
+    return m_lastAlarmTiming;
+}
+
+void Bridge::notifyAlarmSpan(int level, double detectMs, double paintedMs, double auditMs)
+{
+    m_lastAlarmTiming = QVariantMap{
+        {QStringLiteral("level"), level},
+        {QStringLiteral("detectMs"), detectMs},
+        {QStringLiteral("paintedMs"), paintedMs},
+        {QStringLiteral("auditMs"), auditMs},
+        {QStringLiteral("tsUs"), nowMicros()},
+    };
+    emit alarmTiming(m_lastAlarmTiming);
+}
+
 void Bridge::loadDicomVolume(const QString &directory)
 {
     // 重入保护：只允许一个在途 DICOM 解析（UI 实际只触发一次，此处仅为

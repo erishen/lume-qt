@@ -1483,3 +1483,43 @@ export QTRS_PACS_TLS_VERIFY=require   # require（默认）/ check / ignore
 已知边界（诚实标注）：偏好是**全局单套**，不是按模态分开存。CT 存的 W800/L150 切到 MR 时会被
 夹到组织强度范围（实测 `800/150 → 33/83`），不是「记错了」，而是 MR 没有 HU；如果后面要支持
 CT/MR 各自记忆，需要把键按 `ct` / `mr` 分桶并在数据到达后选桶。
+
+### 23.13 报警也纳入「单次耗时」口径
+
+体积那条事件型通道改完之后，报警还是原来的算法：看板拿台账里的 `tsUs` 算年龄。报警平时
+根本不发生，一发生又已经画完了——「年龄」在这条通道上没有意义，照公式只会得到两种假值：
+要么是几百秒（上次报警是半小时前），要么是 0（同一帧里发布+订阅）。
+
+这一批把报警改成和体积同一套口径：**只量这一次**。
+
+- **原生侧起止**（`src/vitalstrip.cpp`）：`setVitals()` 到达时启动 `m_vitalsArrival`；
+  `paintEvent` 里级别边沿（`alarm.on` / `alarm.off`）记 `detectMs` = 到达 → 判定完成，
+  台账写完记 `auditMs`，边框与文案都画完后再记 `paintedMs`，帧末发
+  `alarmSpan(level, detectMs, paintedMs, auditMs)`。
+- **桥接**（`src/bridge.cpp`）：`notifyAlarmSpan()` 更新 `lastAlarmTiming()` 快照并发
+  `alarmTiming` 信号。快照的存在是为了网页晚挂载：页面重载后不会再有一次报警边沿，
+  只靠信号这一行就永远空着。
+- **看板**（`frontend/src/latency.ts` / `MedicalMonitor.tsx`）：`Channel` 增加 `alarm`；
+  `recordSpan('alarm','receipt'|'painted')` 记两个数，`CHANNEL_LABEL` 显示「报警呈现」；
+  挂载时先 `lastAlarmTiming()` 补首行，再订阅 `alarmTiming`。
+- **不参与中断判定**：`EVENT_ONLY_CHANNELS = ['alarm']` 在 `channelHealth()` 里被排除。
+  没有报警是正常状态，不能因为「很久没事件」把它判成 stale，也不能让它拉低
+  「信号正常 n/6」的分母。
+
+本机实测（`QTRS_SIM_SPO2=86 QTRS_SIM_HR=45 QTRS_ALARM_SOUND=0`，PACS 见 23.11）：
+
+| 场景 | 结果 |
+| --- | --- |
+| 启动后第一条高优先级报警（页面已加载） | 日志 `[Alarm] 报警呈现 level=2 判定 3.00 ms · 上屏 5.00 ms · 台账 0.00 ms`；看板「报警呈现 35.0 / 35.0 · 49.0 / 49.0 ms · 1」 |
+| 冷启动第一条（体数据仍在解析） | `判定 35.00 ms · 上屏 49.00 ms · 台账 4.00 ms`：首帧排队更久，量到的是真实可见时间 |
+| 页面重载后（无新报警边沿） | 全程只有 1 条 `报警呈现` 日志；看板仍显示 `35.0 / 49.0 ms`，来自 `lastAlarmTiming()` 快照 |
+| 无报警运行 | 表中没有「报警呈现」行；看门狗仍是 `n/6`，不出现 `alarm=pending/stale` |
+
+两个实测踩到的坑：
+
+1. **`snapshot()` 和 `channelHealth()` 都要过滤**——第一版把 `EVENT_ONLY_CHANNELS` 的过滤
+   只写进 `snapshot()`，结果报警永远不进表（看门狗倒是干净了）。反过来只过滤健康度才是对的：
+   `snapshot()` 必须包含事件型通道，`channelHealth()` 才排除。
+2. **加一行就把最后一行挤出视口**：延迟表从 6 行变 7 行后，`DICOM 体积` 与「报警呈现」
+   被原生条挡住，截图里根本看不到。把 `td` 的上下 padding 从 `0.4rem` 收到 `0.26rem`
+   （共省约 34 px），7 行才在一屏内看全；没有改字号，也没有动其他面板。

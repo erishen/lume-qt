@@ -53,6 +53,7 @@
 | QRS-N-004 | 报警提示可静音，但判定不变、数值不隐藏、静音有时限且可追溯 | `src/vitalstrip.cpp` `src/mainwindow.cpp` | `QTRS_ALARM_MUTE_SEC=6`：琥珀边框 → 到期回红，台账 `alarm.mute` / `alarm.unmute(expired)` | 已验证 |
 | QRS-N-005 | 报警应有分级与声音，且优先级符合 IEC 60601-1-8 的思路 | `src/vitalstrip.cpp` | 高/中两级（红/黄）；高 1000 Hz 三连 3 s 复鸣、中 620 Hz 两声 8 s 复鸣，`QSoundEffect` 播自合成 WAV；台账带 `priority` | 已验证 |
 | QRS-N-006 | 静音期间不得再发声，但不得改变判定或隐藏数值 | `src/vitalstrip.cpp` | 静音期间无 `[Alarm] tone` 行；SpO₂ 仍显示 84、判定仍为高优先级 | 已验证 |
+| QRS-N-007 | 报警呈现耗时必须按「单次事件」计量（体征到达 → 判定/上屏），不得用发布时刻算年龄；晚挂载的网页要能补首行 | `src/vitalstrip.cpp` `src/vitalstrip.h` `src/bridge.cpp` `src/mainwindow.cpp` `frontend/src/latency.ts` `frontend/src/qwebchannel.ts` `frontend/src/MedicalMonitor.tsx` | `QTRS_SIM_SPO2=86 QTRS_SIM_HR=45`：`[Alarm] 报警呈现 level=2 判定 3.00 ms · 上屏 5.00 ms · 台账 0.00 ms`；看板「报警呈现 35.0 / 49.0 ms · 1」；重载页面后无新日志、该行仍在（`lastAlarmTiming` 快照）；无报警时表中无此行、看门狗仍 n/6 | 已验证 |
 
 ## C. 设备接入
 
@@ -134,6 +135,7 @@
 | 本批（纹理分帧上传） | QRS-T-014 |
 | 本批（PACS TLS） | QRS-I-007 |
 | 本批（窗值持久化） | QRS-T-015 |
+| 本批（报警耗时口径） | QRS-N-007 |
 
 统计不手写：`make trace` 每次重新数一遍，缺口或引用失效会直接报错。
 

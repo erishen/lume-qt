@@ -11,7 +11,7 @@
  * （与宿主有未知常量偏移，必须先估偏移再算，见 setClockSource）。
  */
 
-export type Channel = 'ecg' | 'eeg' | 'emg' | 'neural' | 'vitals' | 'volume'
+export type Channel = 'ecg' | 'eeg' | 'emg' | 'neural' | 'vitals' | 'volume' | 'alarm'
 
 /** 通道健康状态：正常 / 延迟超预算 / 已中断（画面是冻结帧） */
 export type SignalState = 'ok' | 'slow' | 'stale' | 'pending'
@@ -40,6 +40,9 @@ const STALE_AFTER_MS: Record<Channel, number> = {
   vitals: 4000,
   // 体积是一次性加载，解析本身耗时数百毫秒，给足余量
   volume: 30000,
+  // 报警是事件型通道：没有报警发生是正常状态，不能因为「很久没来事件」判中断
+  // （该通道由 channelHealth 单独排除，这里给 Infinity 只是让表完整）
+  alarm: Number.POSITIVE_INFINITY,
 }
 
 /** 到达延迟预算：超过即视为「慢」，与看板标红阈值保持一致 */
@@ -48,7 +51,11 @@ const SLOW_BUDGET_MS = 100
 /** 体积是一次性解析，2 s 量级是正常的；不能套波形那 100 ms 的链路预算 */
 const SLOW_BUDGET_BY_CHANNEL: Partial<Record<Channel, number>> = {
   volume: 15000,
+  alarm: 200,
 }
+
+/** 事件型通道：只记「这一次花了多久」，没有持续流的「年龄/中断」语义 */
+const EVENT_ONLY_CHANNELS: Channel[] = ['alarm']
 
 /** 健康判定只看最近这么多个样本（看板统计仍用完整窗口） */
 const RECENT_WINDOW = 30
@@ -138,6 +145,7 @@ const lastReceiptUs: Record<Channel, number> = {
   neural: 0,
   vitals: 0,
   volume: 0,
+  alarm: 0,
 }
 
 const series: Record<Channel, Series> = {
@@ -147,6 +155,7 @@ const series: Record<Channel, Series> = {
   neural: { receipt: [], painted: [] },
   vitals: { receipt: [], painted: [] },
   volume: { receipt: [], painted: [] },
+  alarm: { receipt: [], painted: [] },
 }
 
 function push(ring: number[], value: number, capacity = CAPACITY) {
@@ -206,6 +215,7 @@ function summarize(list: number[]) {
 
 /** 读取当前统计快照（给延迟看板按 1Hz 轮询） */
 export function snapshot(): ChannelLatency[] {
+  // 事件型通道也要进表：报警呈现是术中必须盯的指标，只是不参与「中断」判定。
   return (Object.keys(series) as Channel[]).map((channel) => {
     const s = series[channel]
     const r = summarize(s.receipt)
@@ -227,25 +237,27 @@ export function snapshot(): ChannelLatency[] {
  */
 export function channelHealth(): ChannelHealth[] {
   const now = nowMicros()
-  return (Object.keys(series) as Channel[]).map((channel) => {
-    const s = series[channel]
-    // 判「慢」只看最近 30 个样本：512 窗口会把启动期（窗口未激活/解析中）的积压
-    // 一直算在里面，让健康状态卡在告警里出不来——那是测量噪声，不是当前链路状态。
-    const r = summarize(s.receipt.slice(-RECENT_WINDOW))
-    const last = lastReceiptUs[channel]
-    const ageMs = last > 0 ? (now - last) / 1000 : Number.POSITIVE_INFINITY
-    const staleAfterMs = STALE_AFTER_MS[channel]
-    const budgetMs = SLOW_BUDGET_BY_CHANNEL[channel] ?? SLOW_BUDGET_MS
-    let state: SignalState = 'pending'
-    if (last > 0) {
-      // 体积没有「持续更新」语义：一次加载完成后停在原地是正常的，
-      // 用年龄判 stale 会每隔 30 s 就报一次假中断。
-      if (channel !== 'volume' && ageMs > staleAfterMs) state = 'stale'
-      else if (r.p50 > budgetMs) state = 'slow'
-      else state = 'ok'
-    }
-    return { channel, ageMs, staleAfterMs, receiptP50: r.p50, receiptP99: r.p99, state }
-  })
+  return (Object.keys(series) as Channel[])
+    .filter((channel) => !EVENT_ONLY_CHANNELS.includes(channel))
+    .map((channel) => {
+      const s = series[channel]
+      // 判「慢」只看最近 30 个样本：512 窗口会把启动期（窗口未激活/解析中）的积压
+      // 一直算在里面，让健康状态卡在告警里出不来——那是测量噪声，不是当前链路状态。
+      const r = summarize(s.receipt.slice(-RECENT_WINDOW))
+      const last = lastReceiptUs[channel]
+      const ageMs = last > 0 ? (now - last) / 1000 : Number.POSITIVE_INFINITY
+      const staleAfterMs = STALE_AFTER_MS[channel]
+      const budgetMs = SLOW_BUDGET_BY_CHANNEL[channel] ?? SLOW_BUDGET_MS
+      let state: SignalState = 'pending'
+      if (last > 0) {
+        // 体积没有「持续更新」语义：一次加载完成后停在原地是正常的，
+        // 用年龄判 stale 会每隔 30 s 就报一次假中断。
+        if (channel !== 'volume' && ageMs > staleAfterMs) state = 'stale'
+        else if (r.p50 > budgetMs) state = 'slow'
+        else state = 'ok'
+      }
+      return { channel, ageMs, staleAfterMs, receiptP50: r.p50, receiptP99: r.p99, state }
+    })
 }
 
 // ---------------------------------------------------------------------------

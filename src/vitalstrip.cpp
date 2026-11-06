@@ -303,6 +303,9 @@ void NativeVitalStrip::pushSpo2Sample(double value, double tsUs)
 
 void NativeVitalStrip::setVitals(const QVariantMap &vitals)
 {
+    // 报警判定发生在下一帧 paintEvent 里：从这里起计时，才能把 Qt 事件队列的排队
+    // 时间也算进「体征到达 → 报警可见」，而不是只量一次 paint 本身。
+    m_vitalsArrival.start();
     m_hr = vitals.value(QStringLiteral("hr")).toDouble();
     m_spo2Value = vitals.value(QStringLiteral("spo2")).toDouble();
     m_sys = vitals.value(QStringLiteral("sys")).toDouble();
@@ -405,9 +408,12 @@ void NativeVitalStrip::paintEvent(QPaintEvent *event)
     const bool highAlarm = level == 2;
     if (level != m_alarmLevel) {
         // 级别边沿记入台账：什么时候报的、哪一级、依据哪个值、当时用的是哪套阈值，事后能复核
+        const double detectMs = m_vitalsArrival.isValid() ? static_cast<double>(m_vitalsArrival.elapsed()) : 0.0;
         const bool spo2Culprit = highAlarm ? (m_spo2Value < m_thresholds.spo2High)
                                            : (m_spo2Value < m_thresholds.spo2Mid);
         m_alarmLevel = level;
+        QElapsedTimer auditClock;
+        auditClock.start();
         emit auditEvent(QVariantMap{
             {QStringLiteral("type"), level > 0 ? QStringLiteral("alarm.on") : QStringLiteral("alarm.off")},
             {QStringLiteral("priority"), level == 2 ? QStringLiteral("high")
@@ -424,6 +430,11 @@ void NativeVitalStrip::paintEvent(QPaintEvent *event)
             {QStringLiteral("hrHigh"), m_thresholds.hrHigh},
             {QStringLiteral("hrMid"), m_thresholds.hrMid},
         });
+        // 记下待上报的耗时；painted 要等报警框/文案真正画完才成立，放到本帧末尾。
+        m_alarmSpanPending = true;
+        m_alarmSpanLevel = level;
+        m_alarmDetectMs = detectMs;
+        m_alarmAuditMs = static_cast<double>(auditClock.elapsed());
     }
     if (m_alarmLevel > 0) {
         const bool muted = alarmsMuted();
@@ -493,6 +504,19 @@ void NativeVitalStrip::paintEvent(QPaintEvent *event)
         p.setPen(QPen(tone, 3.0, muted ? Qt::DashLine : Qt::SolidLine));
         p.setBrush(Qt::NoBrush);
         p.drawRect(QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5));
+    }
+
+    // 报警边沿的单次耗时：painted 在边框/文案都画完之后取，才是「报警可见」。
+    if (m_alarmSpanPending) {
+        const double paintedMs = m_vitalsArrival.isValid()
+                                     ? static_cast<double>(m_vitalsArrival.elapsed()) : m_alarmDetectMs;
+        m_alarmSpanPending = false;
+        qInfo().noquote() << QStringLiteral("[Alarm] 报警呈现 level=%1 判定 %2 ms · 上屏 %3 ms · 台账 %4 ms")
+                                 .arg(m_alarmSpanLevel)
+                                 .arg(m_alarmDetectMs, 0, 'f', 2)
+                                 .arg(paintedMs, 0, 'f', 2)
+                                 .arg(m_alarmAuditMs, 0, 'f', 2);
+        emit alarmSpan(m_alarmSpanLevel, m_alarmDetectMs, paintedMs, m_alarmAuditMs);
     }
 
     // 每 ~120 帧（约 2 秒）落一条日志：截图之外也要有可核查的数字
