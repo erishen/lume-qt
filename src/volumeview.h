@@ -42,6 +42,8 @@ public:
 
     /// 临床窗预设：0 软组织 W80/L40，1 骨 W1500/L300，2 血管 W400/L100，3 数据自适应
     void setPreset(int preset);
+    // 让隐藏期间/布局变化后积累的旧帧在切回或窗口稳定后重画一次。
+    void requestRender();
     /// 手动窗（W/L）：Alt+左键拖动也走这里；单位为 HU（CT）或 a.u.（非 CT）
     void setManualWindow(double width, double level);
     /// 去骨：把 HU ≥ 300 的体素当透明（仅 CT 有意义；非 CT 由界面禁用）

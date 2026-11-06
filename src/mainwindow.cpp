@@ -20,7 +20,9 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QShortcut>
-#include <QSplitter>
+#include <QTabBar>
+#include <QStackedWidget>
+#include <QSizePolicy>
 #include <QWebEngineView>
 #include <QTimer>
 #include <QUrl>
@@ -147,11 +149,75 @@ MainWindow::MainWindow(QWidget *parent)
     centralLayout->setContentsMargins(0, 0, 0, 0);
     centralLayout->setSpacing(0);
 
-    auto *centerSplit = new QSplitter(Qt::Horizontal, central);
-    m_view = new QWebEngineView(m_profile, centerSplit);
-    centerSplit->addWidget(m_view);
+    // 顶层用 Tab 切开两种呈现：Web 页面与原生 OpenGL 页面不再并排挤在一屏。
+    // 底部原生波形条不属于任何一页，它始终常驻（切到影像页也要能看到心率/血氧/报警）。
+    // 用「深色页头 + QTabBar + QStackedWidget」而不是 QTabWidget：
+    // macOS 的 QTabWidget 在标签右侧会露出一条浅色原生底，和深色工作台割裂。
+    auto *tabHeader = new QWidget(central);
+    tabHeader->setObjectName(QStringLiteral("tabHeader"));
+    tabHeader->setStyleSheet(QStringLiteral(
+        "QWidget#tabHeader { background: #0b1017; border-bottom: 1px solid #222d3c; }"));
+    auto *tabHeaderLayout = new QHBoxLayout(tabHeader);
+    tabHeaderLayout->setContentsMargins(0, 0, 0, 0);
+    tabHeaderLayout->setSpacing(0);
 
-    auto *volumePanel = new QWidget(centerSplit);
+    m_tabs = new QTabBar(tabHeader);
+    m_tabs->setObjectName(QStringLiteral("mainTabBar"));
+    m_tabs->setDocumentMode(true);
+    m_tabs->setUsesScrollButtons(false);
+    m_tabs->setElideMode(Qt::ElideNone);
+    m_tabs->setStyleSheet(QStringLiteral(R"(
+QTabBar {
+    background: #0b1017;
+}
+QTabBar::tab {
+    background: #0f151f;
+    color: #8b99ad;
+    min-width: 80px;
+    padding: 5px 14px;
+    margin-right: 2px;
+    border: 1px solid #222d3c;
+    border-bottom: 0;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    font-size: 12px;
+}
+QTabBar::tab:selected {
+    background: #162132;
+    color: #f3f8ff;
+    border-color: #2c3d55;
+    border-bottom: 2px solid #57a6ff;
+}
+QTabBar::tab:hover:!selected { background: #131b27; color: #dbe6f3; }
+)"));
+
+    tabHeaderLayout->addWidget(m_tabs, 0);
+    auto *tabHeaderFiller = new QWidget(tabHeader);
+    tabHeaderFiller->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    tabHeaderFiller->setStyleSheet(QStringLiteral("background: #0b1017;"));
+    tabHeaderLayout->addWidget(tabHeaderFiller, 1);
+
+    m_pages = new QStackedWidget(central);
+    m_pages->setObjectName(QStringLiteral("mainPages"));
+    m_pages->setStyleSheet(QStringLiteral(
+        "QStackedWidget#mainPages { background: #0b1017; }"
+        "QWidget#webPage, QWidget#nativePage { background: #0b1017; }"));
+
+    auto *webPage = new QWidget(m_pages);
+    webPage->setObjectName(QStringLiteral("webPage"));
+    auto *webPageLayout = new QVBoxLayout(webPage);
+    webPageLayout->setContentsMargins(0, 0, 0, 0);
+    webPageLayout->setSpacing(0);
+    m_view = new QWebEngineView(m_profile, webPage);
+    webPageLayout->addWidget(m_view);
+
+    auto *nativePage = new QWidget(m_pages);
+    nativePage->setObjectName(QStringLiteral("nativePage"));
+    auto *nativePageLayout = new QVBoxLayout(nativePage);
+    nativePageLayout->setContentsMargins(0, 0, 0, 0);
+    nativePageLayout->setSpacing(0);
+
+    auto *volumePanel = new QWidget(nativePage);
     volumePanel->setObjectName(QStringLiteral("volumePanel"));
     // 右侧是 WebView 之外的原生面板：统一深色主题，避免浅色系统控件把整窗割成两套视觉。
     // 只改控件外观，不动 VolumeView 的渲染结果（画面清晰度与窗值逻辑都不受影响）。
@@ -186,11 +252,30 @@ QSlider::handle:horizontal {
 }
 )"));
     auto *volumeLayout = new QVBoxLayout(volumePanel);
-    volumeLayout->setContentsMargins(10, 10, 10, 10);
-    volumeLayout->setSpacing(6);
+    // 1280 宽窗口下给影像页左右各 50px 呼吸位，体渲染与侧栏合成 1180px 的一组；
+    // 窄窗口时按布局收缩，不写死像素尺寸。
+    volumeLayout->setContentsMargins(50, 10, 50, 10);
+    volumeLayout->setSpacing(8);
     auto *volumeTitle = new QLabel(QStringLiteral("DICOM 体渲染 · 原生 OpenGL（不经 WebView）"),
                                    volumePanel);
-    m_volumeView = new VolumeView(volumePanel);
+
+    // 影像页占满整窗后，把控制项收进右侧 340px 栏：体渲染获得更大的可视面积，
+    // 同时避免下拉框/滑条被拉成横贯整屏的奇怪比例。
+    auto *volumeBody = new QWidget(volumePanel);
+    volumeBody->setMaximumWidth(1180);
+    auto *volumeBodyLayout = new QHBoxLayout(volumeBody);
+    volumeBodyLayout->setContentsMargins(0, 0, 0, 0);
+    volumeBodyLayout->setSpacing(10);
+    m_volumeView = new VolumeView(volumeBody);
+    m_volumeView->setMinimumWidth(300);
+    auto *sidePanel = new QWidget(volumeBody);
+    sidePanel->setObjectName(QStringLiteral("volumeSide"));
+    sidePanel->setFixedWidth(360);
+    sidePanel->setStyleSheet(QStringLiteral(
+        "QWidget#volumeSide { background: #121924; border: 1px solid #222d3c; border-radius: 10px; }"));
+    auto *sideLayout = new QVBoxLayout(sidePanel);
+    sideLayout->setContentsMargins(10, 10, 10, 10);
+    sideLayout->setSpacing(6);
     m_volumeStatus = new QLabel(QStringLiteral("等待体数据…"), volumePanel);
     m_volumeStatus->setStyleSheet(QStringLiteral("color:#7b8798;font-size:11px;"));
     m_volumeStatus->setWordWrap(true);
@@ -262,14 +347,21 @@ QSlider::handle:horizontal {
     clipRow->addWidget(m_clipCombo, 1);
     clipRow->addWidget(m_clipSlider, 0);
 
+    sideLayout->addLayout(controls);
+    sideLayout->addLayout(windowRow);
+    sideLayout->addLayout(clipRow);
+    sideLayout->addWidget(volumeLegend);
+    sideLayout->addWidget(m_volumeLegendText);
+    auto *volumeGestures = new QLabel(QStringLiteral("拖拽旋转 · 滚轮缩放 · Option+拖拽调窗"), sidePanel);
+    volumeGestures->setStyleSheet(QStringLiteral("color:#5f6c80;font-size:10px;"));
+    sideLayout->addWidget(volumeGestures);
+    sideLayout->addWidget(m_volumeStatus);
+    sideLayout->addStretch(1);
+
+    volumeBodyLayout->addWidget(m_volumeView, 1);
+    volumeBodyLayout->addWidget(sidePanel, 0);
     volumeLayout->addWidget(volumeTitle);
-    volumeLayout->addWidget(m_volumeView, 1);
-    volumeLayout->addLayout(controls);
-    volumeLayout->addLayout(windowRow);
-    volumeLayout->addLayout(clipRow);
-    volumeLayout->addWidget(volumeLegend);
-    volumeLayout->addWidget(m_volumeLegendText);
-    volumeLayout->addWidget(m_volumeStatus);
+    volumeLayout->addWidget(volumeBody, 1);
 
     connect(m_volumePreset, &QComboBox::currentIndexChanged, this, [this](int idx) {
         if (m_volumeView == nullptr) return;
@@ -453,17 +545,51 @@ QSlider::handle:horizontal {
                     : QStringLiteral("灰阶显示 · 亮度 = 窗内位置（伪彩关闭）"));
         }
     }
-    centerSplit->addWidget(volumePanel);
-    centerSplit->setStretchFactor(0, 1);
-    centerSplit->setStretchFactor(1, 0);
-    centerSplit->setSizes({840, 420});
+    nativePageLayout->addWidget(volumePanel);
 
-    centralLayout->addWidget(centerSplit, 1);
+    m_pages->addWidget(webPage);
+    m_pages->addWidget(nativePage);
+    m_tabs->addTab(QStringLiteral("监护台"));
+    m_tabs->addTab(QStringLiteral("原生影像"));
+    m_tabs->setTabToolTip(0, QStringLiteral("React 前端：生命体征、ECG/超声、神经监测、链路诊断、审计与开发者工具"));
+    m_tabs->setTabToolTip(1, QStringLiteral("原生离屏 OpenGL 体渲染：窗值、去骨、切面与伪彩（非诊断）"));
+
+    // 上次停在哪一页就回到哪一页；术者不必每次启动都手动切。
+    {
+        QSettings settings;
+        const int savedTab = settings.value(QStringLiteral("ui/mainTab"), 0).toInt();
+        if (savedTab >= 0 && savedTab < m_tabs->count()) {
+            m_tabs->setCurrentIndex(savedTab);
+            m_pages->setCurrentIndex(savedTab);
+        }
+    }
+    connect(m_tabs, &QTabBar::currentChanged, this, [this](int idx) {
+        if (idx < 0) return;
+        m_pages->setCurrentIndex(idx);
+        if (idx == 1 && m_volumeView != nullptr) m_volumeView->requestRender();
+        QSettings settings;
+        settings.setValue(QStringLiteral("ui/mainTab"), idx);
+    });
+
+    auto *webTabKey = new QShortcut(QKeySequence(QStringLiteral("Ctrl+1")), this);
+    webTabKey->setContext(Qt::ApplicationShortcut);
+    connect(webTabKey, &QShortcut::activated, this, [this]() { m_tabs->setCurrentIndex(0); });
+    auto *nativeTabKey = new QShortcut(QKeySequence(QStringLiteral("Ctrl+2")), this);
+    nativeTabKey->setContext(Qt::ApplicationShortcut);
+    connect(nativeTabKey, &QShortcut::activated, this, [this]() { m_tabs->setCurrentIndex(1); });
+
+    centralLayout->addWidget(tabHeader, 0);
+    centralLayout->addWidget(m_pages, 1);
 
     m_strip = new NativeVitalStrip(central);
     centralLayout->addWidget(m_strip, 0);
 
     setCentralWidget(central);
+    // 原生页在启动时可能还没拿到最终尺寸，先画出的帧会偏小；布局稳定后再补一帧。
+    QTimer::singleShot(1500, this, [this]() {
+        if (m_volumeView != nullptr) m_volumeView->requestRender();
+    });
+
 
     // 注意顺序：必须先 setPage（替换默认 page），再 setWebChannel，
     // 否则 channel 会绑定到随后被丢弃的旧 page 上，前端将拿不到 bridge。

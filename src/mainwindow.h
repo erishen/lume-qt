@@ -4,6 +4,8 @@
 #include <QMainWindow>
 #include <QUrl>
 
+class QTabBar;
+class QStackedWidget;
 class QWebEngineView;
 class QWebEngineProfile;
 class QWebEnginePage;
@@ -14,8 +16,8 @@ class NativeVitalStrip;
 /**
  * MainWindow — 宿主窗口。
  *
- * 布局：QWebEngineView（React 前端，占满剩余空间）+ 底部固定高度的
- *       原生关键波形条 NativeVitalStrip。
+ * 布局：顶部 Tab 在「Web 监护台」和「原生影像（OpenGL）」之间切换；
+ *       底部固定高度的原生关键波形条 NativeVitalStrip 始终常驻。
  *
  * 为什么关键通道不走 WebView：网页那条链路要过 QWebChannel IPC 与渲染进程
  * 合成，抖动量级不可控（GC、后台节流、系统降频）。术中关键波形与报警的
@@ -67,6 +69,8 @@ private:
     AppSchemeHandler *m_schemeHandler = nullptr;
     Bridge *m_bridge = nullptr;
     NativeVitalStrip *m_strip = nullptr;
+    QTabBar *m_tabs = nullptr;
+    QStackedWidget *m_pages = nullptr;
     VolumeView *m_volumeView = nullptr;
     QLabel *m_volumeStatus = nullptr;
     QComboBox *m_volumePreset = nullptr;

@@ -522,6 +522,11 @@ void VolumeView::uploadTexture()
     }
 }
 
+void VolumeView::requestRender()
+{
+    if (m_hasData) m_needsRender = true;
+}
+
 void VolumeView::renderFrame()
 {
     if (!m_hasData) return;

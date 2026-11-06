@@ -128,6 +128,8 @@ body {
 
 .app {
   min-height: 100vh;
+  max-width: 1040px;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
 }
@@ -1207,5 +1209,45 @@ button:disabled {
 @media (min-width: 701px) {
   .monitor-row {
     grid-template-columns: minmax(0, 1fr) 280px;
+  }
+}
+
+/* 窗口默认 1280×800，顶部 Tab 栏占掉约 30px 后，神经三通道卡片会被
+   底部原生条切掉。仅在矮窗口收紧留白与神经画布高度，保证三张卡完整入屏；
+   高分辨率窗口不受影响。 */
+@media (max-height: 820px) {
+  .topbar {
+    padding: 0.4rem 1.1rem;
+  }
+
+  .monitor {
+    padding: 0.55rem 1rem 0.65rem;
+  }
+
+  .vitals {
+    margin-bottom: 0.55rem;
+  }
+
+  .vital {
+    padding: 0.4rem 0.65rem;
+  }
+
+  .vital-value {
+    font-size: 1.4rem;
+  }
+
+  .neuro {
+    margin-top: 0.55rem;
+    padding-top: 0.5rem;
+  }
+
+  .neuro-canvas {
+    height: 92px;
+  }
+
+  /* 让下一段 3D 视图整体落到折叠线以下，首屏只结束在完整的三张神经卡片，
+     不露出一行被裁掉一半的「神经脉络」标题。 */
+  .neuro-3d-wrap {
+    margin-top: 4.4rem;
   }
 }
