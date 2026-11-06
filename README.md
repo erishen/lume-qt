@@ -124,6 +124,65 @@ DEV_KILL_STALE=0 make dev   # 关闭自动清理：端口被占用时改为报�
 - **Qt 侧必须用命名（持久化）`QWebEngineProfile`**：实测 Qt 6.12 下 off-the-record profile（无 name 构造）不会把 `app://` 请求投递给自定义 scheme handler，页面会直接空白。代价是状态写在 `~/Library/Application Support/research/qt-react-shell/`，因此不要同时运行多个实例；`make dev` 已做启动前自动清理与退出清理，避免残留实例。
 - `make dev-rebuild` 保留旧的「清空后全量重建再运行」行为，不依赖 dev server，适合排查构建产物相关问题。
 
+### 运行参数一览（环境变量）
+
+所有开关都只在启动时读一次；除特别注明外，`0`/未设都表示「关闭」。
+
+**通用与诊断**
+
+| 变量 | 默认 | 作用 |
+| --- | --- | --- |
+| `QTRS_DEV_URL` | 未设（`app://app/index.html`） | 改从 Vite dev server 加载（如 `http://localhost:5173`） |
+| `QTRS_TOPMOST` | 未设 | 存在即窗口置顶（调试截图用） |
+| `QTRS_RELOAD_MIN` | `30` | 每 N 分钟换 profile+page 重建渲染进程；`0` 关闭（见 H-21） |
+| `QTRS_MUTE_SIGNALS` | 未设 | `1` = 不把波形样本转发给网页（原生条照常画），用于内存归因 |
+| `QTRS_SAMPLE_DIV` | `1` | 每 N 个波形样本只转发 1 个给网页（降频诊断） |
+| `QTRS_CLOCK_OFFSET_MS` | `0` | 给模拟设备时钟加偏移（毫秒），验证「设备时基」下的延迟扣除 |
+| `QTRS_FAULT` | 未设 | 逗号分隔通道名（`ecg,spo2,eeg,emg`），启动 3 s 后停掉对应通道，注入中断 |
+| `QTRS_AUDIT_MAX_MB` | `8` | 单份台账文件上限（MB），超过即轮转 |
+
+**模拟设备与报警**
+
+| 变量 | 默认 | 作用 |
+| --- | --- | --- |
+| `QTRS_SIM_HR` | 未设（模拟波动） | 固定心率数值 |
+| `QTRS_SIM_SPO2` | 未设（模拟波动） | 固定血氧数值（如 `86` 触发高优先级报警） |
+| `QTRS_ALARM_SPO2_HIGH` / `QTRS_ALARM_SPO2_MID` | `90` / `92` | 高/中优先级 SpO₂ 阈值；限 `[50,100]`，中<高时自动对齐 |
+| `QTRS_ALARM_HR_HIGH` / `QTRS_ALARM_HR_MID` | `50` / `55` | 高/中优先级心率阈值；限 `[20,200]` |
+| `QTRS_ALARM_MUTE_SEC` | `120` | 静音默认时长，夹到 `[5,300]` s |
+| `QTRS_ALARM_SOUND` | 开 | `0` 关闭报警音（判定与红框照常） |
+| `QTRS_LUME_URL` | 未设 | Lume 基地址，如 `http://127.0.0.1:8090`；未设则完全不建网络栈 |
+
+**体数据与窗值**
+
+| 变量 | 默认 | 作用 |
+| --- | --- | --- |
+| `QTRS_NATIVE_VOLUME` | 开 | `0` = 关闭原生 OpenGL 体渲染，退回网页侧 Volume3D |
+| `QTRS_VOLUME_DIR` | 未设 | 启动 6 s 后加载指定 DICOM 目录（覆盖演示样例） |
+| `QTRS_NO_RESTORE` | 未设 | 存在即不恢复上次体数据来源（冷启动对照） |
+| `QTRS_KEEP_VOLUME_BYTES` | 未设 | 存在即保留 8-bit/HU 两份 CPU 副本（默认交接完释放，见 23.9） |
+| `QTRS_VOLUME_UPLOAD_MB` | `16` | 纹理分帧上传的块大小；`0` 回到「一次传完」旧行为 |
+| `QTRS_VOLUME_PRESET` | 读用户偏好 | `0`–`3` 预设；`4` = 自定义（配 `QTRS_VOLUME_WL`） |
+| `QTRS_VOLUME_WL` | 读用户偏好 | 手动窗 `窗宽,窗位`（如 `800,150`） |
+| `QTRS_VOLUME_COLOR` | 读用户偏好 | `1` 伪彩 / `0` 灰阶；非空即覆盖偏好 |
+| `QTRS_VOLUME_BONE` | 读用户偏好 | `1` 去骨 / `0` 保留；仅 CT 生效 |
+| `QTRS_VOLUME_CLIP` | 读用户偏好 | 切面 `轴,位置`，轴 `0`–`2`，位置 `0`–`1`（如 `1,0.6`） |
+
+**PACS**
+
+| 变量 | 默认 | 作用 |
+| --- | --- | --- |
+| `QTRS_PACS` | 未设 | `host:port:calledAE`；未设则不探测 |
+| `QTRS_PACS_MODE` | `auto` | `auto`（先 C-GET，不支持则回落 C-MOVE）/ `get` / `move` |
+| `QTRS_PACS_STORE_AE` | `QTRSSTORE` | C-MOVE 接收端 AE Title |
+| `QTRS_PACS_STORE_PORT` | `11113` | C-MOVE 接收端端口 |
+| `QTRS_PACS_HEARTBEAT_MS` | `30000` | C-ECHO 心跳间隔；`0` 关闭 |
+| `QTRS_PACS_AUTO_GET` | 未设 | `1` = C-FIND 命中第一例即取回；数字 = 延时毫秒（`<=1` 视为 0） |
+| `QTRS_PACS_TLS` | 未设（明文） | `1` 启用 DICOM TLS；`0`/`false` 关闭 |
+| `QTRS_PACS_TLS_CA` | 未设 | CA 证书路径；启用 TLS 且 verify≠ignore 时必填 |
+| `QTRS_PACS_TLS_CERT` / `QTRS_PACS_TLS_KEY` | 未设 | 客户端证书/私钥 PEM；启用 TLS 时必填 |
+| `QTRS_PACS_TLS_VERIFY` | `require` | `require` / `check` / `ignore` |
+
 ## C++ ↔ JS 通信示例
 
 **JS → C++（调用方法）：**
@@ -397,7 +456,7 @@ DICOM 网络 C-FIND/C-GET/STOW）时没有落点。这一步把它们分开。
    `hasHardwareClock()` 必须返回 `false`——上层据此知道「采集→上屏」这段延迟
    只能做相对测量，不能当成临床延迟指标。
 3. 在 `Bridge` 构造函数里把 `new SimulatorProvider(this)` 换成新 provider
-   （或按 `QTRS_PROVIDER` 环境变量选择），前端与原生条不用改。
+   （目前是编译期替换，没有 `QTRS_PROVIDER` 开关），前端与原生条不用改。
 
 ### 7. 时基与延迟口径（设备时钟 vs 宿主时钟）
 
