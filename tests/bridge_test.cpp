@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <QByteArray>
+#include <QDateTime>
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QFile>
@@ -530,4 +531,32 @@ int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
+}
+
+TEST(AuditSinkRotation, RotatesOversizedFileBeforeAppend)
+{
+    qputenv("QTRS_AUDIT_MAX_MB", "1");
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString path = dir.path() + QStringLiteral("/audit-")
+        + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd"))
+        + QStringLiteral(".jsonl");
+    {
+        QFile f(path);
+        ASSERT_TRUE(f.open(QIODevice::WriteOnly));
+        QByteArray line(1023, 'x');
+        line.append('\n');
+        for (int i = 0; i < 1100; ++i) f.write(line);
+        f.close();
+    }
+    ASSERT_GT(QFileInfo(path).size(), 1024 * 1024);
+
+    AuditSink sink;
+    ASSERT_TRUE(sink.open(dir.path()));
+    // 超限的旧文件先改名成 .001，新文件从空开始：旧证据不能丢，也不能继续涨
+    EXPECT_TRUE(QFileInfo(path + QStringLiteral(".001")).exists());
+    EXPECT_LT(QFileInfo(path).size(), 1024 * 1024);
+    sink.record(QStringLiteral("test.rotation"), {});
+    EXPECT_EQ(sink.count(), 1);
+    qunsetenv("QTRS_AUDIT_MAX_MB");
 }

@@ -26,6 +26,7 @@
 | QRS-T-009 | 体积必须支持术中的手动窗位/窗宽调整，且预设与手动值不得互相错位 | `src/volumeview.cpp` `src/mainwindow.cpp` | Alt+左键拖动改窗；W/L 输入框单位随模态切 HU/a.u.；手动后下拉切「自定义」、选回预设数值同步；`QTRS_VOLUME_WL=800,150` 实测 W800/L150，预设 1 实测 W1500/L300 且输入框同步；体积不再误触 100 ms 链路预算 | 已验证 |
 | QRS-T-010 | 体积视图必须支持去骨与正交切面，且不能把整条光线误裁 | `src/volumeview.cpp` `src/mainwindow.cpp` | 骨窗 + 去骨实测画面全黑（证明 HU≥300 被剔除）；矢状面 50% 实测半剖可见内部；`QTRS_VOLUME_BONE=1`、`QTRS_VOLUME_CLIP=0,0.5` 均入日志 | 已验证 |
 | QRS-T-011 | 窗位/窗宽、自适应分位与手动调窗边界必须有不依赖 GL 的纯函数单测 | `src/volumestats.cpp` `tests/volume_stats_test.cpp` | `ctest` 2/2：CT 四档窗值、非 CT 映射、clamp 边界、CT 剔空气 p50、MR 剔背景 p5、全空气回退；重构后分位日志与改造前逐字一致 | 已验证 |
+| QRS-T-012 | 审计台账必须按大小/日期轮转，旧证据不得被覆盖或丢弃 | `src/auditsink.cpp` `tests/bridge_test.cpp` | 单测预置 >1 MB 台账后 `open()`，断言旧文件改名为 `.001`、新文件从空开始且写入计数为 1；跨天切文件逻辑在 `record()` 内 | 已验证 |
 | QRS-T-005 | 关键通路的设计必须在「WebView 投递不可靠」这一实测结论上成立 | `src/vitalstrip.cpp` | 原生 P50 0.24ms vs 前端 291–367ms（约 1000 倍量级差） | 已验证 |
 
 > QRS-T-004 标为部分验证：开关确实生效，但挡不住 macOS 窗口非前台时 QWebChannel 批量迟发。
@@ -112,6 +113,7 @@
 | 本批（手动调窗） | QRS-T-009 |
 | 本批（去骨与切面） | QRS-T-010 |
 | 本批（窗计算单测） | QRS-T-011 |
+| 本批（台账轮转） | QRS-T-012 |
 
 统计不手写：`make trace` 每次重新数一遍，缺口或引用失效会直接报错。
 

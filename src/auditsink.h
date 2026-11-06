@@ -38,7 +38,13 @@ public:
     int count() const { return m_count; }
 
 private:
+    bool openDay(const QString &day);
+    bool rotateCurrent();
+
     QFile m_file;
+    QString m_baseDir;
+    QString m_day;
+    qint64 m_maxBytes = 8ll * 1024 * 1024;
     QString m_path;
     QString m_session;
     int m_count = 0;

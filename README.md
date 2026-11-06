@@ -461,6 +461,10 @@ QTRS_CLOCK_OFFSET_MS=5000 ./build/qt-react-shell
 - **C++ 侧事件**：`session.start`（provider 与时基）、`provider.start`（医疗/神经分组）、
   `dicom.volumeReady` / `dicom.volumeError`。
 - 报警只在**边沿**记一次（`m_alarmActive` 比对），不会每帧刷台账。
+- **轮转**：台账只追加，术中机器没人管磁盘，不设上限迟早写满。单文件默认 8 MB
+  （`QTRS_AUDIT_MAX_MB` 可调），超限时把旧文件改名为 `audit-YYYYMMDD.jsonl.001`
+  再开新文件，旧证据不覆盖；跨天自动切到新日期的文件。`tests/bridge_test.cpp`
+  里有超限轮转的单测。
 
 一次故障注入（`QTRS_FAULT=ecg,spo2`）产生的台账（节选）：
 
