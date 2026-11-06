@@ -141,8 +141,13 @@ export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
 
   return (
     <section className="card monitor" ref={rootRef}>
-      <h2>医疗影像实时数据模拟</h2>
-      <p className="monitor-note">数据由 C++ 侧实时生成并经 QWebChannel 推送 · Canvas 渲染</p>
+      <div className="section-head">
+        <div>
+          <span className="eyebrow">LIVE MONITORING</span>
+          <h2>医疗影像实时数据模拟</h2>
+        </div>
+        <span className="section-meta">C++ 推送 · Canvas 渲染</span>
+      </div>
 
       {/* 生命体征数值卡 */}
       <div className="vitals">
@@ -158,11 +163,7 @@ export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
                alert={vitals ? vitals.temp > 37.5 : false} />
       </div>
 
-      <LatencyBoard hasBridge={bridge !== null} bridge={bridge} />
-
-      <WatchdogStrip hasBridge={bridge !== null} bridge={bridge} />
-
-      {/* 波形 + 影像 */}
+      {/* 波形 + 影像：术中第一眼要看的内容，放在诊断表之前 */}
       <div className="monitor-row">
         <div className="panel">
           <div className="panel-head">
@@ -182,6 +183,19 @@ export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
 
       {/* 神经内科介入模拟面板 */}
       <NeurologyPanel bridge={bridge} />
+
+      {/* 链路诊断属于工程观测：临床波形之后，避免把 ECG 挤出首屏 */}
+      <div className="diagnostics">
+        <div className="section-head compact">
+          <div>
+            <span className="eyebrow">TELEMETRY</span>
+            <h3>链路诊断</h3>
+          </div>
+          <span className="section-meta">采集 → 上屏 · 原生通道同机对照</span>
+        </div>
+        <WatchdogStrip hasBridge={bridge !== null} bridge={bridge} />
+        <LatencyBoard hasBridge={bridge !== null} bridge={bridge} />
+      </div>
 
       {/* DICOM 体渲染面板：原生侧接管时不再让网页重复拉 33MB 体数据 */}
       {!bridge?.nativeVolume && <DicomPanel bridge={bridge} />}
@@ -313,7 +327,13 @@ function NeurologyPanel({ bridge }: { bridge: Bridge | null }) {
 
   return (
     <div className="neuro" ref={rootRef}>
-      <h3 className="neuro-title">🧠 神经内科介入监测</h3>
+      <div className="section-head compact">
+        <div>
+          <span className="eyebrow">NEURO INTERVENTION</span>
+          <h3>神经内科介入监测</h3>
+        </div>
+        <span className="section-meta">EEG · EMG · 神经元活动 · 3D 脉络</span>
+      </div>
       <div className="neuro-grid">
         <NeuroPanel title="脑电图 EEG · 10μV/格" refCb={eegRef} color="#5ee7df" />
         <NeuroPanel title="肌电图 EMG · 运动单位电位" refCb={emgRef} color="#ff8a65" />
@@ -323,7 +343,7 @@ function NeurologyPanel({ bridge }: { bridge: Bridge | null }) {
       {/* 三维神经脉络 */}
       <div className="neuro-3d-wrap">
         <div className="panel-head">
-          <span>🧠 神经脉络 · 实时介入手术可视化</span>
+          <span>神经脉络 · 实时介入手术可视化</span>
           <span className="panel-meta">拖拽旋转 · 滚轮缩放</span>
         </div>
         <Neuro3D bridge={bridge} />
@@ -443,7 +463,7 @@ function Vital({ label, value, unit, color, alert }: {
   alert?: boolean
 }) {
   return (
-    <div className={`vital ${alert ? 'vital-alert' : ''}`}>
+    <div className={`vital ${alert ? 'vital-alert' : ''}`} style={{ borderTopColor: color }}>
       <span className="vital-label">{label}</span>
       <span className="vital-value" style={{ color }}>
         {value ?? '--'}
@@ -702,8 +722,17 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
         message: st.message ?? '',
         tls: Boolean(st.tls),
       })
-      if (st.studies?.length) setStudies(st.studies)
-      if (st.studyUid) setStudyUid(st.studyUid)
+      if (st.host && typeof st.port === 'number' && st.calledAe) {
+        pacsRef.current = { host: st.host, port: st.port, ae: st.calledAe }
+      }
+      // 启动时 C-FIND 往往早于 WebView 订阅：下拉框会「看起来选了第一例」，
+      // 但 studyUid 还是空串，于是「取回该例」按钮不出现。这里把首例显式选上。
+      const list = st.studies ?? []
+      if (list.length) setStudies(list)
+      setStudyUid((prev) => {
+        if (prev && list.some((s) => s.studyInstanceUid === prev)) return prev
+        return st.studyUid || list.find((s) => s.studyInstanceUid)?.studyInstanceUid || prev
+      })
     })
     return () => {
       bridge.sessionRecovered?.disconnect?.(onRecovered)
@@ -725,6 +754,10 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
   }, [])
 
   const active = rows.filter((r) => r.samples > 0)
+  // select 在 value 为空时仍会显示第一项：按钮条件必须跟「实际选中」一致，
+  // 否则用户看到一例检查却找不到取回入口。
+  const effectiveStudyUid =
+    studyUid || studies.find((s) => s.studyInstanceUid)?.studyInstanceUid || ''
 
   return (
     <div className="latency">
@@ -758,7 +791,7 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
           {pacs?.ok && studies.length > 0 ? (
             <select
               className="pacs-study"
-              value={studyUid}
+              value={effectiveStudyUid}
               aria-label="选择检查"
               onChange={(e) => setStudyUid(e.target.value)}
             >
@@ -771,7 +804,7 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
               ))}
             </select>
           ) : null}
-          {pacs?.ok && studyUid && pacsRef.current ? (
+          {pacs?.ok && effectiveStudyUid && pacsRef.current ? (
             <button
               type="button"
               className="pacs-retrieve"
@@ -782,7 +815,7 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
                 if (!target) return
                 setRetrieving(true)
                 setRetrieveNote('')
-                bridge?.pacsRetrieveStudy(target.host, target.port, target.ae, studyUid)
+                bridge?.pacsRetrieveStudy(target.host, target.port, target.ae, effectiveStudyUid)
               }}
             >
               {retrieving

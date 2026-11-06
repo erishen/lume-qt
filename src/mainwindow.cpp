@@ -152,12 +152,44 @@ MainWindow::MainWindow(QWidget *parent)
     centerSplit->addWidget(m_view);
 
     auto *volumePanel = new QWidget(centerSplit);
+    volumePanel->setObjectName(QStringLiteral("volumePanel"));
+    // 右侧是 WebView 之外的原生面板：统一深色主题，避免浅色系统控件把整窗割成两套视觉。
+    // 只改控件外观，不动 VolumeView 的渲染结果（画面清晰度与窗值逻辑都不受影响）。
+    volumePanel->setStyleSheet(QStringLiteral(R"(
+QWidget#volumePanel { background: #0b1017; }
+QLabel { color: #8b99ad; font-size: 11px; }
+QLabel#volumeTitle { color: #8fa6c8; font-size: 12px; }
+QComboBox, QDoubleSpinBox, QPushButton {
+    background: #151d29;
+    color: #dbe6f3;
+    border: 1px solid #2a3444;
+    border-radius: 6px;
+    padding: 2px 6px;
+    font-size: 11px;
+}
+QComboBox QAbstractItemView {
+    background: #151d29;
+    color: #dbe6f3;
+    border: 1px solid #2a3444;
+    selection-background-color: #24405e;
+}
+QPushButton:hover { background: #1e2a3b; border-color: #3b506d; }
+QCheckBox { color: #dbe6f3; font-size: 11px; spacing: 6px; }
+QCheckBox::indicator {
+    width: 14px; height: 14px; border-radius: 4px;
+    border: 1px solid #3a4a60; background: #0d131c;
+}
+QCheckBox::indicator:checked { background: #2f6fd0; border-color: #57a6ff; }
+QSlider::groove:horizontal { height: 4px; background: #2a3444; border-radius: 2px; }
+QSlider::handle:horizontal {
+    width: 12px; margin: -4px 0; border-radius: 6px; background: #57a6ff;
+}
+)"));
     auto *volumeLayout = new QVBoxLayout(volumePanel);
-    volumeLayout->setContentsMargins(8, 8, 8, 8);
-    volumeLayout->setSpacing(4);
+    volumeLayout->setContentsMargins(10, 10, 10, 10);
+    volumeLayout->setSpacing(6);
     auto *volumeTitle = new QLabel(QStringLiteral("DICOM 体渲染 · 原生 OpenGL（不经 WebView）"),
                                    volumePanel);
-    volumeTitle->setStyleSheet(QStringLiteral("color:#8fa6c8;font-size:12px;"));
     m_volumeView = new VolumeView(volumePanel);
     m_volumeStatus = new QLabel(QStringLiteral("等待体数据…"), volumePanel);
     m_volumeStatus->setStyleSheet(QStringLiteral("color:#7b8798;font-size:11px;"));
@@ -178,14 +210,11 @@ MainWindow::MainWindow(QWidget *parent)
                               QStringLiteral("血管窗 W400/L100"),
                               QStringLiteral("数据自适应"),
                               QStringLiteral("自定义（手动调窗）")});
-    m_volumePreset->setStyleSheet(QStringLiteral("font-size:11px;"));
     m_volumeOverlay = new QCheckBox(QStringLiteral("伪彩（非诊断）"), volumePanel);
-    m_volumeOverlay->setStyleSheet(QStringLiteral("color:#9fb2c9;font-size:11px;"));
     controls->addWidget(m_volumePreset, 1);
     controls->addWidget(m_volumeOverlay, 0);
 
     m_volumeLegendText = new QLabel(volumePanel);
-    m_volumeLegendText->setStyleSheet(QStringLiteral("color:#7b8798;font-size:10px;"));
     m_volumeLegendText->setWordWrap(true);
     m_volumeLegendText->setText(QStringLiteral("灰阶显示 · 亮度 = 窗内位置（伪彩关闭）"));
 
@@ -194,14 +223,11 @@ MainWindow::MainWindow(QWidget *parent)
     windowRow->setSpacing(4);
     auto *wLabel = new QLabel(QStringLiteral("W"), volumePanel);
     auto *lLabel = new QLabel(QStringLiteral("L"), volumePanel);
-    wLabel->setStyleSheet(QStringLiteral("color:#9fb2c9;font-size:11px;"));
-    lLabel->setStyleSheet(QStringLiteral("color:#9fb2c9;font-size:11px;"));
     m_windowWidthBox = new QDoubleSpinBox(volumePanel);
     m_windowLevelBox = new QDoubleSpinBox(volumePanel);
     for (auto *box : {m_windowWidthBox, m_windowLevelBox}) {
         box->setDecimals(0);
         box->setKeyboardTracking(false);
-        box->setStyleSheet(QStringLiteral("font-size:11px;"));
         box->setFixedWidth(78);
     }
     m_windowWidthBox->setRange(1, 4000);
@@ -215,7 +241,6 @@ MainWindow::MainWindow(QWidget *parent)
     // 手动调窗最容易发生的失误是「调完忘了回临床预设」；给一个显式的回退入口，
     // 而不是指望术者记住上次选的是哪一档。
     auto *restoreWindowBtn = new QPushButton(QStringLiteral("恢复上次预设"), volumePanel);
-    restoreWindowBtn->setStyleSheet(QStringLiteral("font-size:11px;"));
     restoreWindowBtn->setToolTip(QStringLiteral("回到手动调窗前的预设（⌘⇧W；也接受物理 Ctrl+Shift+W）"));
     windowRow->addWidget(restoreWindowBtn, 0);
     windowRow->addStretch(0);
@@ -224,11 +249,9 @@ MainWindow::MainWindow(QWidget *parent)
     auto *clipRow = new QHBoxLayout;
     clipRow->setSpacing(6);
     m_boneBox = new QCheckBox(QStringLiteral("去骨（CT）"), volumePanel);
-    m_boneBox->setStyleSheet(QStringLiteral("color:#9fb2c9;font-size:11px;"));
     m_clipCombo = new QComboBox(volumePanel);
     m_clipCombo->addItems({QStringLiteral("完整"), QStringLiteral("矢状面（左右）"),
                            QStringLiteral("冠状面（前后）"), QStringLiteral("横断面（上下）")});
-    m_clipCombo->setStyleSheet(QStringLiteral("font-size:11px;"));
     m_clipSlider = new QSlider(Qt::Horizontal, volumePanel);
     m_clipSlider->setRange(0, 100);
     m_clipSlider->setValue(100);
