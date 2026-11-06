@@ -133,6 +133,8 @@ export interface PacsStatus {
   heartbeat?: boolean
   /** 最近一次 C-FIND 的病例数，心跳时沿用 */
   count?: number
+  /** 本次关联是否走 DICOM TLS（QTRS_PACS_TLS=1） */
+  tls?: boolean
 }
 
 /** C-FIND 返回的一例检查 */

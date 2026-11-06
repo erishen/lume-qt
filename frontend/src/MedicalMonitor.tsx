@@ -564,7 +564,7 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
   const [clock, setClock] = useState(clockStatus())
   // PACS 状态：接入现场第一句要问的就是「连上了吗、库里有几例」，
   // 它和延迟指标同屏，免得再去翻日志。
-  const [pacs, setPacs] = useState<{ ok: boolean; rttMs: number; count: number; ae: string; message: string } | null>(null)
+  const [pacs, setPacs] = useState<{ ok: boolean; rttMs: number; count: number; ae: string; message: string; tls: boolean } | null>(null)
   // 上次进程被杀/崩溃后留下的摘要：术中重启必须一眼看到「上次没正常收尾」
   const [recovery, setRecovery] = useState<SessionRecovery | null>(null)
   // C-FIND 命中多例时，取回哪一例不能默认「第一例」；这里保留整份列表并允许切换。
@@ -631,6 +631,7 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
         count: st.count ?? prev?.count ?? 0,
         ae: st.calledAe,
         message: st.message,
+        tls: Boolean(st.tls),
       }))
     }
     const onStudies = (studies: PacsStudy[], meta: PacsQueryMeta) => {
@@ -640,6 +641,7 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
         count: meta.count,
         ae: meta.calledAe,
         message: meta.message,
+        tls: prev?.tls ?? false,
       }))
       setStudies(studies)
       // 已选的那一例还在就保留选择，否则退回第一例（不要每次查询都把用户的选择顶掉）
@@ -680,6 +682,7 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
         count: st.count ?? 0,
         ae: st.calledAe ?? '',
         message: st.message ?? '',
+        tls: Boolean(st.tls),
       })
       if (st.studies?.length) setStudies(st.studies)
       if (st.studyUid) setStudyUid(st.studyUid)
@@ -719,7 +722,7 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
             <span className={pacs.ok ? 'pacs-chip ok' : 'pacs-chip bad'}>
               {' · PACS '}
               {pacs.ok
-                ? `已连通 ${pacs.rttMs} ms · ${pacs.count} 例`
+                ? `已连通 ${pacs.rttMs} ms · ${pacs.count} 例${pacs.tls ? ' · TLS' : ' · 明文'}`
                 : `未连通 ${pacs.message || ''}`}
             </span>
           ) : (

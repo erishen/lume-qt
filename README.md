@@ -1412,3 +1412,42 @@ curl -s http://127.0.0.1:8090/api/medmon/summary
 试过 4 MB 一块（8 块）：单块只有 3 ms，但每次让出主线程约 15 ms，
 首帧要多等 130 ms——加载手感反而更差，所以默认取 16 MB。
 `QTRS_VOLUME_UPLOAD_MB` 可改块大小（0 = 旧行为），仅用于对照。
+
+### 23.11 PACS 走 DICOM TLS（双向认证）
+
+现场 PACS 一旦关掉明文端口，C-ECHO / C-FIND / C-GET 全部要在 TLS 上重来。实现拆成两层：
+
+- `src/pacstls.{h,cpp}`：纯配置解析与校验。证书/私钥必须存在；`verify` 不是 `ignore` 时缺 CA 直接判配置错误——「没有 CA 的 TLS」等于连谁都信，不能算通过。
+- `src/pacsclient.cpp`：`QTRS_PACS_TLS=1` 时把 `DcmSCU` 换成 `DcmTLSSCU`（子类，调用点不分叉），建关联前装客户端证书/CA，`initNetwork()` 之后再设套件（`DcmTLSSCU` 的前置条件）。
+
+启用方式：
+
+```bash
+export QTRS_PACS=192.0.2.12:11112:ORPACS
+export QTRS_PACS_TLS=1
+export QTRS_PACS_TLS_CA=/etc/qtrs/pacs-ca.pem
+export QTRS_PACS_TLS_CERT=/etc/qtrs/qtrs-client.pem
+export QTRS_PACS_TLS_KEY=/etc/qtrs/qtrs-client.key
+export QTRS_PACS_TLS_VERIFY=require   # require（默认）/ check / ignore
+```
+
+行为约定：
+
+- `require` = 双向认证（服务端也校验客户端证书）；`check` = 有证书就验、没有也放行；`ignore` = 只加密不验签，仅限受控网段排障。
+- 任一文件缺失、或其他值填进 `QTRS_PACS_TLS_VERIFY`，C-ECHO 直接失败并在状态行显示原因，**不会静默回落明文**。
+- `C-MOVE` 的接收端（本机临时存储 SCP）还没挂 TLS 层，TLS 模式下明确提示「请用 C-GET」，避免出现「请求加密、回连明文」的半吊子。
+- 前端 PACS 状态行显示 `· TLS` 或 `· 明文`，现场排障时先分清是加密问题还是网络问题。
+
+本机端到端实测（`dcmqrscp` + 自签 CA/服务端/客户端证书，`QTRS_PACS=127.0.0.1:11112:QTRSQR`）：
+
+| 场景 | 结果 |
+| --- | --- |
+| TLS 双向认证 | C-ECHO 8 ms → C-FIND 2 例 → C-GET 60 对象 179 ms；界面 `PACS 已连通 8 ms · 2 例 · TLS` |
+| TLS 客户端连明文端口 | `关联协商失败：OpenSSL I/O error (SSL_ERROR_SYSCALL)` |
+| 明文客户端连 TLS 端口 | `关联协商失败：Peer aborted Association (or never connected)` |
+| 用无关 CA 验签 | `TLS error: certificate verify failed` |
+
+两个实现坑（都写进代码注释了）：
+
+1. `DcmSCU::useSecureConnection(DcmTLSTransportLayer*)` 在本机 DCMTK 3.7.1 上报 `ASC Caller passed in a NULL key`——单独探针里私钥/证书都加载成功、`checkPrivateKeyMatchesCertificate()` 为真，仍然建不起连接；换 `DcmTLSSCU` 才能通。DCMTK 已把 `DcmTLSSCU` 标为 deprecated，本文件里用 `#pragma clang diagnostic ignored "-Wdeprecated-declarations"` 顶住质量门，等上游修好再换回新 API。
+2. `DcmTLSSCU::enableAuthentication()` 的 passphrase 必须显式传 `""`。默认 `NULL` 会从 stdin 读口令，桌面 GUI 没有 stdin，会卡在建连之前。

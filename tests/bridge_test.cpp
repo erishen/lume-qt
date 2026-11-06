@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include "../src/pacstls.h"
+
 #include <QByteArray>
 #include <QDateTime>
 #include <QCoreApplication>
@@ -771,4 +773,57 @@ TEST(AuditSinkRotation, RotatesOversizedFileBeforeAppend)
     sink.record(QStringLiteral("test.rotation"), {});
     EXPECT_EQ(sink.count(), 1);
     qunsetenv("QTRS_AUDIT_MAX_MB");
+}
+
+TEST(PacsTlsConfigTest, DisabledConfigIsInert)
+{
+    const auto cfg = qtrs::pacsTlsConfigFromValues(false, {}, {}, {}, {},
+                                                 [](const QString &) { return false; });
+    EXPECT_FALSE(cfg.enabled);
+    EXPECT_TRUE(cfg.error.isEmpty());
+    EXPECT_FALSE(cfg.usable());
+    EXPECT_EQ(cfg.summary(), QStringLiteral("明文"));
+}
+
+TEST(PacsTlsConfigTest, EnabledRequiresCertKeyAndCa)
+{
+    const auto cfg = qtrs::pacsTlsConfigFromValues(true, {}, {}, {}, QStringLiteral("require"),
+                                                   [](const QString &) { return true; });
+    EXPECT_FALSE(cfg.usable());
+    EXPECT_TRUE(cfg.error.contains(QStringLiteral("QTRS_PACS_TLS_CERT"))) << cfg.error.toStdString();
+    EXPECT_TRUE(cfg.error.contains(QStringLiteral("QTRS_PACS_TLS_KEY"))) << cfg.error.toStdString();
+    EXPECT_TRUE(cfg.error.contains(QStringLiteral("QTRS_PACS_TLS_CA"))) << cfg.error.toStdString();
+}
+
+TEST(PacsTlsConfigTest, IgnoreVerificationOnlyNeedsCertAndKey)
+{
+    const auto cfg = qtrs::pacsTlsConfigFromValues(
+        true, {}, QStringLiteral("/tmp/client.pem"), QStringLiteral("/tmp/client.key"),
+        QStringLiteral("ignore"), [](const QString &p) { return p.startsWith(QStringLiteral("/tmp/")); });
+    ASSERT_TRUE(cfg.error.isEmpty()) << cfg.error.toStdString();
+    EXPECT_TRUE(cfg.usable());
+    EXPECT_EQ(cfg.verify, qtrs::PacsTlsConfig::Verify::Ignore);
+    EXPECT_TRUE(cfg.summary().startsWith(QStringLiteral("TLS ignore")));
+}
+
+TEST(PacsTlsConfigTest, MissingFilesAreNamed)
+{
+    const auto cfg = qtrs::pacsTlsConfigFromValues(
+        true, QStringLiteral("/no/ca.pem"), QStringLiteral("/no/client.pem"),
+        QStringLiteral("/no/client.key"), QStringLiteral("check"),
+        [](const QString &) { return false; });
+    EXPECT_FALSE(cfg.usable());
+    EXPECT_TRUE(cfg.error.contains(QStringLiteral("证书不存在"))) << cfg.error.toStdString();
+    EXPECT_TRUE(cfg.error.contains(QStringLiteral("私钥不存在"))) << cfg.error.toStdString();
+    EXPECT_TRUE(cfg.error.contains(QStringLiteral("CA 不存在"))) << cfg.error.toStdString();
+}
+
+TEST(PacsTlsConfigTest, UnknownVerifyIsRejected)
+{
+    const auto cfg = qtrs::pacsTlsConfigFromValues(
+        true, QStringLiteral("/tmp/ca.pem"), QStringLiteral("/tmp/client.pem"),
+        QStringLiteral("/tmp/client.key"), QStringLiteral("whatever"),
+        [](const QString &) { return true; });
+    EXPECT_FALSE(cfg.usable());
+    EXPECT_TRUE(cfg.error.contains(QStringLiteral("ignore/check/require"))) << cfg.error.toStdString();
 }

@@ -1,7 +1,10 @@
 #include "pacsclient.h"
 
+#include "pacstls.h"
+
 #include <algorithm>
 #include <atomic>
+#include <memory>
 #include <thread>
 
 #include <QElapsedTimer>
@@ -18,6 +21,16 @@
 #include <dcmtk/dcmnet/dstorscp.h>
 #include <dcmtk/dcmnet/scp.h>
 #include <dcmtk/dcmnet/scu.h>
+// DcmSCU::useSecureConnection() 在本机 DCMTK 3.7.1 上会报
+// "ASC Caller passed in a NULL key"（层里 key/cert 都加载成功、单独探针也匹配），
+// 只有 DcmTLSSCU 这条老路径能真正建连；DCMTK 已标记它为 deprecated，
+// 这里明确接受这点并用 pragma 抑制告警，等上游修好再换回新 API。
+#if defined(__clang__)
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
+#ifdef WITH_OPENSSL
+#include <dcmtk/dcmtls/tlsscu.h>
+#endif
 
 namespace {
 
@@ -47,7 +60,17 @@ private:
     mutable std::atomic<int> m_received{0};
 };
 
-/// 把 DcmSCU 会话建起来：注册 AE、设置超时、发起关联。
+/// 按环境变量决定这次关联用普通 SCU 还是 TLS SCU。
+/// DcmTLSSCU 是 DcmSCU 的子类，其余调用点不用分叉。
+std::unique_ptr<DcmSCU> makeScu()
+{
+#ifdef WITH_OPENSSL
+    if (qtrs::pacsTlsConfigFromEnv().enabled) return std::make_unique<DcmTLSSCU>();
+#endif
+    return std::make_unique<DcmSCU>();
+}
+
+/// 把 DcmSCU 会话建起来：注册 AE、设置超时、（可选）挂 TLS、发起关联。
 /// 每个操作都开一个新的关联再关闭，避免长连接在术中网络抖动时留下半死状态。
 bool openAssociation(DcmSCU &scu, const PacsClient::Endpoint &endpoint, QString *err)
 {
@@ -64,10 +87,54 @@ bool openAssociation(DcmSCU &scu, const PacsClient::Endpoint &endpoint, QString 
     scu.setDIMSETimeout(static_cast<Uint32>(seconds));
     scu.setVerbosePCMode(OFFalse);
 
+    const qtrs::PacsTlsConfig cfg = qtrs::pacsTlsConfigFromEnv();
+#ifdef WITH_OPENSSL
+    DcmTLSSCU *tlsScu = dynamic_cast<DcmTLSSCU *>(&scu);
+#else
+    DcmTLSSCU *tlsScu = nullptr;
+#endif
+    if (cfg.enabled) {
+        if (!cfg.usable()) {
+            if (err) *err = QStringLiteral("TLS 配置无效：%1").arg(cfg.error);
+            return false;
+        }
+        if (!tlsScu) {
+            if (err) *err = QStringLiteral("内部错误：启用了 TLS 但 SCU 不是 DcmTLSSCU");
+            return false;
+        }
+        // 第三个参数必须给空串：DcmTLSSCU 默认（NULL）会从 stdin 要私钥口令，
+        // 桌面 GUI 没有 stdin，会在建连前挂住。
+        tlsScu->enableAuthentication(cfg.keyFile.toStdString(), cfg.certFile.toStdString(), "",
+                                     DCF_Filetype_PEM, DCF_Filetype_PEM);
+        if (cfg.verify != qtrs::PacsTlsConfig::Verify::Ignore) {
+            tlsScu->addTrustedCertFile(cfg.caFile.toStdString());
+        }
+        switch (cfg.verify) {
+        case qtrs::PacsTlsConfig::Verify::Ignore:
+            tlsScu->setPeerCertVerification(DCV_ignoreCertificate);
+            break;
+        case qtrs::PacsTlsConfig::Verify::Check:
+            tlsScu->setPeerCertVerification(DCV_checkCertificate);
+            break;
+        case qtrs::PacsTlsConfig::Verify::Require:
+            tlsScu->setPeerCertVerification(DCV_requireCertificate);
+            break;
+        }
+        qInfo().noquote() << QStringLiteral("[PACS] TLS 已启用：%1").arg(cfg.summary());
+    }
+
     OFCondition cond = scu.initNetwork();
     if (cond.bad()) {
         if (err) *err = QStringLiteral("initNetwork 失败：%1").arg(QString::fromStdString(cond.text()));
         return false;
+    }
+    if (tlsScu) {
+        // DcmTLSSCU 要求套件配置在 initNetwork 之后（层已建好）再设。
+        const OFCondition tcond = tlsScu->setTLSProfile(TSP_Profile_BCP_195_RFC_8996);
+        if (tcond.bad()) {
+            if (err) *err = QStringLiteral("设置 TLS 套件失败：%1").arg(QString::fromStdString(tcond.text()));
+            return false;
+        }
     }
     cond = scu.negotiateAssociation();
     if (cond.bad()) {
@@ -103,28 +170,28 @@ bool PacsClient::parseEndpoint(const QString &spec, Endpoint *out, QString *err)
 
 bool PacsClient::echo(const Endpoint &endpoint, QString *err, int *roundTripMs)
 {
-    DcmSCU scu;
+    std::unique_ptr<DcmSCU> scu = makeScu();
     // C-ECHO 也需要先声明 Verification 呈现上下文，否则 initNetwork 直接报
     // "No Presentation Contexts defined"——这是 DcmSCU 与 dcmnet 底层 API 的区别，
     // 不显式加就没有任何上下文可协商。
     OFList<OFString> echoXfer;
     echoXfer.push_back(UID_LittleEndianExplicitTransferSyntax);
     echoXfer.push_back(UID_LittleEndianImplicitTransferSyntax);
-    const OFCondition pc = scu.addPresentationContext(UID_VerificationSOPClass, echoXfer);
+    const OFCondition pc = scu->addPresentationContext(UID_VerificationSOPClass, echoXfer);
     if (pc.bad()) {
         if (err) *err = QStringLiteral("注册 C-ECHO 呈现上下文失败：%1")
                              .arg(QString::fromStdString(pc.text()));
         return false;
     }
-    if (!openAssociation(scu, endpoint, err)) {
+    if (!openAssociation(*scu, endpoint, err)) {
         return false;
     }
 
     QElapsedTimer timer;
     timer.start();
-    const OFCondition cond = scu.sendECHORequest(0);
+    const OFCondition cond = scu->sendECHORequest(0);
     const int ms = static_cast<int>(timer.elapsed());
-    scu.closeAssociation(DCMSCU_RELEASE_ASSOCIATION);
+    scu->closeAssociation(DCMSCU_RELEASE_ASSOCIATION);
 
     if (cond.bad()) {
         if (err) *err = QStringLiteral("C-ECHO 失败：%1").arg(QString::fromStdString(cond.text()));
@@ -215,6 +282,12 @@ PresentationContexts = StorageSCP
     scp.setConnectionTimeout(3);
 
     const OFCondition bindRc = scp.openListenPort();
+    if (qtrs::pacsTlsConfigFromEnv().enabled) {
+        // C-MOVE 是「服务端反向连回我们的存储 SCP」，那条链路也得 TLS + 双向认证。
+        // 客户端这半边能加密、接收端还没挂 TLS 层，硬上就是半吊子，明确拒绝。
+        if (err) *err = QStringLiteral("C-MOVE 在 TLS 模式下暂不支持（接收端 TLS 未实现），请用 C-GET");
+        return false;
+    }
     if (bindRc.bad()) {
         if (err) *err = QStringLiteral("无法监听本机接收端口 %1：%2")
                              .arg(destPort).arg(bindRc.text());
@@ -223,7 +296,7 @@ PresentationContexts = StorageSCP
 
     std::thread scpThread([&scp]() { (void)scp.acceptAssociations(); });
 
-    DcmSCU scu;
+    std::unique_ptr<DcmSCU> scu = makeScu();
     OFList<OFString> xfer;
     xfer.push_back(UID_LittleEndianExplicitTransferSyntax);
     xfer.push_back(UID_LittleEndianImplicitTransferSyntax);
@@ -238,7 +311,7 @@ PresentationContexts = StorageSCP
         if (scpThread.joinable()) scpThread.join();
     };
 
-    if (scu.addPresentationContext(UID_MOVEStudyRootQueryRetrieveInformationModel, xfer,
+    if (scu->addPresentationContext(UID_MOVEStudyRootQueryRetrieveInformationModel, xfer,
                                    ASC_SC_ROLE_SCU)
             .bad()) {
         localErr = QStringLiteral("注册 C-MOVE 呈现上下文失败");
@@ -247,17 +320,17 @@ PresentationContexts = StorageSCP
         return false;
     }
 
-    if (!openAssociation(scu, endpoint, &localErr)) {
+    if (!openAssociation(*scu, endpoint, &localErr)) {
         finish();
         if (err) *err = localErr;
         return false;
     }
 
     const T_ASC_PresentationContextID presId =
-        scu.findPresentationContextID(UID_MOVEStudyRootQueryRetrieveInformationModel, "");
+        scu->findPresentationContextID(UID_MOVEStudyRootQueryRetrieveInformationModel, "");
     if (presId == 0) {
         localErr = QStringLiteral("服务端未接受 C-MOVE 呈现上下文");
-        (void)scu.releaseAssociation();
+        (void)scu->releaseAssociation();
         finish();
         if (err) *err = localErr;
         return false;
@@ -268,7 +341,7 @@ PresentationContexts = StorageSCP
     query.putAndInsertString(DCM_StudyInstanceUID, studyUid.toUtf8().constData());
 
     OFList<RetrieveResponse *> responses;
-    const OFCondition rc = scu.sendMOVERequest(presId, destAe.toStdString(), &query, &responses);
+    const OFCondition rc = scu->sendMOVERequest(presId, destAe.toStdString(), &query, &responses);
 
     // 取最终状态里的完成数：中间响应只会给「还剩几个」，最后一个才是结论。
     if (!responses.empty()) {
@@ -279,7 +352,7 @@ PresentationContexts = StorageSCP
     for (RetrieveResponse *r : responses) delete r;
     responses.clear();
 
-    (void)scu.releaseAssociation();
+    (void)scu->releaseAssociation();
     finish();
 
     const int landed = static_cast<int>(
@@ -317,7 +390,7 @@ bool PacsClient::retrieveStudy(const Endpoint &endpoint, const QString &studyUid
         return false;
     }
 
-    DcmSCU scu;
+    std::unique_ptr<DcmSCU> scu = makeScu();
 
     // C-GET 的协商要比 C-FIND 多两步：
     //  1) 除 C-GET 查询上下文外，还要声明愿意接收哪些存储类（否则服务端无法把
@@ -329,7 +402,7 @@ bool PacsClient::retrieveStudy(const Endpoint &endpoint, const QString &studyUid
 
     auto addPc = [&scu, &xfer](const char *uid, T_ASC_SC_ROLE role) {
         OFList<OFString> syntaxes = xfer;
-        return scu.addPresentationContext(uid, syntaxes, role);
+        return scu->addPresentationContext(uid, syntaxes, role);
     };
 
     if (addPc(UID_GETStudyRootQueryRetrieveInformationModel, ASC_SC_ROLE_SCU).bad()) {
@@ -348,10 +421,10 @@ bool PacsClient::retrieveStudy(const Endpoint &endpoint, const QString &studyUid
         }
     }
 
-    scu.setStorageMode(DCMSCU_STORAGE_DISK);
-    scu.setStorageDir(destDir.toStdString());
+    scu->setStorageMode(DCMSCU_STORAGE_DISK);
+    scu->setStorageDir(destDir.toStdString());
 
-    if (!openAssociation(scu, endpoint, err)) {
+    if (!openAssociation(*scu, endpoint, err)) {
         return false;
     }
 
@@ -360,7 +433,7 @@ bool PacsClient::retrieveStudy(const Endpoint &endpoint, const QString &studyUid
     query.putAndInsertString(DCM_StudyInstanceUID, studyUid.toUtf8().constData());
 
     OFList<RetrieveResponse *> responses;
-    const OFCondition cond = scu.sendCGETRequest(1, &query, &responses);
+    const OFCondition cond = scu->sendCGETRequest(1, &query, &responses);
 
     // 最终状态要以响应里的失败子操作数为准：cond 只代表「对话本身没崩」，
     // 服务端可能一半成功一半失败。
@@ -370,7 +443,7 @@ bool PacsClient::retrieveStudy(const Endpoint &endpoint, const QString &studyUid
         completed = std::max(completed, static_cast<int>(r->m_numberOfCompletedSubops));
         delete r;
     }
-    scu.closeAssociation(DCMSCU_RELEASE_ASSOCIATION);
+    scu->closeAssociation(DCMSCU_RELEASE_ASSOCIATION);
 
     if (cond.bad()) {
         if (err) *err = QStringLiteral("C-GET 失败：%1").arg(QString::fromStdString(cond.text()));
@@ -405,7 +478,7 @@ bool PacsClient::findStudies(const Endpoint &endpoint, QList<QVariantMap> *studi
 {
     if (!studies) return false;
 
-    DcmSCU scu;
+    std::unique_ptr<DcmSCU> scu = makeScu();
 
     // 呈现上下文必须在 initNetwork 之前注册，否则协商阶段没有任何可选的上下文，
     // initNetwork 直接报 "No Presentation Contexts defined"。
@@ -413,14 +486,14 @@ bool PacsClient::findStudies(const Endpoint &endpoint, QList<QVariantMap> *studi
     OFList<OFString> xferSyntaxes;
     xferSyntaxes.push_back(UID_LittleEndianExplicitTransferSyntax);
     xferSyntaxes.push_back(UID_LittleEndianImplicitTransferSyntax);
-    const OFCondition pc = scu.addPresentationContext(
+    const OFCondition pc = scu->addPresentationContext(
         UID_FINDStudyRootQueryRetrieveInformationModel, xferSyntaxes);
     if (pc.bad()) {
         if (err) *err = QStringLiteral("注册 C-FIND 呈现上下文失败：%1")
                              .arg(QString::fromStdString(pc.text()));
         return false;
     }
-    if (!openAssociation(scu, endpoint, err)) {
+    if (!openAssociation(*scu, endpoint, err)) {
         return false;
     }
 
@@ -433,8 +506,8 @@ bool PacsClient::findStudies(const Endpoint &endpoint, QList<QVariantMap> *studi
     query.putAndInsertString(DCM_PatientID, "");
 
     OFList<QRResponse *> responses;
-    const OFCondition cond = scu.sendFINDRequest(1, &query, &responses);
-    scu.closeAssociation(DCMSCU_RELEASE_ASSOCIATION);
+    const OFCondition cond = scu->sendFINDRequest(1, &query, &responses);
+    scu->closeAssociation(DCMSCU_RELEASE_ASSOCIATION);
 
     if (cond.bad()) {
         if (err) *err = QStringLiteral("C-FIND 失败：%1").arg(QString::fromStdString(cond.text()));

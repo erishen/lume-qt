@@ -88,6 +88,8 @@ qt_add_executable(qt-react-shell
     src/auditsink.h
     src/pacsclient.cpp
     src/pacsclient.h
+    src/pacstls.cpp
+    src/pacstls.h
     src/deviceprovider.h
     src/simulatorprovider.cpp
     src/simulatorprovider.h
@@ -138,6 +140,7 @@ target_link_libraries(qt-react-shell PRIVATE
     Qt6::OpenGLWidgets
     DCMTK::dcmdata
     DCMTK::dcmnet
+    DCMTK::dcmtls
     DCMTK::oflog
 )
 

@@ -4,6 +4,7 @@
 #include "lumesink.h"
 #include "deviceprovider.h"
 #include "dicomreader.h"
+#include "pacstls.h"
 #include "pacsclient.h"
 
 #include <QCoreApplication>
@@ -340,6 +341,13 @@ void Bridge::probePacs(const QString &host, int port, const QString &calledAe, b
             status.insert(QStringLiteral("message"), humanPacsError(err));
             status.insert(QStringLiteral("detail"), err);
             status.insert(QStringLiteral("heartbeat"), heartbeat);
+            // 传输层是否有 TLS 必须让前端看见：现场排障时「连上了但明文」
+            // 和「TLS 验签失败」是两类完全不同的问题。
+            {
+                const qtrs::PacsTlsConfig tls = qtrs::pacsTlsConfigFromEnv();
+                status.insert(QStringLiteral("tls"), tls.enabled);
+                status.insert(QStringLiteral("tlsSummary"), tls.summary());
+            }
             status.insert(QStringLiteral("tsUs"), nowMicros());
             // 心跳不重新枚举，病例数沿用上一次结果，别在看板上闪成 0。
             const QVariant count = m_pacsState.value(QStringLiteral("count"));
@@ -633,6 +641,7 @@ void Bridge::pacsFindStudies(const QString &host, int port, const QString &calle
             meta.insert(QStringLiteral("message"), humanPacsError(err));
             meta.insert(QStringLiteral("detail"), err);
             meta.insert(QStringLiteral("tsUs"), nowMicros());
+            meta.insert(QStringLiteral("tls"), qtrs::pacsTlsConfigFromEnv().enabled);
 
             qInfo().noquote() << QStringLiteral("[PACS] C-FIND 返回 %1 例%2")
                                      .arg(list.size())

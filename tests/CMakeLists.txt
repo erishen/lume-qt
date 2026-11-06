@@ -22,6 +22,7 @@ if (GTest_FOUND)
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/auditsink.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/lumesink.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/pacsclient.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/pacstls.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/auditsink.h
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/deviceprovider.h
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/dicomreader.cpp
@@ -35,6 +36,7 @@ if (GTest_FOUND)
         Qt6::WebChannel
         DCMTK::dcmdata
         DCMTK::dcmnet
+        DCMTK::dcmtls
         DCMTK::oflog
         GTest::gtest
         GTest::gtest_main
