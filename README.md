@@ -1664,6 +1664,11 @@ export QTRS_PACS_TLS_VERIFY=require   # require（默认）/ check / ignore
   原因：macOS 的 `QTabWidget` 在标签右侧会露出一条浅色原生底，和深色工作台割裂；
   自定义页头可把整条 Tab 栏压成 `#0b1017`，选中页用 `#57a6ff` 下划线标识。
 - 快捷键 `Ctrl+1` / `Ctrl+2` 切换（macOS 上 Qt 把 `Ctrl` 映射为 Command，即 ⌘1/⌘2）。
+- **标签接缝**：macOS 原生 `QTabBar` 会在标签之间和最后一个标签右侧露出系统浅色底，
+  只写 QSS `background` 在 `documentMode` 下填不满整个控件。现在用
+  `WA_StyledBackground` + 深色调色板 + `setDrawBase(false)` 压暗，标签
+  `margin-right:-1` 让相邻边框贴合，最后一个标签右侧再让深色 filler 负间距覆盖；
+  3× 放大截图确认标签之间及右侧不再有浅色缝。
 - 当前页写 `QSettings` 的 `ui/mainTab`；重启回到上次停的页。
 - 原生页把 `VolumeView` 放左侧，控制项收进 360px 深色侧栏。窗口 1280 宽时
   体渲染 + 侧栏合为 1180px 一组，左右各留 50px；体渲染仍是 1:1 设备像素，
@@ -1686,6 +1691,7 @@ export QTRS_PACS_TLS_VERIFY=require   # require（默认）/ check / ignore
 | 原生页 | 256³ `brain-t1`：体渲染占左侧，预设/W-L/去骨/切面/图例/状态均在右侧栏可见；底部原生条未被遮挡 |
 | Tab 切换 | 鼠标点击两个标签来回切换正常；切回 Web 后 ECG 重新更新；`ui/mainTab` 跟随 0/1 |
 | 快捷键 | ⌘2 后 `ui/mainTab=1`，⌘1 后回到 0 |
+| Tab 接缝 | 3× 放大截图：两个标签连成一条，标签之间与最后一个标签右侧均无浅色底 |
 | 底部常驻条 | 两个 Tab 下均显示 ECG、SpO₂ 双通道与 HR/SpO₂/NIBP 文本 |
 | `npm run typecheck` / `npm run build` | 通过 |
 | `make cpp` / `ctest --test-dir build --output-on-failure` | 通过 |

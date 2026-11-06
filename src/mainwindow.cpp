@@ -166,21 +166,36 @@ MainWindow::MainWindow(QWidget *parent)
     m_tabs->setDocumentMode(true);
     m_tabs->setUsesScrollButtons(false);
     m_tabs->setElideMode(Qt::ElideNone);
+    // macOS 原生 QTabBar 会在标签之间与右侧露出系统浅色底；只写 QSS background
+    // 在 documentMode 下不会填满整个控件，这里强制走 styled background + 深色调色板。
+    m_tabs->setAttribute(Qt::WA_StyledBackground, true);
+    m_tabs->setAutoFillBackground(true);
+    QPalette tabPalette = m_tabs->palette();
+    tabPalette.setColor(QPalette::Window, QColor(QStringLiteral("#0b1017")));
+    tabPalette.setColor(QPalette::Base, QColor(QStringLiteral("#0b1017")));
+    m_tabs->setPalette(tabPalette);
+    m_tabs->setDrawBase(false);
     m_tabs->setStyleSheet(QStringLiteral(R"(
 QTabBar {
     background: #0b1017;
+    border: 0;
 }
 QTabBar::tab {
     background: #0f151f;
     color: #8b99ad;
     min-width: 80px;
-    padding: 5px 14px;
-    margin-right: 2px;
+    padding: 5px 16px;
+    margin-right: -1px;
     border: 1px solid #222d3c;
     border-bottom: 0;
-    border-top-left-radius: 8px;
-    border-top-right-radius: 8px;
+    border-radius: 0;
     font-size: 12px;
+}
+QTabBar::tab:first {
+    border-top-left-radius: 6px;
+}
+QTabBar::tab:last {
+    border-top-right-radius: 6px;
 }
 QTabBar::tab:selected {
     background: #162132;
@@ -192,6 +207,9 @@ QTabBar::tab:hover:!selected { background: #131b27; color: #dbe6f3; }
 )"));
 
     tabHeaderLayout->addWidget(m_tabs, 0);
+    // QTabBar 在 macOS 原生样式下会在最后一个标签右侧留几像素浅色 base；
+    // 负间距让深色 filler 盖住这条边，标签本身仍是完整尺寸。
+    tabHeaderLayout->setSpacing(-6);
     auto *tabHeaderFiller = new QWidget(tabHeader);
     tabHeaderFiller->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     tabHeaderFiller->setStyleSheet(QStringLiteral("background: #0b1017;"));
