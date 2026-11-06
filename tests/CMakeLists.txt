@@ -23,6 +23,7 @@ if (GTest_FOUND)
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/lumesink.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/pacsclient.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/pacstls.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/volumeprefs.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/auditsink.h
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/deviceprovider.h
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/dicomreader.cpp

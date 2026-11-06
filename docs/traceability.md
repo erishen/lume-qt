@@ -29,7 +29,7 @@
 | QRS-T-012 | 审计台账必须按大小/日期轮转，旧证据不得被覆盖或丢弃 | `src/auditsink.cpp` `tests/bridge_test.cpp` | 单测预置 >1 MB 台账后 `open()`，断言旧文件改名为 `.001`、新文件从空开始且写入计数为 1；跨天切文件逻辑在 `record()` 内 | 已验证 |
 | QRS-T-013 | 连续运行 10 分钟不得出现主进程内存增长、线程漂移或看门狗误报 | `docs/soak-2026-11-06.md` | 每 30 s 采样：主进程 537→554→491 MB、线程 40→34、CPU 稳态 5–6%；10 分钟 0 次红条；渲染进程 RSS 线性增长（26–60 MB/min，JS 堆恒定 31 MB） | 部分验证 |
 | QRS-T-014 | 体数据纹理上传必须分帧，单次占用主线程不得超过一帧预算，且首帧不得变慢 | `src/volumeview.cpp` | 256³ 一次传完单块 18 ms → 分帧 2 块单块最长 9 ms，总耗时 17–18 ms，原生首帧 251 vs 283 ms；`QTRS_VOLUME_UPLOAD_MB=0` 可回旧行为 | 已验证 |
-| QRS-T-015 | 手动调窗后的预设与窗值必须跨重启保留，并能一键回到手动前的预设 | `src/mainwindow.cpp` `src/mainwindow.h` | 预置 `preset=4 / manualW=60 / manualL=30 / clip=轴1@60` 重启：日志 `手动调窗：W60 / L30 a.u.`、`切面：轴1 @ 60%`，偏好未被恢复动作改写；`⌘⇧W` 与物理 `Ctrl+Shift+W` 均触发 `恢复上次预设 2 W38 / L55` 并显示「已恢复上次预设」；env 覆盖时不写偏好；偏好为全局单套，CT/MR 尚未分桶 | 部分验证 |
+| QRS-T-015 | 手动调窗后的预设与窗值必须跨重启保留，并能一键回到手动前的预设 | `src/mainwindow.cpp` `src/mainwindow.h` `src/volumeprefs.h` `src/volumeprefs.cpp` | 预置 `preset=4 / manualW=60 / manualL=30 / clip=轴1@60` 重启：日志 `手动调窗：W60 / L30 a.u.`、`切面：轴1 @ 60%`，偏好未被恢复动作改写；`⌘⇧W` 与物理 `Ctrl+Shift+W` 均触发 `恢复上次预设 2 W38 / L55` 并显示「已恢复上次预设」；env 覆盖时不写偏好；CT/MR 分桶：同文件预置 `ct preset=1/overlay=0`、`mr preset=2/overlay=1/clip=1@60` 并把旧全局键设为第三组，CT 实测 W1500/L300 灰阶、MR 实测 W34/L49 伪彩+冠状面 60%，重启后两组预设均未被改写；单测 3/3 覆盖键名不相撞 | 已验证 |
 | QRS-T-005 | 关键通路的设计必须在「WebView 投递不可靠」这一实测结论上成立 | `src/vitalstrip.cpp` | 原生 P50 0.24ms vs 前端 291–367ms（约 1000 倍量级差） | 已验证 |
 
 > QRS-T-004 标为部分验证：开关确实生效，但挡不住 macOS 窗口非前台时 QWebChannel 批量迟发。
@@ -138,6 +138,7 @@
 | 本批（窗值持久化） | QRS-T-015 |
 | 本批（报警耗时口径） | QRS-N-007 |
 | 本批（前端单测接入） | QRS-F-005 |
+| 本批（窗值按模态分桶） | QRS-T-015 |
 
 统计不手写：`make trace` 每次重新数一遍，缺口或引用失效会直接报错。
 

@@ -32,6 +32,7 @@ class QSlider;
 class QLabel;
 class QWebChannel;
 class QWebEngineProfile;
+class QSettings;
 class VolumeView;
 
 class MainWindow : public QMainWindow
@@ -49,6 +50,12 @@ private:
     void setupNativeStrip();
     /// 报警阈值：env 兜底 → Lume 下发覆盖；每次生效都记一条 alarm.config 台账。
     void applyAlarmConfig();
+    /// 窗值偏好按模态分桶：CT 与 MR/a.u. 不能共用一套 W/L（会把 1500/300 夹成 33/83）。
+    /// 模态未知时退回旧的全局键，避免启动时猜错桶。
+    QString volumeSettingsKey(const QString &leaf) const;
+    QVariant volumeSettingsValue(QSettings &settings, const QString &leaf,
+                                 const QVariant &fallback) const;
+    bool volumeSettingsContains(QSettings &settings, const QString &leaf) const;
     void reloadWebView();
     void installDiagnosticsScript(QWebEngineProfile *profile);
 
@@ -83,4 +90,7 @@ private:
     /// 启动恢复与体数据到达时的「程序性改控件」不能回写偏好，
     /// 否则恢复出来的值会把用户真正的上次选择覆盖掉。
     bool m_restoringSettings = false;
+    /// 当前体数据的模态；已知后才按 ct/mr 分桶读写偏好。
+    bool m_volumeModalityKnown = false;
+    bool m_volumeIsCt = false;
 };

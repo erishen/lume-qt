@@ -103,6 +103,8 @@ qt_add_executable(qt-react-shell
     src/vitalstrip.h
     src/volumeview.cpp
     src/volumeview.h
+    src/volumeprefs.cpp
+    src/volumeprefs.h
     src/volumestats.cpp
     src/volumestats.h
 )

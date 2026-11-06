@@ -1516,8 +1516,14 @@ export QTRS_PACS_TLS_VERIFY=require   # require（默认）/ check / ignore
 读片时病灶可能正好落在窗边界外。这一批把窗位状态做成可持久化、可一键回退：
 
 - **持久化键**（`QSettings`，macOS 落 `~/Library/Preferences/com.research.qt-react-shell.plist`）：
-  `volume/preset`（0–4，4 = 自定义）、`volume/lastPreset`（手动前那一档 0–3）、
-  `volume/manualW` / `volume/manualL`、`volume/overlay`、`volume/bone`、`volume/clipAxis`、`volume/clipPos`。
+  `volume/<ct|mr>/preset`（0–4，4 = 自定义）、`volume/<ct|mr>/lastPreset`（手动前那一档 0–3）、
+  `volume/<ct|mr>/manualW` / `volume/<ct|mr>/manualL`、`overlay`、`bone`、`clipAxis`、`clipPos`。
+- **按模态分桶**：CT 与 MR/a.u. 各存一套。CT 的 `W1500/L300` 切到 MR 会被夹到组织强度范围
+  （实测 `1500/300 → 33/83`），共用一套键就是把 CT 的 HU 窗当成了 MR 的强度窗。
+  键名规则抽在 `src/volumeprefs.{h,cpp}`，由单测保证 `ct` / `mr` 不相撞。
+- **升级兼容**：模态要等 `dicomVolumeReady` 才能确定，启动时仍读写旧的全局键
+  `volume/<leaf>`；某个桶里没有值时回退旧键，用户第一次改动后自然落到新桶。
+  代价是启动到数据到达之间可能先套一次旧值（随后被桶覆盖），不会写错桶。
 - **启动恢复**：预设/伪彩立即恢复；手动窗值要等体数据到达、拿到这批数据的 HU 上下限后再套
   （否则夹取范围不对），去骨/切面同样在数据到达后恢复。
 - **环境变量优先**：`QTRS_VOLUME_PRESET` / `QTRS_VOLUME_COLOR` / `QTRS_VOLUME_BONE` /
@@ -1527,6 +1533,13 @@ export QTRS_PACS_TLS_VERIFY=require   # require（默认）/ check / ignore
   「已恢复上次预设」，日志写 `[Volume] 恢复上次预设 <档位> <W/L>`。
 - **程序性改控件不回写**：启动恢复与体数据到达期间用 `m_restoringSettings` 挡住保存，
   否则「恢复出来的值」会把用户真正的上次选择覆盖掉（实测踩到：`lastPreset=2` 被改写成 1）。
+- **两个实测踩到的坑**（这次分桶验证才暴露）：
+  1. 启动恢复的 `setChecked` 发生在 `toggled` 连接之前，数据到达时状态没变就不会再发信号，
+     结果伪彩勾选框亮着、`VolumeView` 还是灰阶、图例写「伪彩关闭」。现在连接后按控件当前
+     状态显式同步一次。
+  2. 预设程序性写入 spinbox 后，失焦时才发的 `editingFinished` 会把「应用预设」当成
+     「人手调窗」，每次重启都把预设写成「自定义」并存下当时的 W/L（实测 CT 的 `preset=1` 变 `4`）。
+     现在改用同步触发的 `valueChanged`（300 ms 防抖）并以「控件值与当前窗值真的不同」兜底。
 
 本机实测（256³ MR，`QTRS_PACS=127.0.0.1:11113:QTRSQR`）：
 
@@ -1538,9 +1551,16 @@ export QTRS_PACS_TLS_VERIFY=require   # require（默认）/ check / ignore
 | 物理 `Ctrl+Shift+W` | 同上（第二条 `Meta+Shift+W` 快捷键） |
 | env 覆盖（`QTRS_VOLUME_WL=800,150`） | 套用 env 值，但不写用户偏好（`volume/manualW/L` 不变） |
 
-已知边界（诚实标注）：偏好是**全局单套**，不是按模态分开存。CT 存的 W800/L150 切到 MR 时会被
-夹到组织强度范围（实测 `800/150 → 33/83`），不是「记错了」，而是 MR 没有 HU；如果后面要支持
-CT/MR 各自记忆，需要把键按 `ct` / `mr` 分桶并在数据到达后选桶。
+分桶对照实测（同一份偏好文件里同时预置两组，故意把旧的全局键设成第三组值）：
+
+| 数据 | 旧全局键 | 桶 | 结果 |
+| --- | --- | --- | --- |
+| 合成 CT 128³（HU −1000…1200） | `preset=3`、`overlay=1` | `ct: preset=1, overlay=0` | 日志 `偏好分桶 ct：preset=1 last=0`；下拉「骨窗 W1500/L300」、W1500/L300、灰阶、切面完整；旧全局的 `preset=3/overlay=1` 未生效 |
+| MR 256³（a.u. 0…278） | 同上 | `mr: preset=2, overlay=1, clip=轴1@60` | 日志 `偏好分桶 mr：preset=2 last=0`；下拉「中强度窗（血管近似）」、W34/L49、伪彩实际生效、图例为「伪彩叠加」、切面冠状面 60% |
+| 重启后偏好是否被改写 | — | — | 否：`ct.preset=1`、`mr.preset=2`，没有多出 `manualW/manualL` |
+
+已知边界：模态未知的启动阶段（尚无体数据）仍用旧全局键；如果用户在这个窗口里就改了预设，
+这次改动会写到旧键，数据到达后以对应桶为准。
 
 ### 23.13 报警也纳入「单次耗时」口径
 

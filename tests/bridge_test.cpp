@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "../src/pacstls.h"
+#include "../src/volumeprefs.h"
 
 #include <QByteArray>
 #include <QDateTime>
@@ -826,4 +827,31 @@ TEST(PacsTlsConfigTest, UnknownVerifyIsRejected)
         [](const QString &) { return true; });
     EXPECT_FALSE(cfg.usable());
     EXPECT_TRUE(cfg.error.contains(QStringLiteral("ignore/check/require"))) << cfg.error.toStdString();
+}
+
+
+TEST(VolumePreferenceKeyTest, UnknownModalityKeepsLegacyGlobalKey)
+{
+    // 启动时还不知道这批是 CT 还是 MR：写入仍用旧全局键，避免猜错桶。
+    EXPECT_EQ(qtrs::volumePreferenceKey(true, false, QStringLiteral("preset")),
+              QStringLiteral("volume/preset"));
+    EXPECT_EQ(qtrs::volumePreferenceKey(false, false, QStringLiteral("manualW")),
+              QStringLiteral("volume/manualW"));
+}
+
+TEST(VolumePreferenceKeyTest, CtAndMrUseSeparateBuckets)
+{
+    EXPECT_EQ(qtrs::volumePreferenceKey(true, true, QStringLiteral("preset")),
+              QStringLiteral("volume/ct/preset"));
+    EXPECT_EQ(qtrs::volumePreferenceKey(false, true, QStringLiteral("preset")),
+              QStringLiteral("volume/mr/preset"));
+    EXPECT_NE(qtrs::volumePreferenceKey(true, true, QStringLiteral("manualW")),
+              qtrs::volumePreferenceKey(false, true, QStringLiteral("manualW")));
+}
+
+TEST(VolumePreferenceKeyTest, ScopeIsEmptyUntilModalityIsKnown)
+{
+    EXPECT_TRUE(qtrs::volumePreferenceScope(true, false).isEmpty());
+    EXPECT_EQ(qtrs::volumePreferenceScope(true, true), QStringLiteral("ct"));
+    EXPECT_EQ(qtrs::volumePreferenceScope(false, true), QStringLiteral("mr"));
 }

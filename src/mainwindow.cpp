@@ -1,5 +1,7 @@
 #include "mainwindow.h"
 
+#include "volumeprefs.h"
+
 #include <QWebChannel>
 #include <QWebEngineLoadingInfo>
 #include <QWebEnginePage>
@@ -10,6 +12,7 @@
 #include <QCheckBox>
 #include <QPushButton>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QStandardItemModel>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -254,8 +257,8 @@ MainWindow::MainWindow(QWidget *parent)
             m_lastPresetIndex = idx;
             if (qgetenv("QTRS_VOLUME_PRESET").isEmpty()) {
                 QSettings settings;
-                settings.setValue(QStringLiteral("volume/preset"), idx);
-                settings.setValue(QStringLiteral("volume/lastPreset"), idx);
+                settings.setValue(volumeSettingsKey(QStringLiteral("preset")), idx);
+                settings.setValue(volumeSettingsKey(QStringLiteral("lastPreset")), idx);
             }
         }
         m_volumeView->setPreset(idx);
@@ -298,9 +301,18 @@ MainWindow::MainWindow(QWidget *parent)
     }
 
     auto applyManualWindow = [this]() {
-        if (m_syncingWindow || m_volumeView == nullptr) return;
+        // 恢复/预设程序性改窗值时，spinbox 的信号可能落到守卫之外，
+        // 把「应用预设」误判成「人手调窗」，于是每次重启预设都被写成「自定义」。
+        if (m_syncingWindow || m_restoringSettings || m_volumeView == nullptr) return;
         if (m_windowWidthBox == nullptr || m_windowLevelBox == nullptr) return;
-        m_volumeView->setManualWindow(m_windowWidthBox->value(), m_windowLevelBox->value());
+        const double width = m_windowWidthBox->value();
+        const double level = m_windowLevelBox->value();
+        // 控件值与当前窗值仍一致 → 这是同步预设时排队的 editingFinished，不是人手调窗。
+        if (std::abs(m_volumeView->windowWidth() - width) < 0.01
+            && std::abs(m_volumeView->windowLevel() - level) < 0.01) {
+            return;
+        }
+        m_volumeView->setManualWindow(width, level);
     };
     // 「恢复上次预设」= 回到手动调窗之前那一档；没有手动调过时也至少给一次可见的窗值确认。
     auto restoreLastPreset = [this, restoreWindowBtn]() {
@@ -325,12 +337,28 @@ MainWindow::MainWindow(QWidget *parent)
     auto *restoreKeyCtrl = new QShortcut(QKeySequence(QStringLiteral("Meta+Shift+W")), this);
     restoreKeyCtrl->setContext(Qt::ApplicationShortcut);
     connect(restoreKeyCtrl, &QShortcut::activated, this, restoreLastPreset);
-    connect(m_windowWidthBox, &QDoubleSpinBox::editingFinished, this, applyManualWindow);
-    connect(m_windowLevelBox, &QDoubleSpinBox::editingFinished, this, applyManualWindow);
+    // 不用 editingFinished：程序性 setValue 后它会在失焦时才发，守卫早已撤掉，
+    // 于是「应用预设」被当成「人手调窗」写回偏好（实测 preset 被改成 4）。
+    // valueChanged 在 setValue 内同步触发，m_syncingWindow 能挡住；用户输入用 300 ms 防抖。
+    auto *manualApplyTimer = new QTimer(this);
+    manualApplyTimer->setSingleShot(true);
+    manualApplyTimer->setInterval(300);
+    connect(manualApplyTimer, &QTimer::timeout, this, applyManualWindow);
+    auto scheduleManualWindow = [this, manualApplyTimer](double) {
+        if (!m_syncingWindow) manualApplyTimer->start();
+    };
+    connect(m_windowWidthBox, qOverload<double>(&QDoubleSpinBox::valueChanged),
+            this, scheduleManualWindow);
+    connect(m_windowLevelBox, qOverload<double>(&QDoubleSpinBox::valueChanged),
+            this, scheduleManualWindow);
     if (m_volumeView) {
         connect(m_volumeView, &VolumeView::windowChanged, this,
                 [this](double w, double l, bool manual) {
             m_syncingWindow = true;
+            // setValue 在 spinbox 有焦点时会发 editingFinished；屏蔽掉程序性信号，
+            // 否则 applyManualWindow 会把预设窗值当成手动窗写回偏好。
+            QSignalBlocker widthBlocker(m_windowWidthBox);
+            QSignalBlocker levelBlocker(m_windowLevelBox);
             if (m_windowWidthBox) m_windowWidthBox->setValue(w);
             if (m_windowLevelBox) m_windowLevelBox->setValue(l);
             m_syncingWindow = false;
@@ -338,10 +366,10 @@ MainWindow::MainWindow(QWidget *parent)
                 m_volumePreset->setCurrentIndex(4);
                 if (!m_restoringSettings && qgetenv("QTRS_VOLUME_WL").isEmpty()) {
                     QSettings settings;
-                    settings.setValue(QStringLiteral("volume/preset"), 4);
+                    settings.setValue(volumeSettingsKey(QStringLiteral("preset")), 4);
                     if (!m_windowSaveClock.isValid() || m_windowSaveClock.elapsed() > 500) {
-                        settings.setValue(QStringLiteral("volume/manualW"), w);
-                        settings.setValue(QStringLiteral("volume/manualL"), l);
+                        settings.setValue(volumeSettingsKey(QStringLiteral("manualW")), w);
+                        settings.setValue(volumeSettingsKey(QStringLiteral("manualL")), l);
                         m_windowSaveClock.restart();
                     }
                 }
@@ -359,7 +387,7 @@ MainWindow::MainWindow(QWidget *parent)
         if (!m_restoringSettings && m_boneBox && m_boneBox->isEnabled()
             && qgetenv("QTRS_VOLUME_BONE").isEmpty()) {
             QSettings settings;
-            settings.setValue(QStringLiteral("volume/bone"), on);
+            settings.setValue(volumeSettingsKey(QStringLiteral("bone")), on);
         }
     });
     auto applyClip = [this]() {
@@ -369,8 +397,8 @@ MainWindow::MainWindow(QWidget *parent)
         m_volumeView->setClipPlane(axis, static_cast<float>(m_clipSlider->value()) / 100.0f);
         if (!m_restoringSettings && qgetenv("QTRS_VOLUME_CLIP").isEmpty()) {
             QSettings settings;
-            settings.setValue(QStringLiteral("volume/clipAxis"), axis);
-            settings.setValue(QStringLiteral("volume/clipPos"), m_clipSlider->value());
+            settings.setValue(volumeSettingsKey(QStringLiteral("clipAxis")), axis);
+            settings.setValue(volumeSettingsKey(QStringLiteral("clipPos")), m_clipSlider->value());
         }
     };
     connect(m_clipCombo, &QComboBox::currentIndexChanged, this, applyClip);
@@ -381,7 +409,7 @@ MainWindow::MainWindow(QWidget *parent)
         m_volumeView->setColorOverlay(on);
         if (!m_restoringSettings && qgetenv("QTRS_VOLUME_COLOR").isEmpty()) {
             QSettings settings;
-            settings.setValue(QStringLiteral("volume/overlay"), on);
+            settings.setValue(volumeSettingsKey(QStringLiteral("overlay")), on);
         }
         if (m_volumeLegendText) {
             m_volumeLegendText->setText(
@@ -389,6 +417,19 @@ MainWindow::MainWindow(QWidget *parent)
                    : QStringLiteral("灰阶显示 · 亮度 = 窗内位置（伪彩关闭）"));
         }
     });
+    // 启动恢复发生在上面的 connect 之前：setChecked 到数据到达时状态没变，
+    // 不会再发 toggled，结果勾选框亮着、VolumeView 仍是灰阶、图例写「伪彩关闭」。
+    // 这里按控件当前状态显式同步一次，不依赖信号。
+    if (m_volumeView && m_volumeOverlay) {
+        const bool overlayOn = m_volumeOverlay->isChecked();
+        m_volumeView->setColorOverlay(overlayOn);
+        if (m_volumeLegendText) {
+            m_volumeLegendText->setText(
+                overlayOn
+                    ? QStringLiteral("伪彩叠加 · 暖=近/软组织，冷=深/骨·对比剂（仅供定位，非诊断色标）")
+                    : QStringLiteral("灰阶显示 · 亮度 = 窗内位置（伪彩关闭）"));
+        }
+    }
     centerSplit->addWidget(volumePanel);
     centerSplit->setStretchFactor(0, 1);
     centerSplit->setStretchFactor(1, 0);
@@ -452,6 +493,28 @@ void MainWindow::setupWebChannel()
     m_page->setWebChannel(m_channel);
 }
 
+QString MainWindow::volumeSettingsKey(const QString &leaf) const
+{
+    return qtrs::volumePreferenceKey(m_volumeIsCt, m_volumeModalityKnown, leaf);
+}
+
+QVariant MainWindow::volumeSettingsValue(QSettings &settings, const QString &leaf,
+                                         const QVariant &fallback) const
+{
+    if (m_volumeModalityKnown) {
+        const QString key = volumeSettingsKey(leaf);
+        if (settings.contains(key)) return settings.value(key);
+    }
+    // 升级兼容：旧版本只有全局键，第一次进某个桶时仍然认它。
+    return settings.value(QStringLiteral("volume/%1").arg(leaf), fallback);
+}
+
+bool MainWindow::volumeSettingsContains(QSettings &settings, const QString &leaf) const
+{
+    if (m_volumeModalityKnown && settings.contains(volumeSettingsKey(leaf))) return true;
+    return settings.contains(QStringLiteral("volume/%1").arg(leaf));
+}
+
 void MainWindow::setupNativeVolume()
 {
     // QTRS_NATIVE_VOLUME=0 可关掉右侧面板（只保留网页侧体渲染，用于对照）。
@@ -476,6 +539,10 @@ void MainWindow::setupNativeVolume()
         m_volumeView->setVolume(m_bridge->volumeHuBytes(), dim, meta);
         const bool isCt = meta.value(QStringLiteral("modality")).toString().compare(
                               QStringLiteral("CT"), Qt::CaseInsensitive) == 0;
+        // 模态已确定：从这一刻起偏好按 ct/mr 分桶读写。
+        m_volumeIsCt = isCt;
+        m_volumeModalityKnown = true;
+        const QString scope = qtrs::volumePreferenceScope(isCt, true);
         const QString unit = isCt ? QStringLiteral("HU") : QStringLiteral("%1 a.u. (非 HU)")
                                                         .arg(meta.value(QStringLiteral("modality")).toString());
         m_volumeSourceText = QStringLiteral("%1³ · %2 %3…%4 · 来源 %5")
@@ -499,16 +566,42 @@ void MainWindow::setupNativeVolume()
             for (int i = 0; i < labels.size(); ++i) {
                 m_volumePreset->setItemText(i, labels.at(i));
             }
-            if (isCt) {
-                // 切到 CT 后重新应用一次预设（环境变量或用户上次选择），别留存 MR 的自适应档
-                if (const QByteArray p = qgetenv("QTRS_VOLUME_PRESET"); !p.isEmpty()) {
-                    m_volumePreset->setCurrentIndex(p.toInt());
+            // 预设与手动窗按当前模态的桶恢复：CT 存的是 HU 窗，MR 存的是 a.u. 强度档，
+            // 共用一套键会互相夹值（实测 CT 的 W1500/L300 切到 MR 变成 33/83）。
+            if (qgetenv("QTRS_VOLUME_PRESET").isEmpty()) {
+                const int savedPreset = std::clamp(
+                    volumeSettingsValue(settings, QStringLiteral("preset"), 0).toInt(), 0, 4);
+                m_lastPresetIndex = std::clamp(
+                    volumeSettingsValue(settings, QStringLiteral("lastPreset"), 0).toInt(), 0, 3);
+                // 启动时可能按旧全局键挂了一个待恢复手动窗；进桶后必须以桶为准。
+                m_hasPendingManualWindow = false;
+                if (savedPreset == 4 && volumeSettingsContains(settings, QStringLiteral("manualW"))) {
+                    m_pendingWindowWidth = volumeSettingsValue(
+                        settings, QStringLiteral("manualW"), 80.0).toDouble();
+                    m_pendingWindowLevel = volumeSettingsValue(
+                        settings, QStringLiteral("manualL"), 40.0).toDouble();
+                    m_hasPendingManualWindow = true;
                 }
+                m_volumePreset->setCurrentIndex(savedPreset);
+                qInfo().noquote() << QStringLiteral("[Volume] 偏好分桶 %1：preset=%2 last=%3%4")
+                                         .arg(scope)
+                                         .arg(savedPreset)
+                                         .arg(m_lastPresetIndex)
+                                         .arg(m_hasPendingManualWindow
+                                                  ? QStringLiteral(" 手动 W%1 / L%2")
+                                                        .arg(m_pendingWindowWidth, 0, 'f', 0)
+                                                        .arg(m_pendingWindowLevel, 0, 'f', 0)
+                                                  : QString());
+            } else if (const QByteArray p = qgetenv("QTRS_VOLUME_PRESET"); !p.isEmpty()) {
+                m_volumePreset->setCurrentIndex(p.toInt());
             }
             // CT 是诊断数据，默认灰阶；MR/其他本来就不是诊断图像（a.u.），
             // 默认开伪彩只作定位演示，勾选框里仍标「非诊断」。
-            if (m_volumeOverlay && qgetenv("QTRS_VOLUME_COLOR").isEmpty() && !settings.contains(QStringLiteral("volume/overlay"))) {
-                m_volumeOverlay->setChecked(!isCt);
+            if (m_volumeOverlay && qgetenv("QTRS_VOLUME_COLOR").isEmpty()) {
+                const bool hasSaved = volumeSettingsContains(settings, QStringLiteral("overlay"));
+                m_volumeOverlay->setChecked(hasSaved
+                    ? volumeSettingsValue(settings, QStringLiteral("overlay"), !isCt).toBool()
+                    : !isCt);
             }
         }
         if (m_windowWidthBox && m_windowLevelBox) {
@@ -538,14 +631,17 @@ void MainWindow::setupNativeVolume()
             // env 显式给了 0 也算覆盖：关掉，而不是让偏好把它恢复回来。
             m_boneBox->setChecked(bone != "0");
         } else if (isCt && m_boneBox) {
-            m_boneBox->setChecked(settings.value(QStringLiteral("volume/bone"), false).toBool());
+            m_boneBox->setChecked(volumeSettingsValue(
+                settings, QStringLiteral("bone"), false).toBool());
         }
         if (qgetenv("QTRS_VOLUME_CLIP").isEmpty()) {
-            if (settings.contains(QStringLiteral("volume/clipAxis"))) {
+            if (volumeSettingsContains(settings, QStringLiteral("clipAxis"))) {
                 // 先把两个值读出来再改控件：setCurrentIndex 会触发 applyClip 立刻回写，
                 // 同一进程内的 QSettings 写会覆盖读缓存，后读到的就不是用户存的值了。
-                const int axis = std::clamp(settings.value(QStringLiteral("volume/clipAxis"), -1).toInt(), -1, 2);
-                const int pos = std::clamp(settings.value(QStringLiteral("volume/clipPos"), 100).toInt(), 0, 100);
+                const int axis = std::clamp(volumeSettingsValue(
+                    settings, QStringLiteral("clipAxis"), -1).toInt(), -1, 2);
+                const int pos = std::clamp(volumeSettingsValue(
+                    settings, QStringLiteral("clipPos"), 100).toInt(), 0, 100);
                 m_clipCombo->setCurrentIndex(axis + 1);
                 m_clipSlider->setValue(pos);
             }
