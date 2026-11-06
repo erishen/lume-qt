@@ -44,6 +44,13 @@ public:
     void setPreset(int preset);
     /// 手动窗（W/L）：Alt+左键拖动也走这里；单位为 HU（CT）或 a.u.（非 CT）
     void setManualWindow(double width, double level);
+    /// 去骨：把 HU ≥ 300 的体素当透明（仅 CT 有意义；非 CT 由界面禁用）
+    void setBoneRemoval(bool on);
+    /// 切面：axis -1 关闭，0=x 矢状、1=y 冠状、2=z 横断；position 为 0..1
+    void setClipPlane(int axis, float position);
+    bool boneRemoval() const;
+    int clipAxis() const;
+    float clipPosition() const;
     double windowWidth() const;
     double windowLevel() const;
     bool isCtVolume() const;
@@ -129,4 +136,7 @@ private:
     QPoint m_lastPos;
     bool m_dragging = false;
     bool m_windowing = false;
+    bool m_boneRemove = false;
+    int m_clipAxis = -1;
+    float m_clipPos = 1.0f;
 };

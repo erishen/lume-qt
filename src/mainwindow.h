@@ -26,6 +26,7 @@ class NativeVitalStrip;
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
+class QSlider;
 class QLabel;
 class VolumeView;
 
@@ -55,6 +56,9 @@ private:
     QCheckBox *m_volumeOverlay = nullptr;
     QDoubleSpinBox *m_windowWidthBox = nullptr;
     QDoubleSpinBox *m_windowLevelBox = nullptr;
+    QCheckBox *m_boneBox = nullptr;
+    QComboBox *m_clipCombo = nullptr;
+    QSlider *m_clipSlider = nullptr;
     bool m_syncingWindow = false;
     QLabel *m_volumeLegendText = nullptr;
     QString m_volumeSourceText;

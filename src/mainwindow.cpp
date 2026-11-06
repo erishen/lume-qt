@@ -11,6 +11,7 @@
 #include <QStandardItemModel>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QSlider>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QShortcut>
@@ -207,10 +208,30 @@ MainWindow::MainWindow(QWidget *parent)
     windowRow->addWidget(m_windowLevelBox, 1);
     windowRow->addStretch(0);
 
+    // 去骨 + 切面：术中想看清颅内结构，最常用的是「把颅骨拿掉」和「剖开一半」。
+    auto *clipRow = new QHBoxLayout;
+    clipRow->setSpacing(6);
+    m_boneBox = new QCheckBox(QStringLiteral("去骨（CT）"), volumePanel);
+    m_boneBox->setStyleSheet(QStringLiteral("color:#9fb2c9;font-size:11px;"));
+    m_clipCombo = new QComboBox(volumePanel);
+    m_clipCombo->addItems({QStringLiteral("完整"), QStringLiteral("矢状面（左右）"),
+                           QStringLiteral("冠状面（前后）"), QStringLiteral("横断面（上下）")});
+    m_clipCombo->setStyleSheet(QStringLiteral("font-size:11px;"));
+    m_clipSlider = new QSlider(Qt::Horizontal, volumePanel);
+    m_clipSlider->setRange(0, 100);
+    m_clipSlider->setValue(100);
+    m_clipSlider->setFixedWidth(86);
+    m_clipSlider->setEnabled(false);
+    m_clipSlider->setToolTip(QStringLiteral("切面位置：0% 近端 → 100% 远端"));
+    clipRow->addWidget(m_boneBox, 0);
+    clipRow->addWidget(m_clipCombo, 1);
+    clipRow->addWidget(m_clipSlider, 0);
+
     volumeLayout->addWidget(volumeTitle);
     volumeLayout->addWidget(m_volumeView, 1);
     volumeLayout->addLayout(controls);
     volumeLayout->addLayout(windowRow);
+    volumeLayout->addLayout(clipRow);
     volumeLayout->addWidget(volumeLegend);
     volumeLayout->addWidget(m_volumeLegendText);
     volumeLayout->addWidget(m_volumeStatus);
@@ -256,6 +277,18 @@ MainWindow::MainWindow(QWidget *parent)
             }
         });
     }
+
+    connect(m_boneBox, &QCheckBox::toggled, this, [this](bool on) {
+        if (m_volumeView) m_volumeView->setBoneRemoval(on);
+    });
+    auto applyClip = [this]() {
+        if (m_volumeView == nullptr || m_clipCombo == nullptr || m_clipSlider == nullptr) return;
+        const int axis = m_clipCombo->currentIndex() - 1; // 0 = 完整
+        m_clipSlider->setEnabled(axis >= 0);
+        m_volumeView->setClipPlane(axis, static_cast<float>(m_clipSlider->value()) / 100.0f);
+    };
+    connect(m_clipCombo, &QComboBox::currentIndexChanged, this, applyClip);
+    connect(m_clipSlider, &QSlider::valueChanged, this, [applyClip](int) { applyClip(); });
 
     connect(m_volumeOverlay, &QCheckBox::toggled, this, [this](bool on) {
         if (m_volumeView == nullptr) return;
@@ -393,6 +426,25 @@ void MainWindow::setupNativeVolume()
         if (m_volumeStatus) {
             m_volumeStatus->setText(QStringLiteral("%1 · %2")
                                         .arg(m_volumeSourceText, m_volumeView->windowText()));
+        }
+        if (m_boneBox) {
+            // 去骨阈值是按 HU 定的；MR/a.u. 没有这个语义，直接禁用并写明原因，
+            // 而不是让它悄悄按 a.u. 300 去切。
+            m_boneBox->setEnabled(isCt);
+            m_boneBox->setToolTip(isCt ? QString() : QStringLiteral("仅 CT 有 HU 骨阈值"));
+            if (!isCt) m_boneBox->setChecked(false);
+        }
+        // 自动化/标定用：QTRS_VOLUME_BONE=1、QTRS_VOLUME_CLIP=轴,位置(0..1)
+        if (const QByteArray bone = qgetenv("QTRS_VOLUME_BONE"); !bone.isEmpty() && bone != "0") {
+            m_boneBox->setChecked(true);
+        }
+        if (const QByteArray clip = qgetenv("QTRS_VOLUME_CLIP"); !clip.isEmpty()) {
+            const QStringList parts = QString::fromLocal8Bit(clip).split(QLatin1Char(','));
+            if (parts.size() == 2) {
+                const int axis = parts.at(0).toInt();
+                m_clipCombo->setCurrentIndex(std::clamp(axis, 0, 2) + 1);
+                m_clipSlider->setValue(std::clamp(static_cast<int>(parts.at(1).toDouble() * 100.0), 0, 100));
+            }
         }
         // 自动化/标定用：QTRS_VOLUME_WL=窗宽,窗位
         if (const QByteArray wl = qgetenv("QTRS_VOLUME_WL"); !wl.isEmpty()) {

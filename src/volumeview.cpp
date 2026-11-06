@@ -42,6 +42,10 @@ uniform vec2 uWindow;    // x = 窗位(HU), y = 窗宽(HU)
 uniform int uColorMode;  // 0 = 灰阶（诊断惯例）, 1 = 伪彩叠加（非诊断）
 uniform int uSteps;
 uniform float uTexDim;
+uniform int uClipAxis;   // -1 关闭；0=x 矢状、1=y 冠状、2=z 横断
+uniform float uClipPos;  // 0..1（纹理坐标）
+uniform int uBoneRemove; // 1 = 去掉骨（HU ≥ uBoneHu）
+uniform float uBoneHu;
 
 const vec3 kBoxMin = vec3(-0.5);
 const vec3 kBoxMax = vec3(0.5);
@@ -86,7 +90,24 @@ void main()
     for (int i = 0; i < uSteps; ++i) {
         vec3 q = p + 0.5;
         if (all(greaterThanEqual(q, vec3(0.0))) && all(lessThanEqual(q, vec3(1.0)))) {
-            float v = clamp((sampleHu(q) - uWindow.x) / uWindow.y + 0.5, 0.0, 1.0);
+            // 切面：视线可能从高坐标往低走，不能一遇到就 break，否则整条光线被误杀。
+            if (uClipAxis >= 0) {
+                float c = uClipAxis == 0 ? q.x : (uClipAxis == 1 ? q.y : q.z);
+                if (c > uClipPos) {
+                    vPrev = -1.0;
+                    p += rd * dt;
+                    continue;
+                }
+            }
+            float huHere = sampleHu(q);
+            if (uBoneRemove == 1 && huHere >= uBoneHu) {
+                // 去骨：骨体素直接透明。vPrev 置 -1，避免跨越插值把「骨前面」和
+                // 「骨后面」的组织连成一张假面。
+                vPrev = -1.0;
+                p += rd * dt;
+                continue;
+            }
+            float v = clamp((huHere - uWindow.x) / uWindow.y + 0.5, 0.0, 1.0);
             if (v > 0.5) {
                 // 在跨越点做线性插值：不插值的话，等值面会落在采样格上，
                 // 曲面（尤其颅骨这种大曲率薄壳）会出现一圈圈台阶纹。
@@ -325,6 +346,38 @@ bool VolumeView::isCtVolume() const
     return m_isCt;
 }
 
+void VolumeView::setBoneRemoval(bool on)
+{
+    m_boneRemove = on;
+    qInfo().noquote() << "[Volume] 去骨：" << (on ? "开（HU≥300 透明）" : "关");
+    if (m_hasData) renderFrame();
+}
+
+void VolumeView::setClipPlane(int axis, float position)
+{
+    m_clipAxis = (axis >= 0 && axis <= 2) ? axis : -1;
+    m_clipPos = std::clamp(position, 0.0f, 1.0f);
+    qInfo().noquote() << "[Volume] 切面：" << (m_clipAxis < 0 ? "关闭" : QStringLiteral("轴%1 @ %2%")
+                                                                .arg(m_clipAxis)
+                                                                .arg(static_cast<int>(m_clipPos * 100.0f)));
+    if (m_hasData) renderFrame();
+}
+
+bool VolumeView::boneRemoval() const
+{
+    return m_boneRemove;
+}
+
+int VolumeView::clipAxis() const
+{
+    return m_clipAxis;
+}
+
+float VolumeView::clipPosition() const
+{
+    return m_clipPos;
+}
+
 void VolumeView::setColorOverlay(bool on)
 {
     m_colorOverlay = on;
@@ -519,6 +572,10 @@ void VolumeView::renderFrame()
     // 分辨率翻倍后继续堆步数只会拖慢帧，对清晰度没有帮助。
     m_program.setUniformValue("uSteps", 160);
     m_program.setUniformValue("uTexDim", static_cast<float>(m_texDim));
+    m_program.setUniformValue("uClipAxis", m_clipAxis);
+    m_program.setUniformValue("uClipPos", m_clipPos);
+    m_program.setUniformValue("uBoneRemove", m_boneRemove ? 1 : 0);
+    m_program.setUniformValue("uBoneHu", 300.0f);
 
     m_gl->glActiveTexture(GL_TEXTURE0);
     m_gl->glBindTexture(GL_TEXTURE_3D, m_texture);
