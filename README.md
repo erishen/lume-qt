@@ -1096,35 +1096,34 @@ TEST_F(BridgeTest, PlatformInfo) {
 
 ### 前端单元测试
 
-> **状态：规划中，尚未接入。** 当前 `frontend/package.json` 未包含 `test` 脚本，也未引入 `jest` / `react-testing-library` 依赖，因此 `npm test` 与 `make frontend-tests` 均不会实际运行前端单测（`make frontend-tests` 会明确提示跳过而非静默失败）。以下为预期设计，待后续补齐依赖与测试用例。
+**已接入（Vitest 2，node 环境，不需要 jsdom）。** `frontend/package.json` 有 `test` 脚本，
+`make frontend-tests` 不再走「跳过」分支，而是真的跑用例：
 
-计划使用 **Jest + React Testing Library** 进行前端组件测试：
-
-- **测试范围**：MedicalMonitor 组件、数据流处理、用户交互
-- **测试目标**：`npm test` → 运行所有前端单元测试
-- **测试框架**：支持组件测试、数据断言和用户事件模拟
-
-#### 预期示例测试
-
-```typescript
-test('renders vitals data', () => {
-    render(<MedicalMonitor bridge={mockBridge} />);
-    expect(screen.getByText('心率')).toBeInTheDocument();
-});
-
-test('handles ecg updates', () => {
-    render(<MedicalMonitor bridge={mockBridge} />);
-    act(() => mockBridge.ecgSample.emit(0.5));
-    expect(screen.getByText('0.5')).toBeInTheDocument();
-});
+```bash
+cd frontend && npm test          # vitest run
+# 或
+make frontend-tests              # 与 C++ 测试一起：make test-all
 ```
 
-### CI
+当前覆盖的是延迟看板的纯逻辑（`src/latency.test.ts`，5 条）：
+
+- 空快照里 `alarm` 行存在但 `samples=0`（界面据此不显示该行）
+- 报警的 `recordSpan('alarm','receipt'|'painted')` 两个值都落到同一条样本上
+- `channelHealth()` 不包含报警：没有报警不是「中断」，也不拉低 `n/6` 的分母
+- 负数 / `NaN` 耗时被丢弃，不污染 P50/P99
+- 持续通道仍按 100 ms 预算判慢，报警的 200 ms 预算不会串到 ECG
+
+还没做的是 **React 组件测试**（挂载 `MedicalMonitor`、模拟 `QWebChannel` 信号、断言界面
+文案）。那需要 `jsdom` + `@testing-library/react`，等组件边界稳定后再补；现在不引入，
+避免为了「有组件测试」而把大量时间花在 mock 整个桥接层上。
+
+### CI### CI
 
 **不接入 CI。** 这个项目的质量门就是本地两条命令：
 
 ```bash
 make run-tests                      # C++ 单测（Google Test，经 ctest）
+make frontend-tests                 # 前端单测（Vitest）
 cd frontend && npm run typecheck    # 前端类型检查
 ```
 
@@ -1156,7 +1155,7 @@ make trace
 
 ### 测试质量保证
 
-- **自动化测试**：本地 `make run-tests`（C++ Google Test）为质量门；本项目不接入 CI（见上节）
+- **自动化测试**：本地 `make test-all`（C++ Google Test + 前端 Vitest）为质量门；本项目不接入 CI（见上节）
 - **追溯矩阵**：`make trace` 校验 `docs/traceability.md` 的结构与引用，缺口不会被悄悄改成「已验证」
 - **质量门**：主目标与 `bridge_test` 共用同一套 `-Wall -Wextra -Werror -Wconversion` 编译选项，测试代码不比产品代码宽松；测试失败即以非零码退出
 - **测试数据**：为每个测试提供可重现的数据
