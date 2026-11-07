@@ -301,6 +301,7 @@ bridge.dataFromCpp.connect((payload) => {
 
 ## 文档索引
 
+- [docs/demo-handoff.md](docs/demo-handoff.md)：演示版交付说明、启动方式、最终验证与已知边界
 - [docs/architecture.md](docs/architecture.md)：系统架构、线程模型、原生/Web 分页、DICOM/PACS 与审计-Lume 链路
 - [docs/implementation-notes.md](docs/implementation-notes.md)：从本 README 拆出的逐条实现与验证记录（时间戳/延迟、原生波形条、PACS、去骨、Tabs、Lume AI 等）
 - [docs/privacy-compliance.md](docs/privacy-compliance.md)：数据清单、出站路径、已实施控制、残余风险与上线前检查表

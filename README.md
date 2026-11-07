@@ -364,6 +364,7 @@ The project deliberately has **no CI pipeline**. Qt WebEngine + DCMTK make CI im
 
 | Document | Contents |
 |---|---|
+| [`docs/demo-handoff.md`](docs/demo-handoff.md) | Demo handoff: scope, startup, final verification, known boundaries (Chinese) |
 | [`docs/architecture.md`](docs/architecture.md) | System architecture, module boundaries, threading, native/Web split, DICOM/PACS and audit flows (Chinese) |
 | [`docs/implementation-notes.md`](docs/implementation-notes.md) | Chronological implementation and verification notes split out of the Chinese README (Chinese) |
 | [`docs/privacy-compliance.md`](docs/privacy-compliance.md) | Data inventory, outbound path, implemented controls, residual risks, pre-deployment checklist |
