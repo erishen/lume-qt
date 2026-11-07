@@ -11,14 +11,14 @@ LOG="${TMP}/lume-test.log"
 SESSION="test-post-$$"
 
 cleanup() {
-  local pid child
-  pid="$(lsof -nP -tiTCP:"${PORT}" -sTCP:LISTEN 2>/dev/null | head -n 1 || true)"
-  if [ -n "${pid}" ]; then
+  local pids pid child
+  pids="$(lsof -nP -tiTCP:"${PORT}" -sTCP:LISTEN 2>/dev/null || true)"
+  for pid in ${pids}; do
     while IFS= read -r child; do
       [ -n "${child}" ] && kill -9 "${child}" 2>/dev/null || true
     done < <(pgrep -P "${pid}" 2>/dev/null || true)
     kill -9 "${pid}" 2>/dev/null || true
-  fi
+  done
   if [ "${LUME_TEST_KEEP:-0}" = "1" ]; then
     echo "==> [lume-test] 保留临时目录：${TMP}" >&2
   else

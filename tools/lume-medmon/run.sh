@@ -17,8 +17,12 @@ PIDFILE="${LUME_PIDFILE:-${ROOT}/.data/lume.pid}"
 
 mkdir -p "${ROOT}/.data"
 
+listener_pids() {
+  lsof -nP -tiTCP:"${PORT}" -sTCP:LISTEN 2>/dev/null || true
+}
+
 listener_pid() {
-  lsof -nP -tiTCP:"${PORT}" -sTCP:LISTEN 2>/dev/null | head -n 1 || true
+  listener_pids | head -n 1 || true
 }
 
 is_lume_pid() {
@@ -31,22 +35,28 @@ health() {
 }
 
 stop() {
-  local pid child
-  pid="$(listener_pid)"
-  if [ -z "${pid}" ]; then
+  local pids pid child
+  pids="$(listener_pids)"
+  if [ -z "${pids}" ]; then
     echo "==> [lume] ${PORT} 端口空闲"
     return 0
   fi
-  if ! is_lume_pid "${pid}"; then
-    echo "==> [lume] ${PORT} 被非 Lume 进程占用（pid=${pid}），拒绝误杀" >&2
-    return 1
-  fi
-  echo "==> [lume] 停止 pid=${pid}（端口 ${PORT}）"
-  # 先收子进程，再收监听进程；只杀 Lume 进程树，不动别的实例。
-  while IFS= read -r child; do
-    [ -n "${child}" ] && kill -9 "${child}" 2>/dev/null || true
-  done < <(pgrep -P "${pid}" 2>/dev/null || true)
-  kill -9 "${pid}" 2>/dev/null || true
+  # 先确认所有监听 PID 都属于 app.lume，避免误杀别的服务。
+  for pid in ${pids}; do
+    if ! is_lume_pid "${pid}"; then
+      echo "==> [lume] ${PORT} 被非 Lume 进程占用（pid=${pid}），拒绝误杀" >&2
+      return 1
+    fi
+  done
+  echo "==> [lume] 停止 pid=$(echo ${pids})（端口 ${PORT}）"
+  # Lume 会 fork 多个 worker；lsof 返回的监听 PID 可能不止一个，必须全部收掉，
+  # 只杀首个会留下 worker 继续占端口。
+  for pid in ${pids}; do
+    while IFS= read -r child; do
+      [ -n "${child}" ] && kill -9 "${child}" 2>/dev/null || true
+    done < <(pgrep -P "${pid}" 2>/dev/null || true)
+    kill -9 "${pid}" 2>/dev/null || true
+  done
   rm -f "${PIDFILE}"
   for _ in $(seq 1 25); do
     [ -z "$(listener_pid)" ] && return 0
