@@ -50,6 +50,8 @@ private:
     void setupNativeVolume();
     void setupConsoleBridge();
     void setupNativeStrip();
+    /// 把顶层 Tab 可见性下发给 Web 页，暂停/恢复 React 的持续绘制与数据订阅。
+    void setWebTabActive(bool active);
     /// 报警阈值：env 兜底 → Lume 下发覆盖；每次生效都记一条 alarm.config 台账。
     void applyAlarmConfig();
     /// 窗值偏好按模态分桶：CT 与 MR/a.u. 不能共用一套 W/L（会把 1500/300 夹成 33/83）。
@@ -62,6 +64,9 @@ private:
     void installDiagnosticsScript(QWebEngineProfile *profile);
 
     QWebEngineView *m_view = nullptr;
+    /// 页面脚本就绪前不要向 QWebChannel 送实时信号：否则启动期样本会在
+    /// 传输层排队，页面加载完一次补送，直接把 p99 顶到几十秒。
+    bool m_webReady = false;
     QWebEngineProfile *m_profile = nullptr;
     QWebEnginePage *m_page = nullptr;
     QWebChannel *m_channel = nullptr;

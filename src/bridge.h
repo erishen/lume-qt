@@ -91,6 +91,11 @@ public:
     Q_INVOKABLE void startMedicalSimulation();
     Q_INVOKABLE void stopMedicalSimulation();
 
+    /// Web 页不在前台时停止向 QWebChannel 发射实时信号：只靠前端回调里 return
+    /// 挡不住传输层，隐藏期间的消息会在 QWebChannel 里排队，切回后成批补送。
+    /// 原生条走 DeviceProvider 直连，不受这里影响。
+    void setWebSignalsEnabled(bool enabled);
+
     // ---- 神经内科介入模拟控制 ----
     Q_INVOKABLE void startNeurologySimulation();
     Q_INVOKABLE void stopNeurologySimulation();
@@ -133,6 +138,8 @@ public:
     /// 台账本体：MainWindow 把原生条的事件也写到同一份文件
     class AuditSink *auditSink() const { return m_audit; }
     class LumeSink *lumeSink() const { return m_lume; }
+    /// 原生条直连数据源，绕过 QWebChannel；Web 页隐藏时仍可刷新原生页。
+    class DeviceProvider *provider() const { return m_provider; }
 
     // ---- Lume AI 复盘（只读，不阻塞 UI）----
     /// Lume 是否已启用（启动时设置了 QTRS_LUME_URL）；前端据此决定按钮可用性。
@@ -208,6 +215,8 @@ private:
     static double nowMicros();
 
     int m_callCount = 0;
+    /// Web 页可见时向 QWebChannel 发射实时信号；隐藏时停发，避免传输层排队。
+    bool m_webSignalsEnabled = true;
 
     /// 设备接入层：模拟器只是其中一种实现，换真实设备时替换这里即可。
     /// Bridge 只负责把它发出的信号原样转发给 QWebChannel，不参与采样与合成。

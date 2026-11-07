@@ -12,6 +12,7 @@
 #include <QOpenGLContext>
 #include <QOpenGLVersionFunctionsFactory>
 #include <QPainter>
+#include <QShowEvent>
 #include <QSurfaceFormat>
 #include <QTimer>
 #include <QWheelEvent>
@@ -671,6 +672,14 @@ void VolumeView::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
     if (m_hasData) m_needsRender = true;
+}
+
+void VolumeView::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+    // 从隐藏页切回时，QStackedWidget 的布局可能刚完成；这里标脏，下一次 33ms
+    // 定时器按最终尺寸绘制。替代旧版“固定等 1.5 秒再补一帧”的猜测。
+    requestRender();
 }
 
 void VolumeView::mousePressEvent(QMouseEvent *event)

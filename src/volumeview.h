@@ -13,6 +13,7 @@
 class QLabel;
 class QOffscreenSurface;
 class QOpenGLContext;
+class QShowEvent;
 class QTimer;
 
 /**
@@ -77,6 +78,7 @@ signals:
 protected:
     void paintEvent(QPaintEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
+    void showEvent(QShowEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;

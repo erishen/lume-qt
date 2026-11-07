@@ -4,7 +4,9 @@ import Neuro3D from './Neuro3D'
 import Volume3D from './Volume3D'
 import { createSyntheticBrain } from './syntheticVolume'
 import { createFrameLimiter, observeInViewport } from './framePacing'
+import { webTabActive } from './activity'
 import {
+  batchStats,
   channelHealth,
   clockStatus,
   frameStats,
@@ -12,6 +14,7 @@ import {
   recordPainted,
   recordReceipt,
   recordSpan,
+  resetLatency,
   setClockSource,
   snapshot,
   type ChannelHealth,
@@ -47,8 +50,19 @@ export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
   const lastEcgTs = useRef<number | undefined>(undefined)
 
   useEffect(() => {
+    // 切回 Web 页时重置延迟基线：隐藏期间的消息即使有少量残留，
+    // 也不能把隐藏时长当成链路延迟。
+    const onActive = (event: Event) => {
+      if ((event as CustomEvent<boolean>).detail) resetLatency()
+    }
+    window.addEventListener('lume-qt-active', onActive)
+    return () => window.removeEventListener('lume-qt-active', onActive)
+  }, [])
+
+  useEffect(() => {
     // 订阅实时数据（Qt 桥接或纯浏览器演示）
     const onEcg = (value: number, tsUs?: number) => {
+      if (!webTabActive()) return
       recordReceipt('ecg', tsUs)
       lastEcgTs.current = tsUs
       const buf = ecgBuf.current
@@ -56,7 +70,11 @@ export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
       if (buf.length > ECG_BUFFER) buf.splice(0, buf.length - ECG_BUFFER)
       ecgDirty.current = true
     }
-    const onVitals = (v: Vitals) => { recordReceipt('vitals', v.tsUs); setVitals(v) }
+    const onVitals = (v: Vitals) => {
+      if (!webTabActive()) return
+      recordReceipt('vitals', v.tsUs)
+      setVitals(v)
+    }
 
     // 纯浏览器演示：无 Qt 桥接时用 JS 模拟同源数据（与 C++ 侧一致）
     let ecgTimer: number | undefined
@@ -69,6 +87,7 @@ export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
     } else {
       let phase = 0
       ecgTimer = window.setInterval(() => {
+        if (!webTabActive()) return
         phase += 0.048
         if (phase >= 1) phase -= 1
         onEcg(synthesizeEcgJs(phase))
@@ -76,6 +95,7 @@ export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
 
       let hr = 72, spo2 = 98, rr = 16, sys = 118, dia = 76, temp = 36.6
       vitalsTimer = window.setInterval(() => {
+        if (!webTabActive()) return
         hr = clamp(hr + (Math.random() * 6 - 3) * 0.2, 58, 102)
         spo2 = clamp(spo2 + (Math.random() * 4 - 2) * 0.1, 93, 100)
         rr = clamp(rr + (Math.random() * 4 - 2) * 0.1, 12, 24)
@@ -122,7 +142,7 @@ export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
       const rawMs = t - lastT
       const dt = Math.min(rawMs, 100) / 1000
       lastT = t
-      if (!inView || document.hidden) return
+      if (!inView || document.hidden || !webTabActive()) return
       // 只统计真正可见的帧：掉帧（rAF 间隔超 33ms）意味着画面在等帧，不是算得慢
       recordFrame(rawMs)
       if (ecgDirty.current && ecgLimiter(t)) {
@@ -229,11 +249,25 @@ function NeurologyPanel({ bridge }: { bridge: Bridge | null }) {
       if (buf.length > NEURO_BUFFER) buf.splice(0, buf.length - NEURO_BUFFER)
       waveDirty.current = true
     }
-    const onEeg = (v: number, tsUs?: number) => { recordReceipt('eeg', tsUs); push(eegBuf.current, v) }
-    const onEmg = (v: number, tsUs?: number) => { recordReceipt('emg', tsUs); push(emgBuf.current, v) }
-    const onNeural = (v: number, tsUs?: number) => { recordReceipt('neural', tsUs); push(neuralBuf.current, v) }
-    const onIv = (iv: Intervention) =>
+    const onEeg = (v: number, tsUs?: number) => {
+      if (!webTabActive()) return
+      recordReceipt('eeg', tsUs)
+      push(eegBuf.current, v)
+    }
+    const onEmg = (v: number, tsUs?: number) => {
+      if (!webTabActive()) return
+      recordReceipt('emg', tsUs)
+      push(emgBuf.current, v)
+    }
+    const onNeural = (v: number, tsUs?: number) => {
+      if (!webTabActive()) return
+      recordReceipt('neural', tsUs)
+      push(neuralBuf.current, v)
+    }
+    const onIv = (iv: Intervention) => {
+      if (!webTabActive()) return
       setInterventions((prev) => [...prev, iv].slice(-8))
+    }
 
     // 纯浏览器演示：JS 模拟同源数据
     let eegTimer: number | undefined
@@ -258,20 +292,24 @@ function NeurologyPanel({ bridge }: { bridge: Bridge | null }) {
       let emgBurst = 0
       let neuralEnv = 0
       eegTimer = window.setInterval(() => {
+        if (!webTabActive()) return
         phase += 0.5
         onEeg(synthesizeEegJs(phase))
       }, eegMs)
       emgTimer = window.setInterval(() => {
+        if (!webTabActive()) return
         emgBurst = Math.max(0, Math.min(1, emgBurst + (Math.random() - 0.5) * 0.24))
         if (Math.random() < 0.04) emgBurst = 1
         onEmg(0.5 + (emgBurst * (Math.random() - 0.5) * 1.2))
       }, emgMs)
       neuralTimer = window.setInterval(() => {
+        if (!webTabActive()) return
         neuralEnv = Math.max(0, Math.min(1, neuralEnv + (Math.random() - 0.5) * 0.16))
         if (Math.random() < 0.02) neuralEnv = 1
         onNeural(0.15 * Math.sin(phase * 0.7) + (Math.random() - 0.5) * 0.1 + neuralEnv * (Math.random() - 0.2) * 0.8)
       }, neuralMs)
       ivTimer = window.setInterval(() => {
+        if (!webTabActive()) return
         const labels = ['TMS', 'DBS', 'ECT', 'NF']
         const label = labels[Math.floor(Math.random() * labels.length)]
         onIv({
@@ -312,7 +350,7 @@ function NeurologyPanel({ bridge }: { bridge: Bridge | null }) {
     const waveLimiter = createFrameLimiter(15)
     const draw = (t: number) => {
       raf = requestAnimationFrame(draw)
-      if (!inView || document.hidden || !waveDirty.current || !waveLimiter(t)) return
+      if (!inView || document.hidden || !webTabActive() || !waveDirty.current || !waveLimiter(t)) return
       waveDirty.current = false
       drawWave(eegRef.current, eegBuf.current, '#5ee7df', -2, 2)
       drawWave(emgRef.current, emgBuf.current, '#ff8a65', 0, 1)
@@ -504,6 +542,8 @@ function WatchdogStrip({ hasBridge, bridge }: { hasBridge: boolean; bridge: Brid
 
   useEffect(() => {
     const update = () => {
+      // 原生页在前台时 Web 页不可见：不刷新看板、不把“没有新样本”误记成中断。
+      if (!webTabActive()) return
       const h = channelHealth()
       setTick({ health: h, frame: frameStats() })
       // 状态变化时落一条日志：术中告警必须可回溯，不能只闪一下
@@ -514,6 +554,17 @@ function WatchdogStrip({ hasBridge, bridge }: { hasBridge: boolean; bridge: Brid
       const sig = badNow.map((c) => `${c.channel}:${c.state}`).join(',')
       if (sig !== lastBad.current) {
         lastBad.current = sig
+        // 批次证据：QWebChannel 可能把多个样本合并投递，单看年龄会把批量排队
+        // 误判成链路慢；这里同时记录“每批样本数 / 批间隔”，供台账事后对照。
+        const batchSamples = badNow
+          .map((c) => {
+            const b = batchStats(c.channel)
+            return `${c.channel}:${Math.round(b.samplesP50)}/${b.maxSamples}`
+          })
+          .join(',')
+        const batchGapMs = badNow.length > 0
+          ? Math.round(Math.max(...badNow.map((c) => batchStats(c.channel).gapP50)))
+          : 0
         // 状态变化落结构化台账：WebView 侧与原生条是两个独立判定来源，
         // source 字段让事后复核能分清是谁报的。console 只留给人看。
         bridge?.logAuditEvent({
@@ -522,10 +573,15 @@ function WatchdogStrip({ hasBridge, bridge }: { hasBridge: boolean; bridge: Brid
           states: badNow.map((c) => `${c.channel}:${c.state}`).join(','),
           ageMs: badNow.length > 0 ? Math.round(Math.max(...badNow.map((c) => c.ageMs))) : 0,
           p50Ms: badNow.length > 0 ? Math.round(Math.max(...badNow.map((c) => c.receiptP50))) : 0,
+          batchSamples,
+          batchGapMs,
         })
         if (badNow.length > 0) {
           console.warn('[Watchdog] ' + badNow
-            .map((c) => `${c.channel}=${c.state}(age=${Math.round(c.ageMs)}ms, p50=${c.receiptP50.toFixed(1)}ms, p99=${c.receiptP99.toFixed(0)}ms)`)
+            .map((c) => {
+              const b = batchStats(c.channel)
+              return `${c.channel}=${c.state}(age=${Math.round(c.ageMs)}ms, p50=${c.receiptP50.toFixed(1)}ms, p99=${c.receiptP99.toFixed(0)}ms, batch=${Math.round(b.samplesP50)}/${b.maxSamples}, gap=${Math.round(b.gapP50)}ms)`
+            })
             .join(' '))
         } else {
           console.log('[Watchdog] 信号恢复正常')
@@ -744,6 +800,7 @@ function LatencyBoard({ hasBridge, bridge }: { hasBridge: boolean; bridge: Bridg
 
   useEffect(() => {
     const tick = () => {
+      if (!webTabActive()) return
       setRows(snapshot())
       setClock(clockStatus())
     }

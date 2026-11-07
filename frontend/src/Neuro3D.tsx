@@ -3,6 +3,7 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { Bridge, Intervention } from './qwebchannel'
 import { observeInViewport } from './framePacing'
+import { webTabActive } from './activity'
 
 /**
  * Neuro3D — 三维神经脉络 + 实时神经介入手术可视化（Three.js / WebGL）。
@@ -544,7 +545,7 @@ export default function Neuro3D({ bridge }: { bridge: Bridge | null }) {
 
     const animate = () => {
       raf = requestAnimationFrame(animate)
-      if (!inView || document.hidden) return
+      if (!inView || document.hidden || !webTabActive()) return
       timer.update()
       const dt = Math.min(timer.getDelta(), 0.1)
       const now = performance.now()

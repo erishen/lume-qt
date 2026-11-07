@@ -60,4 +60,41 @@ describe('latency 看板的事件型通道', () => {
     expect(ecg?.state).toBe('slow')
     expect(ecg?.receiptP50).toBeCloseTo(350, 5)
   })
+
+  it('同一任务内的多次到达合并为一批，并记录批间隔', async () => {
+    const l = await fresh()
+    const ts = l.nowMicros()
+
+    l.recordReceipt('ecg', ts - 1000)
+    l.recordReceipt('ecg', ts - 1000)
+    await Promise.resolve()
+
+    const first = l.batchStats('ecg')
+    expect(first.batches).toBe(1)
+    expect(first.samplesP50).toBe(2)
+    expect(first.maxSamples).toBe(2)
+    expect(first.gapP50).toBe(0)
+
+    l.recordReceipt('ecg', ts - 1000)
+    await Promise.resolve()
+
+    const second = l.batchStats('ecg')
+    expect(second.batches).toBe(2)
+    expect(second.maxSamples).toBe(2)
+    expect(second.gapP50).toBeGreaterThan(0)
+  })
+
+  it('切回 Web 页时重置基线，隐藏期样本不进入 p50', async () => {
+    const l = await fresh()
+    const ts = l.nowMicros()
+
+    l.recordReceipt('ecg', ts - 5000)
+    await Promise.resolve()
+    expect(l.channelHealth().find((h) => h.channel === 'ecg')?.receiptP50).toBeGreaterThan(4900)
+
+    l.resetLatency()
+    const ecg = l.channelHealth().find((h) => h.channel === 'ecg')
+    expect(ecg?.receiptP50).toBe(0)
+    expect(ecg?.state).toBe('ok')
+  })
 })

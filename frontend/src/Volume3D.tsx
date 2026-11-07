@@ -3,6 +3,7 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { DicomVolumeMeta } from './qwebchannel'
 import { createFrameLimiter, observeInViewport } from './framePacing'
+import { webTabActive } from './activity'
 import { recordPainted } from './latency'
 
 /**
@@ -191,7 +192,7 @@ export default function Volume3D({ volume }: { volume: VolumeInput | null }) {
     const stopObserve = observeInViewport(mount, (v) => { inView = v })
     const animate = (t: number) => {
       raf = requestAnimationFrame(animate)
-      if (!inView || document.hidden) return
+      if (!inView || document.hidden || !webTabActive()) return
       if (!limiter(t)) return
       controls.update()
       // ray-marching 的射线原点必须跟随真实相机：OrbitControls（含

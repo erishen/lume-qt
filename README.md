@@ -350,7 +350,6 @@ The project deliberately has **no CI pipeline**. Qt WebEngine + DCMTK make CI im
 ## Known limitations
 
 - Not a medical device and not clinically validated.
-- Native first-frame sizing can occasionally start smaller than the settled layout on some startup paths; re-entering the native tab or resetting the camera restores it. This is a visual issue, not a data issue.
 - React component tests are not implemented yet; the existing frontend tests cover pure helpers.
 - Bone removal is threshold-only; clip planes are visual cuts, not closed surfaces.
 - C-MOVE receiver is plaintext; TLS is limited to SCU paths.

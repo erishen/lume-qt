@@ -112,23 +112,29 @@ Bridge::Bridge(QObject *parent)
         auto *cSpo2 = new int(0);
         connect(provider, &DeviceProvider::ecgSample, this, [this, div, cEcg](double v, double ts) {
             if (div > 1 && (++*cEcg % div) != 0) return;
-            emit ecgSample(v, ts);
+            if (m_webSignalsEnabled) emit ecgSample(v, ts);
         });
         connect(provider, &DeviceProvider::eegSample, this, [this, div, cEeg](double v, double ts) {
             if (div > 1 && (++*cEeg % div) != 0) return;
-            emit eegSample(v, ts);
+            if (m_webSignalsEnabled) emit eegSample(v, ts);
         });
         connect(provider, &DeviceProvider::emgSample, this, [this, div, cEmg](double v, double ts) {
             if (div > 1 && (++*cEmg % div) != 0) return;
-            emit emgSample(v, ts);
+            if (m_webSignalsEnabled) emit emgSample(v, ts);
         });
         connect(provider, &DeviceProvider::spo2Sample, this, [this, div, cSpo2](double v, double ts) {
             if (div > 1 && (++*cSpo2 % div) != 0) return;
-            emit spo2Sample(v, ts);
+            if (m_webSignalsEnabled) emit spo2Sample(v, ts);
         });
-        connect(provider, &DeviceProvider::vitalsReady, this, &Bridge::vitalsReady);
-        connect(provider, &DeviceProvider::neuralSpike, this, &Bridge::neuralSpike);
-        connect(provider, &DeviceProvider::interventionReady, this, &Bridge::interventionReady);
+        connect(provider, &DeviceProvider::vitalsReady, this, [this](const QVariantMap &v) {
+            if (m_webSignalsEnabled) emit vitalsReady(v);
+        });
+        connect(provider, &DeviceProvider::neuralSpike, this, [this](double v, double ts) {
+            if (m_webSignalsEnabled) emit neuralSpike(v, ts);
+        });
+        connect(provider, &DeviceProvider::interventionReady, this, [this](const QVariantMap &v) {
+            if (m_webSignalsEnabled) emit interventionReady(v);
+        });
     }
 
     // 调试入口：QTRS_VOLUME_DIR=<dir> 启动后加载指定 DICOM 序列（验证窗预设用）。
@@ -1158,6 +1164,11 @@ QString Bridge::showMessage(const QString &message)
 int Bridge::add(int a, int b)
 {
     return a + b;
+}
+
+void Bridge::setWebSignalsEnabled(bool enabled)
+{
+    m_webSignalsEnabled = enabled;
 }
 
 void Bridge::setDataFromCpp(const QVariant &data)

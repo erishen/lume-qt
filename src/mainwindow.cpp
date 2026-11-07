@@ -35,6 +35,7 @@
 #include "appschemehandler.h"
 #include "auditsink.h"
 #include "bridge.h"
+#include "deviceprovider.h"
 #include "lumesink.h"
 #include "consolepage.h"
 #include "vitalstrip.h"
@@ -588,9 +589,11 @@ QSlider::handle:horizontal {
             m_pages->setCurrentIndex(savedTab);
         }
     }
+    setWebTabActive(m_pages->currentIndex() == 0);
     connect(m_tabs, &QTabBar::currentChanged, this, [this](int idx) {
         if (idx < 0) return;
         m_pages->setCurrentIndex(idx);
+        setWebTabActive(idx == 0);
         if (idx == 1 && m_volumeView != nullptr) m_volumeView->requestRender();
         QSettings settings;
         settings.setValue(QStringLiteral("ui/mainTab"), idx);
@@ -607,10 +610,6 @@ QSlider::handle:horizontal {
     centralLayout->addWidget(m_pages, 1);
 
     setCentralWidget(central);
-    // 原生页在启动时可能还没拿到最终尺寸，先画出的帧会偏小；布局稳定后再补一帧。
-    QTimer::singleShot(1500, this, [this]() {
-        if (m_volumeView != nullptr) m_volumeView->requestRender();
-    });
 
 
     // 注意顺序：必须先 setPage（替换默认 page），再 setWebChannel，
@@ -648,7 +647,11 @@ QSlider::handle:horizontal {
             return;
         }
         qInfo().noquote() << "[WebEngine] 前端已加载：" << url.toString();
+        m_webReady = true;
+        // 页面刚加载完时可能正停在原生 Tab：补发一次可见性，避免隐藏的 Web 页继续跑。
+        setWebTabActive(m_tabs != nullptr && m_tabs->currentIndex() == 0);
     });
+    m_webReady = false;
     m_url = url;
     m_view->load(url);
 }
@@ -662,6 +665,24 @@ void MainWindow::setupWebChannel()
     m_channel = new QWebChannel(this);
     m_channel->registerObject(QStringLiteral("bridge"), m_bridge);
     m_page->setWebChannel(m_channel);
+}
+
+void MainWindow::setWebTabActive(bool active)
+{
+    if (m_view == nullptr || m_view->page() == nullptr) return;
+    // 页面尚未 loadFinished 时一律停发：此时 WebChannel 还没有接收端，
+    // 发出去的样本会排队到页面就绪后再补送，制造假 p99。
+    if (m_bridge != nullptr) m_bridge->setWebSignalsEnabled(active && m_webReady);
+    const QString value = active ? QStringLiteral("true") : QStringLiteral("false");
+    // Qt WebEngine 不会因为 QStackedWidget 隐藏页面就停掉 React 的定时器/绘制；
+    // 这里下发一个显式标志 + 事件，前端据此暂停持续工作，切回时再恢复。
+    const QString script = QStringLiteral("window.__lumeQtActive = ")
+        + value
+        + QStringLiteral("; window.dispatchEvent(new CustomEvent('lume-qt-active', {detail: ")
+        + value
+        + QStringLiteral("}));");
+    m_view->page()->runJavaScript(script);
+    qInfo().noquote() << "[Tab] Web 页可见性：" << (active ? "active" : "paused");
 }
 
 QString MainWindow::volumeSettingsKey(const QString &leaf) const
@@ -924,12 +945,26 @@ void MainWindow::applyAlarmConfig()
 
 void MainWindow::setupNativeStrip()
 {
-    // 关键波形直连 Bridge 信号：不经过 QWebChannel，因此这里同时也是
+    // 关键波形直连 DeviceProvider：不经过 QWebChannel，因此这里同时也是
     // 「原生通道 vs WebView 通道」延迟对照的基准。
-    connect(m_bridge, &Bridge::ecgSample, m_strip, &NativeVitalStrip::pushEcgSample);
-    // SpO₂ 波形只走原生：WebView 侧不订阅这条通道，关键通路的显示与判定不依赖 IPC
-    connect(m_bridge, &Bridge::spo2Sample, m_strip, &NativeVitalStrip::pushSpo2Sample);
-    connect(m_bridge, &Bridge::vitalsReady, m_strip, &NativeVitalStrip::setVitals);
+    // 原生页不在前台时暂停接收：隐藏页面仍接信号会持续 update()/报警判定，
+    // 既浪费渲染进程，也会让“隐藏 Tab 是否真的让路”无法验证。
+    auto *provider = m_bridge->provider();
+    if (provider != nullptr) {
+        connect(provider, &DeviceProvider::ecgSample, this, [this](double value, double tsUs) {
+            if (m_pages != nullptr && m_pages->currentIndex() == 1)
+                m_strip->pushEcgSample(value, tsUs);
+        });
+        // SpO₂ 波形只走原生：WebView 侧不订阅这条通道，关键通路的显示与判定不依赖 IPC
+        connect(provider, &DeviceProvider::spo2Sample, this, [this](double value, double tsUs) {
+            if (m_pages != nullptr && m_pages->currentIndex() == 1)
+                m_strip->pushSpo2Sample(value, tsUs);
+        });
+        connect(provider, &DeviceProvider::vitalsReady, this, [this](const QVariantMap &vitals) {
+            if (m_pages != nullptr && m_pages->currentIndex() == 1)
+                m_strip->setVitals(vitals);
+        });
+    }
 
     // 原生条的中断/恢复/报警事件写进同一份台账：这些判定发生在原生侧，
     // 与前端看门狗是两个独立来源，事后复核需要能区分是谁报的（source 字段）。
@@ -1027,6 +1062,8 @@ void MainWindow::reloadWebView()
     // 要真正回收，只能换成独立 profile + 新 page：Chromium 会为它起一个新的渲染进程，
     // 旧进程随旧 page/profile 销毁。波形在原生条上，期间不中断。
     qInfo().noquote() << "[WebEngine] 重建渲染进程（内存兜底）";
+    m_webReady = false;
+    if (m_bridge != nullptr) m_bridge->setWebSignalsEnabled(false);
     auto *oldPage = m_page;
     auto *oldProfile = m_profile;
     auto *oldChannel = m_channel;

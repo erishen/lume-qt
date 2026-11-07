@@ -138,6 +138,19 @@ interface Series {
   painted: number[]
 }
 
+/**
+ * 到达批次统计：同一个 JS 任务里收到的多次 recordReceipt 视为一批。
+ * QWebChannel 在渲染进程忙碌时可能把多个信号合并投递，单看「年龄」会把
+ * 批量排队误判成链路慢；批次样本数与批间隔是区分两者的关键证据。
+ */
+interface BatchSeries {
+  samples: number[]
+  gaps: number[]
+  lastBatchStartUs: number
+}
+
+const BATCH_CAPACITY = 120
+
 const lastReceiptUs: Record<Channel, number> = {
   ecg: 0,
   eeg: 0,
@@ -158,9 +171,60 @@ const series: Record<Channel, Series> = {
   alarm: { receipt: [], painted: [] },
 }
 
+const batchSeries: Record<Channel, BatchSeries> = {
+  ecg: { samples: [], gaps: [], lastBatchStartUs: 0 },
+  eeg: { samples: [], gaps: [], lastBatchStartUs: 0 },
+  emg: { samples: [], gaps: [], lastBatchStartUs: 0 },
+  neural: { samples: [], gaps: [], lastBatchStartUs: 0 },
+  vitals: { samples: [], gaps: [], lastBatchStartUs: 0 },
+  volume: { samples: [], gaps: [], lastBatchStartUs: 0 },
+  alarm: { samples: [], gaps: [], lastBatchStartUs: 0 },
+}
+
+let pendingBatch: { startUs: number; counts: Partial<Record<Channel, number>> } | null = null
+
+function flushBatch() {
+  const batch = pendingBatch
+  pendingBatch = null
+  if (!batch) return
+
+  for (const channel of Object.keys(batch.counts) as Channel[]) {
+    const count = batch.counts[channel] ?? 0
+    if (count <= 0) continue
+    const seriesForChannel = batchSeries[channel]
+    push(seriesForChannel.samples, count, BATCH_CAPACITY)
+    if (seriesForChannel.lastBatchStartUs > 0) {
+      push(
+        seriesForChannel.gaps,
+        (batch.startUs - seriesForChannel.lastBatchStartUs) / 1000,
+        BATCH_CAPACITY,
+      )
+    }
+    seriesForChannel.lastBatchStartUs = batch.startUs
+  }
+}
+
 function push(ring: number[], value: number, capacity = CAPACITY) {
   ring.push(value)
   if (ring.length > capacity) ring.splice(0, ring.length - capacity)
+}
+
+/**
+ * 切回 Web 页时清空统计：隐藏期间即使传输层仍有少量排队样本，也不能把
+ * “隐藏时长”当成链路延迟。清空后从当前样本重新建立基线，避免假 stale/slow。
+ */
+export function resetLatency() {
+  pendingBatch = null
+  const now = nowMicros()
+  for (const channel of Object.keys(series) as Channel[]) {
+    series[channel].receipt.length = 0
+    series[channel].painted.length = 0
+    const batches = batchSeries[channel]
+    batches.samples.length = 0
+    batches.gaps.length = 0
+    batches.lastBatchStartUs = 0
+    lastReceiptUs[channel] = now
+  }
 }
 
 /** 记录一次「采集 → 到达 JS」的年龄；tsUs 缺失时忽略（纯浏览器演示无桥接） */
@@ -169,6 +233,14 @@ export function recordReceipt(channel: Channel, tsUs: number | undefined) {
   const now = nowMicros()
   lastReceiptUs[channel] = now
   push(series[channel].receipt, residualUs(channel, now - tsUs))
+
+  // 用微任务作为批次边界：同一任务内到达的样本合并计数，任务结束后落一批。
+  if (pendingBatch === null) {
+    pendingBatch = { startUs: now, counts: {} }
+    queueMicrotask(flushBatch)
+  }
+  const counts = pendingBatch.counts
+  counts[channel] = (counts[channel] ?? 0) + 1
 }
 
 /**
@@ -195,6 +267,18 @@ export interface ChannelLatency {
   paintedP50: number
   paintedP99: number
   samples: number
+}
+
+/** 批次到达统计：用于区分真实链路慢与 QWebChannel 批量投递。 */
+export interface BatchStats {
+  /** 单批样本数的中位数/99 分位/最大值 */
+  samplesP50: number
+  samplesP99: number
+  maxSamples: number
+  /** 相邻批次起点间隔（ms）；样本连续到达时接近采样周期 */
+  gapP50: number
+  gapP99: number
+  batches: number
 }
 
 function pct(sorted: number[], q: number): number {
@@ -229,6 +313,21 @@ export function snapshot(): ChannelLatency[] {
       samples: Math.max(r.n, p.n),
     }
   })
+}
+
+/** 读取某通道的批次到达统计；给看门狗日志/审计补充“是不是成串到达”的证据。 */
+export function batchStats(channel: Channel): BatchStats {
+  const s = batchSeries[channel]
+  const samples = summarize(s.samples)
+  const gaps = summarize(s.gaps)
+  return {
+    samplesP50: samples.p50,
+    samplesP99: samples.p99,
+    maxSamples: samples.max,
+    gapP50: gaps.p50,
+    gapP99: gaps.p99,
+    batches: samples.n,
+  }
 }
 
 /**
