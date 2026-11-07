@@ -88,11 +88,28 @@ describe('latency 看板的事件型通道', () => {
     const l = await fresh()
     const ts = l.nowMicros()
 
-    l.recordReceipt('ecg', ts - 5000)
+    l.recordReceipt('ecg', ts - 5_000_000)
     await Promise.resolve()
     expect(l.channelHealth().find((h) => h.channel === 'ecg')?.receiptP50).toBeGreaterThan(4900)
 
     l.resetLatency()
+    const ecg = l.channelHealth().find((h) => h.channel === 'ecg')
+    expect(ecg?.receiptP50).toBe(0)
+    expect(ecg?.state).toBe('ok')
+  })
+
+  it('窗口不在前台时暂停测量，恢复后丢弃隐藏期积压，不把节流当慢', async () => {
+    const l = await fresh()
+    l.setMeasurementActive(false)
+    expect(l.channelHealth().find((h) => h.channel === 'ecg')?.state).toBe('paused')
+
+    const ts = l.nowMicros()
+    l.recordReceipt('ecg', ts - 6_000_000)
+    expect(l.snapshot().find((r) => r.channel === 'ecg')?.samples).toBe(0)
+
+    l.setMeasurementActive(true)
+    l.recordReceipt('ecg', ts - 5_000_000)
+    await Promise.resolve()
     const ecg = l.channelHealth().find((h) => h.channel === 'ecg')
     expect(ecg?.receiptP50).toBe(0)
     expect(ecg?.state).toBe('ok')

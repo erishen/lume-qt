@@ -376,8 +376,11 @@ bridge.dataFromCpp.connect((payload) => {
 | volume | 30s（一次性加载） |
 
 - 「中断」= 距最近一次收到样本超过阈值 → 红条 + 闪烁点 + `（画面为冻结帧）`；
-- 「延迟超预算」= 最近 30 个样本的**到达中位数** > 100ms（用中位数而不是 P99：一次卡顿不该
-  把状态钉在告警里，那是历史噪声不是当前链路状态）；
+- 「延迟超预算」= 最近 30 个样本的**到达中位数** > 100ms（`recordReceipt` 已把 C++ 的
+  微秒戳差值换算成毫秒；此前 p50 显示 160–400 的「慢」是 µs 被当成 ms 的单位错位，
+  实际只有 0.16–0.40ms。用中位数而不是 P99：一次卡顿不该把状态钉在告警里）；
+- 窗口不在前台 / WebView 不可见时，看门狗显示「测量暂停」并停止判慢/中断：Chromium 的
+  后台节流会把到达年龄放大到秒级，回到前台后自动重置基线并丢弃隐藏期积压样本；
 - 从未收到判 `pending`，不计入告警（启动本来就该等）；
 - 状态变化落 `[Watchdog] ...`（`console.warn`）/ `[Watchdog] 信号恢复正常`（`console.log`），
   告警可回溯；「慢」连续 2 次采样才上报，避免抖动刷日志。
@@ -1111,13 +1114,16 @@ cd frontend && npm test          # vitest run
 make frontend-tests              # 与 C++ 测试一起：make test-all
 ```
 
-当前覆盖的是延迟看板的纯逻辑（`src/latency.test.ts`，5 条）：
+当前覆盖的是延迟看板的纯逻辑（`src/latency.test.ts`，8 条）：
 
 - 空快照里 `alarm` 行存在但 `samples=0`（界面据此不显示该行）
 - 报警的 `recordSpan('alarm','receipt'|'painted')` 两个值都落到同一条样本上
 - `channelHealth()` 不包含报警：没有报警不是「中断」，也不拉低 `n/6` 的分母
 - 负数 / `NaN` 耗时被丢弃，不污染 P50/P99
 - 持续通道仍按 100 ms 预算判慢，报警的 200 ms 预算不会串到 ECG
+- 同一任务内的多次到达合并为一批，并记录批间隔
+- 切回 Web 页时重置基线，隐藏期样本不进入 P50
+- 窗口不在前台时状态为 `paused`，恢复后丢弃隐藏期积压，不把节流当慢
 
 还没做的是 **React 组件测试**（挂载 `MedicalMonitor`、模拟 `QWebChannel` 信号、断言界面
 文案）。那需要 `jsdom` + `@testing-library/react`，等组件边界稳定后再补；现在不引入，

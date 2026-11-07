@@ -15,6 +15,7 @@ import {
   recordReceipt,
   recordSpan,
   resetLatency,
+  setMeasurementActive,
   setClockSource,
   snapshot,
   type ChannelHealth,
@@ -57,6 +58,23 @@ export default function MedicalMonitor({ bridge }: { bridge: Bridge | null }) {
     }
     window.addEventListener('lume-qt-active', onActive)
     return () => window.removeEventListener('lume-qt-active', onActive)
+  }, [])
+
+  useEffect(() => {
+    // 测量闸门：窗口未前台/页面不可见时 Chromium 会节流，到达年龄会涨到
+    // 几百毫秒甚至秒级；这不是链路性能。暂停采样并在看门狗里显式标注。
+    const sync = () => {
+      setMeasurementActive(document.visibilityState === 'visible' && document.hasFocus())
+    }
+    sync()
+    window.addEventListener('focus', sync)
+    window.addEventListener('blur', sync)
+    document.addEventListener('visibilitychange', sync)
+    return () => {
+      window.removeEventListener('focus', sync)
+      window.removeEventListener('blur', sync)
+      document.removeEventListener('visibilitychange', sync)
+    }
   }, [])
 
   useEffect(() => {
@@ -596,11 +614,24 @@ function WatchdogStrip({ hasBridge, bridge }: { hasBridge: boolean; bridge: Brid
   if (!hasBridge || !tick) return null
 
   const bad = tick.health.filter((c) => c.state === 'stale' || c.state === 'slow')
+  const paused = tick.health.filter((c) => c.state === 'paused')
 
   const okCount = tick.health.filter((c) => c.state === 'ok').length
   const stale = bad.filter((c) => c.state === 'stale')
   const slow = bad.filter((c) => c.state === 'slow')
   const frame = tick.frame
+
+  if (paused.length > 0) {
+    return (
+      <div className="watchdog watchdog-paused">
+        <span className="watchdog-dot" />
+        <span>
+          测量暂停 · 窗口未前台 / WebView 不可见（Chromium 节流）。
+          回到前台后自动重置基线，后台读数不计入延迟告警。
+        </span>
+      </div>
+    )
+  }
 
   if (bad.length === 0) {
     return (

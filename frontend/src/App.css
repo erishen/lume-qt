@@ -781,6 +781,11 @@ button:disabled {
   color: #ffc9c9;
   font-weight: 600;
 }
+.watchdog-paused {
+  background: rgba(148, 163, 184, 0.08);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  color: #c3ccd8;
+}
 .watchdog-dot {
   width: 8px;
   height: 8px;
@@ -788,6 +793,7 @@ button:disabled {
   flex: 0 0 auto;
 }
 .watchdog-ok .watchdog-dot { background: #34d399; }
+.watchdog-paused .watchdog-dot { background: #94a3b8; }
 .watchdog-bad .watchdog-dot {
   background: #f87171;
   animation: wd-blink 1s steps(2, end) infinite;

@@ -13,8 +13,8 @@
 
 export type Channel = 'ecg' | 'eeg' | 'emg' | 'neural' | 'vitals' | 'volume' | 'alarm'
 
-/** 通道健康状态：正常 / 延迟超预算 / 已中断（画面是冻结帧） */
-export type SignalState = 'ok' | 'slow' | 'stale' | 'pending'
+/** 通道健康状态：正常 / 延迟超预算 / 已中断（画面是冻结帧）/ 测量暂停 */
+export type SignalState = 'ok' | 'slow' | 'stale' | 'pending' | 'paused'
 
 export interface ChannelHealth {
   channel: Channel
@@ -183,6 +183,21 @@ const batchSeries: Record<Channel, BatchSeries> = {
 
 let pendingBatch: { startUs: number; counts: Partial<Record<Channel, number>> } | null = null
 
+/**
+ * 测量闸门：窗口不在前台或页面不可见时，Chromium 会节流渲染/定时器，
+ * 到达年龄会涨到几百毫秒甚至秒级（README 已记录该陷阱）。此时不采样、
+ * 看门狗也不判慢/中断，只显示「测量暂停」；回到前台时重置基线。
+ */
+let measurementActive = true
+/** 恢复前台后丢弃隐藏期积压样本的截止时刻（epoch 微秒） */
+let freshSinceUs = 0
+
+export function setMeasurementActive(active: boolean) {
+  if (active === measurementActive) return
+  measurementActive = active
+  if (active) resetLatency()
+}
+
 function flushBatch() {
   const batch = pendingBatch
   pendingBatch = null
@@ -216,6 +231,9 @@ function push(ring: number[], value: number, capacity = CAPACITY) {
 export function resetLatency() {
   pendingBatch = null
   const now = nowMicros()
+  // 只丢隐藏期积压（>500ms）的旧样本；保留 ±500ms 内因传输基线/时钟微差
+  // 到达的样本，避免把正常回调也误杀。
+  freshSinceUs = now - 500_000
   for (const channel of Object.keys(series) as Channel[]) {
     series[channel].receipt.length = 0
     series[channel].painted.length = 0
@@ -230,9 +248,17 @@ export function resetLatency() {
 /** 记录一次「采集 → 到达 JS」的年龄；tsUs 缺失时忽略（纯浏览器演示无桥接） */
 export function recordReceipt(channel: Channel, tsUs: number | undefined) {
   if (typeof tsUs !== 'number' || !Number.isFinite(tsUs) || tsUs <= 0) return
+  if (!measurementActive) return
   const now = nowMicros()
+  // 恢复前台时丢弃隐藏期积压：这些样本的年龄是「隐藏时长」，不是链路延迟。
+  if (freshSinceUs > 0 && tsUs < freshSinceUs) {
+    lastReceiptUs[channel] = now
+    return
+  }
   lastReceiptUs[channel] = now
-  push(series[channel].receipt, residualUs(channel, now - tsUs))
+  // residualUs 返回微秒；看板/阈值统一用毫秒，必须在这里换算，否则 0.3ms
+  // 会被当成 300ms 判慢（历史上 p50 160–400 的“慢”就是单位错位）。
+  push(series[channel].receipt, residualUs(channel, now - tsUs) / 1000)
 
   // 用微任务作为批次边界：同一任务内到达的样本合并计数，任务结束后落一批。
   if (pendingBatch === null) {
@@ -257,7 +283,10 @@ export function recordSpan(channel: Channel, phase: 'receipt' | 'painted', ms: n
 /** 记录一次「采集 → 本帧绘制」的年龄；在真正 draw 的那一帧调用 */
 export function recordPainted(channel: Channel, tsUs: number | undefined) {
   if (typeof tsUs !== 'number' || !Number.isFinite(tsUs) || tsUs <= 0) return
-  push(series[channel].painted, residualUs(channel, nowMicros() - tsUs))
+  if (!measurementActive) return
+  const now = nowMicros()
+  if (freshSinceUs > 0 && tsUs < freshSinceUs) return
+  push(series[channel].painted, residualUs(channel, now - tsUs) / 1000)
 }
 
 export interface ChannelLatency {
@@ -348,7 +377,10 @@ export function channelHealth(): ChannelHealth[] {
       const staleAfterMs = STALE_AFTER_MS[channel]
       const budgetMs = SLOW_BUDGET_BY_CHANNEL[channel] ?? SLOW_BUDGET_MS
       let state: SignalState = 'pending'
-      if (last > 0) {
+      if (!measurementActive) {
+        // 窗口不在前台/页面不可见：Chromium 节流会让读数失真，直接标「测量暂停」。
+        state = 'paused'
+      } else if (last > 0) {
         // 体积没有「持续更新」语义：一次加载完成后停在原地是正常的，
         // 用年龄判 stale 会每隔 30 s 就报一次假中断。
         if (channel !== 'volume' && ageMs > staleAfterMs) state = 'stale'
