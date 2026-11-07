@@ -27,7 +27,8 @@ CMAKE      ?= cmake
 GENERATOR  ?= Ninja
 
 .PHONY: all run frontend cpp configure setup deps clean rebuild dev dev-hot dev-rebuild dev-wait dev-stop dev-stale \
-        run-tests bridge_test frontend-tests perf-bench test-all trace help
+        run-tests bridge_test frontend-tests perf-bench test-all trace help \
+        lume-start lume-stop lume-status lume-watch lume-test
 
 # ctest 可执行文件（与 cmake 同目录）
 CTEST ?= ctest
@@ -204,6 +205,26 @@ frontend-tests: deps
 			echo "  [跳过] 前端单测未实现：package.json 暂无 test 脚本 / Jest 依赖。"; \
 			echo "  参见 README “测试基础设施” 中的规划说明。"; \
 		fi
+
+## 启动 Lume medmon，并用写链路探针确认可用（不负责长期监督）
+lume-start:
+	@$(ROOT)/tools/lume-medmon/run.sh start
+
+## 停止 Lume medmon（只杀占用端口的 Lume 进程）
+lume-stop:
+	@$(ROOT)/tools/lume-medmon/run.sh stop
+
+## 查看 Lume medmon 状态（写探针 200 才算正常）
+lume-status:
+	@$(ROOT)/tools/lume-medmon/run.sh status
+
+## 前台运行 Lume supervisor：写探针连续失败两次自动重启
+lume-watch:
+	@$(ROOT)/tools/lume-medmon/run.sh watch
+
+## 真实 POST 集成测试（临时端口 + 临时库，不碰正式数据）
+lume-test:
+	@$(ROOT)/tools/lume-medmon/test-post.sh
 
 ## 运行性能基准（CMake 目标 perf-benchmark）
 perf-bench: cpp

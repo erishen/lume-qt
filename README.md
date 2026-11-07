@@ -290,13 +290,15 @@ Reference Lume service:
 ```bash
 cd tools/lume-medmon
 test -f .env || cp .env.example .env   # fill in local model settings; never commit .env
-~/.local/bin/lume app.lume # serves http://127.0.0.1:8090
+./run.sh start             # start + write probe; unhealthy instance is restarted
+./run.sh watch             # foreground supervisor: restart after 2 failed probes
 ```
 
 Useful endpoints:
 
 ```text
 GET  /health
+GET  /api/medmon/health     # write-path probe: zero-row DELETE, real SQLite write txn
 GET  /api/agent/ready
 POST /api/medmon/audit
 GET  /api/medmon/config

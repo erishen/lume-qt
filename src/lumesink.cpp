@@ -127,6 +127,19 @@ QJsonObject LumeSink::sanitizedForLume(const QJsonObject &event)
     return sanitizeObject(event);
 }
 
+int LumeSink::backoffDelayMs(int baseMs, int failedCount)
+{
+    if (baseMs <= 0)
+        baseMs = 1000;
+    int delay = baseMs;
+    for (int i = 1; i < failedCount; ++i) {
+        if (delay >= 60000)
+            return 60000;
+        delay = qMin(delay * 2, 60000);
+    }
+    return delay;
+}
+
 void LumeSink::fetchConfig(std::function<void(const QJsonObject &)> callback)
 {
     if (!m_enabled || !m_nam || !m_base.isValid() || !callback)
@@ -171,6 +184,10 @@ void LumeSink::flush()
 {
     if (!m_enabled || m_busy || !m_nam || m_queue.isEmpty())
         return;
+    // 失败后的退避窗口内不抢跑：新事件 post() 会触发 flush，但不能绕过
+    // 已排好的重试定时器，否则退避形同虚设。
+    if (QDateTime::currentMSecsSinceEpoch() < m_nextAttemptAtMs)
+        return;
 
     QJsonArray batch;
     const int take = static_cast<int>(qMin<qsizetype>(m_queue.size(), m_batchMax));
@@ -193,17 +210,25 @@ void LumeSink::flush()
         m_busy = false;
         if (reply->error() == QNetworkReply::NoError) {
             const int n = static_cast<int>(batch.size());
+            const bool recovered = m_failed > 0;
             if (m_sent == 0)
                 qInfo().noquote() << "[Lume] 首次上行成功，共" << n << "条";
+            else if (recovered)
+                qInfo().noquote() << "[Lume] 上行恢复，本次补发" << n << "条";
+            m_failed = 0;
+            m_nextAttemptAtMs = 0;
             m_sent += n;
             flush();
             return;
         }
         ++m_failed;
+        const int delayMs = backoffDelayMs(m_retryBaseMs, m_failed);
+        m_nextAttemptAtMs = QDateTime::currentMSecsSinceEpoch() + delayMs;
         if (m_failed == 1 || m_failed % 20 == 0) {
             qWarning().noquote() << "[Lume] 上行失败（第" << m_failed << "次）："
                                  << reply->errorString() << "，"
-                                 << static_cast<int>(m_queue.size() + batch.size()) << "条待重试";
+                                 << static_cast<int>(m_queue.size() + batch.size()) << "条待重试，"
+                                 << (delayMs / 1000) << "s 后重试";
         }
         // 失败批次放回队首重试；超过上限则丢弃最旧的，保证不无界增长。
         const int last = static_cast<int>(batch.size()) - 1;
@@ -214,7 +239,7 @@ void LumeSink::flush()
             }
             m_queue.prepend(batch.at(i));
         }
-        QTimer::singleShot(m_retryMs, this, &LumeSink::flush);
+        QTimer::singleShot(delayMs, this, &LumeSink::flush);
     });
 }
 

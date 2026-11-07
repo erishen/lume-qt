@@ -700,6 +700,21 @@ TEST(LumeSinkTest, DisabledWithoutUrlAndNormalizesEndpoint)
 }
 
 /**
+ * 上行失败不能每 5s 重放一次：网络/服务长时间不可用时，固定频率只会把
+ * 日志和队列一起打爆。退避从 5s 起翻倍，封顶 60s；成功后才复位。
+ */
+TEST(LumeSinkTest, ExponentialBackoffCapsAt60s)
+{
+    EXPECT_EQ(LumeSink::backoffDelayMs(5000, 1), 5000);
+    EXPECT_EQ(LumeSink::backoffDelayMs(5000, 2), 10000);
+    EXPECT_EQ(LumeSink::backoffDelayMs(5000, 3), 20000);
+    EXPECT_EQ(LumeSink::backoffDelayMs(5000, 4), 40000);
+    EXPECT_EQ(LumeSink::backoffDelayMs(5000, 5), 60000);
+    EXPECT_EQ(LumeSink::backoffDelayMs(5000, 20), 60000);
+    EXPECT_EQ(LumeSink::backoffDelayMs(0, 1), 1000);
+}
+
+/**
  * PACS 端点解析：接入现场是靠一行环境变量配置的，解析错了就等于连错机器。
  * 这里只钉纯逻辑（不发网络），网络行为靠本地 dcmqrscp 手工验证。
  */

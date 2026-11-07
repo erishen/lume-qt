@@ -39,6 +39,10 @@ public:
     /// 纯函数，供 post() 与单测使用；不修改入参。
     static QJsonObject sanitizedForLume(const QJsonObject &event);
 
+    /// 失败重试的指数退避间隔（毫秒）。第 1 次失败用 base，之后翻倍，封顶 60s。
+    /// 纯函数，便于单测；不依赖网络状态。
+    static int backoffDelayMs(int baseMs, int failedCount);
+
     /// 拉取 Lume 下发的配置（`GET <base>/api/medmon/config`）。
     /// 未启用 / 请求失败时回调不会被调用——调用方保留本地默认值即可。
     void fetchConfig(std::function<void(const QJsonObject &)> callback);
@@ -67,5 +71,6 @@ private:
     int m_dropped = 0;
     int m_batchMax = 50;
     int m_queueMax = 500;
-    int m_retryMs = 5000;
+    int m_retryBaseMs = 5000;
+    qint64 m_nextAttemptAtMs = 0;
 };

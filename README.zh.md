@@ -1350,20 +1350,24 @@ POST /api/medmon/audit
   "events": [ { "ts": "…", "tsUs": 1793935369025374, "session": "…", "type": "alarm.on", "channel": "SpO2" } ] }
 ```
 
-队列上限 500 条、单批 50 条、请求超时 3 s、失败 5 s 后重试（失败批次放回队首）；
+队列上限 500 条、单批 50 条、请求超时 3 s、失败按 **5s → 10s → 20s → 40s → 60s** 指数退避（失败批次放回队首，成功即复位）；
 溢出时丢最旧的并计数，绝不无界增长。
 
 Lume 侧参考实现（`tools/lume-medmon/app.lume`，用本机 `~/.local/bin/lume` 0.12.2 实测）：
 
 ```bash
-cd tools/lume-medmon && lume app.lume     # → http://127.0.0.1:8090
+cd tools/lume-medmon && ./run.sh start    # 启动 + 写链路探针；实例不健康时先重启
+./run.sh watch                          # 前台监督：连续两次探针失败自动重启
+curl -s http://127.0.0.1:8090/api/medmon/health
 curl -s http://127.0.0.1:8090/api/medmon/summary
 # {"total":9,"alarm":1,"session":2,"pacs":0,"watchdog":1,"dicom":2,"lume":0,"last":{…"type":"alarm.on"}}
 ```
 
 - 事件落 SQLite（`.data/medmon.db`）。**不要用进程内数组**：lume 的 `run()` 每请求 fork，
   POST 写在子进程里，GET 读不到（实测 accepted=2 而 summary total=0）。
-- 参考实现另外给了 `GET /api/medmon/events?limit=`（按 id 倒序）与 `GET /health`。
+- 参考实现另外给了 `GET /api/medmon/events?limit=`（按 id 倒序）、`GET /health`，以及
+  `GET /api/medmon/health` 写链路探针（执行零行 `DELETE`，真正打开 SQLite 写事务；
+  读接口正常但 POST 卡死的实例会在这里返回 503）。
 - `env()` 对含 `TOKEN`/`SECRET`/`KEY` 的变量名一律返回 null，别用它判断「鉴权配好了没」。
 
 实测链路（`QTRS_LUME_URL=http://127.0.0.1:8090 QTRS_SIM_SPO2=86`）：

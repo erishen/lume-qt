@@ -33,15 +33,16 @@ Content-Type: application/json
 
 响应：`{"ok": true, "accepted": N}`；`400` 表示 body 非法或缺少 `events`；`500` 表示落库失败。
 
-客户端行为：队列上限 500、单批 50、`transferTimeout=3000ms`、失败 5s 重试（放回队首）、
-溢出丢最旧并计数（`sent()/failed()/dropped()`）。未设置 `QTRS_LUME_URL` 时对象存在但不建
+客户端行为：队列上限 500、单批 50、`transferTimeout=3000ms`、失败按 5s→10s→20s→40s→60s
+指数退避（放回队首，成功复位）、溢出丢最旧并计数（`sent()/failed()/dropped()`）。未设置 `QTRS_LUME_URL` 时对象存在但不建
 `QNetworkAccessManager`，ctest 与无网环境行为不变。
 
 ## Lume 侧参考实现
 
 `tools/lume-medmon/app.lume`：
 
-- `GET /health`
+- `GET /health`（进程存活）
+- `GET /api/medmon/health`（写链路探针：零行 `DELETE`，真正打开 SQLite 写事务，失败返回 503）
 - `POST /api/medmon/audit` → `events` 表（SQLite，`.data/medmon.db`）
 - `GET /api/medmon/summary` → `total/alarm/session/pacs/watchdog/dicom/lume/last`
 - `GET /api/medmon/events?limit=` → 按 id 倒序
@@ -50,7 +51,9 @@ Content-Type: application/json
 
 ```bash
 cd tools/lume-medmon
-lume app.lume          # http://127.0.0.1:8090（LUME_BIND 可覆盖 bind）
+./run.sh start         # http://127.0.0.1:8090；先探针，失败则重启
+./run.sh watch         # 前台监督：连续两次探针失败自动重启
+# LUME_BIND / LUME_MEDMON_PORT / LUME_LOG 可覆盖 bind、端口、日志
 ```
 
 表结构：
