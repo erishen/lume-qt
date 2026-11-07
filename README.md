@@ -346,7 +346,7 @@ Current suites:
 
 - `VolumeStatsUnitTests` — pure window/level and percentile helpers.
 - `BridgeUnitTests` — bridge contracts, PACS state, Lume sink queue/redaction behavior.
-- Frontend tests — five Vitest cases for the audit/event stream helpers.
+- Frontend tests — eight Vitest cases for the latency/event measurement helpers.
 
 The project deliberately has **no CI pipeline**. Qt WebEngine + DCMTK make CI images expensive; the local Makefile targets are the quality gate. If CI is added later, verify `qt6-webengine-dev` and `libdcmtk-dev` are available in the target image first.
 
