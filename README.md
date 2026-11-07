@@ -362,12 +362,13 @@ The project deliberately has **no CI pipeline**. Qt WebEngine + DCMTK make CI im
 | Document | Contents |
 |---|---|
 | [`docs/architecture.md`](docs/architecture.md) | System architecture, module boundaries, threading, native/Web split, DICOM/PACS and audit flows (Chinese) |
+| [`docs/implementation-notes.md`](docs/implementation-notes.md) | Chronological implementation and verification notes split out of the Chinese README (Chinese) |
 | [`docs/privacy-compliance.md`](docs/privacy-compliance.md) | Data inventory, outbound path, implemented controls, residual risks, pre-deployment checklist |
 | [`docs/lume-integration.md`](docs/lume-integration.md) | Event contract, reference service, config downlink, agent review, next steps |
 | [`docs/traceability.md`](docs/traceability.md) | Requirement → implementation → evidence matrix |
 | [`docs/risk-analysis.md`](docs/risk-analysis.md) | Hazard/control analysis, including alarm and AI risks |
 | [`docs/soak-2026-11-06.md`](docs/soak-2026-11-06.md) | Long-running soak notes and observations |
-| [`README.zh.md`](README.zh.md) | Full Chinese README with the longer engineering log and exhaustive environment table |
+| [`README.zh.md`](README.zh.md) | Chinese README: overview, build/run, environment variables, tests, known issues |
 
 ## License
 
