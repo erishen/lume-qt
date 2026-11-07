@@ -15,16 +15,16 @@
 |---|---|---|---|
 | LLM API Key / 模型地址 | `tools/lume-medmon/.env` | 否（已 ignore） | 本机明文密钥；权限已为 `600`；一旦复制/截图/打包仍可能泄露 |
 | 样例 DICOM 序列 | `resources/dicom/` | 否（已 ignore） | 头部可见 `Jane_Doe` 等演示标识；**不是**从临床系统导出的真实病例；换真实数据后即为 PHI |
-| 本地审计台账 | `~/Library/Application Support/research/lume-qt/audit/*.jsonl` | 否 | 含 `studyUid`、`dir`、PACS 端点、报警/信号事件；按 PHI 保护 |
-| PACS 落盘 | `~/Library/Application Support/research/lume-qt/pacs/` | 否 | 完整 DICOM，含患者姓名/ID/检查信息；无自动保留期 |
+| 本地审计台账 | `~/Library/Application Support/research/lume-qt/audit/*.jsonl` | 否 | 含 `studyUid`、`dir`、PACS 端点、报警/信号事件；按 PHI 保护；目录 700 / 文件 600，保留期开关默认关闭 |
+| PACS 落盘 | `~/Library/Application Support/research/lume-qt/pacs/` | 否 | 完整 DICOM，含患者姓名/ID/检查信息；目录 700 / 文件 600；保留期开关默认关闭 |
 | Lume 镜像库 | `tools/lume-medmon/.data/medmon.db` | 否 | 旧数据可能含原始 `studyUid`/`dir`；新数据落库前已白名单化 |
 | 会话快照 | `~/Library/Application Support/research/lume-qt/state/` | 否 | 含上次体数据目录；不含姓名，但可关联检查 |
 
 ### 外发链路
 
 1. 桌面壳 `AuditSink` 写本地 JSONL（完整字段，作为唯一权威）。
-2. `LumeSink::post()` 在发端做最小化：`studyUid` / `dir` / `path` 等换成不可逆 16 位摘要；`patient*` / `accessionNumber` / `medicalRecordNumber` 直接移除；消息里的绝对路径和 DICOM UID 替换为 `<path>` / `<uid>`。
-3. Lume `POST /api/medmon/audit` 落库前再按白名单裁剪一次；`GET /api/medmon/events` 和 `medmon_summary` 只返回白名单字段。
+2. `LumeSink::post()` 在发端做最小化：字段走白名单（未知字段直接丢弃）；`studyUid` / `dir` / `path` 等换成稳定 16 位摘要；`patient*` / `accessionNumber` / `medicalRecordNumber` 等患者键直接移除；消息里的绝对路径和 DICOM UID 替换为 `<path>` / `<uid>`。
+3. Lume `POST /api/medmon/audit` 落库前再按标量白名单裁剪一次，并对 `message` / `source` 等字符串做独立的路径/UID 清洗；`GET /api/medmon/events` 和 `medmon_summary` 只返回白名单字段。
 4. Agent 工具 `medmon_summary` / `medmon_events` / `medmon_review` 只读这些白名单字段；模型看不到原始 UID、落盘路径和患者键。
 
 > 注意：本地 JSONL 仍保留完整字段，这是为了本地复核和故障定位；它不能直接上传、外发或提交到 git。
@@ -40,9 +40,20 @@
 
 1. **Lume HTTP 无鉴权、无 TLS。** 默认只绑 `127.0.0.1`，但 `LUME_BIND` 可改成 `0.0.0.0`；一旦暴露到科室网络，任何能访问 8090 的人都能读事件/改报警阈值。生产必须加反向代理鉴权、mTLS 或至少网络 ACL，并保持 loopback。
 2. **外部模型数据处理。** `LLM_API_URL` 指向第三方模型时，脱敏后的事件摘要仍会离开本机；需要确认供应商的数据处理条款、地域、留存与训练使用政策，必要时换院内模型或关闭 `QTRS_LUME_URL`。
-3. **本地 PHI 留存。** PACS 落盘和 JSONL 台账没有自动删除/保留期；磁盘未加密时，拿到机器即可读。需要按院方制度做全盘加密、目录权限、保留期清理和备份策略。
+3. **本地 PHI 留存。** PACS 落盘和 JSONL 台账已加属主-only 权限与显式保留期开关，但默认不自动清理；磁盘未加密时，拿到机器仍可读。需要按院方制度做全盘加密、明确的天数配置、删除审批和备份策略。
 4. **旧镜像数据。** 升级前已写入 `.data/medmon.db` 的历史 payload 可能仍有原始字段；如确认只是演示数据，可在停服后删除该库重建；否则应按 PHI 数据做清理/迁移。
 5. **临床宣称。** “围术期影像工作台”“监护”“AI 复盘”容易被理解为临床用途；当前只在界面/文档标注非临床，正式对外发布前需要法务/注册路径确认，不能靠一句免责声明替代注册。
+
+## 2026-11-07 复审后的代码加固
+
+- **发端白名单**：`src/lumesink.cpp` 不再只靠 `patient*` 黑名单；未知字段默认丢弃，`personName` / `institutionName` / `referringPhysician` / `studyDescription` / `accession` / `operatorName` 等常见 DICOM 元数据即使新增也不会出端。`studyUid` / `dir` 仍哈希后保留关联性。
+- **收端清洗**：`tools/lume-medmon/app.lume` 的 `redact_event()` 收窄为标量白名单，去掉 `studies` / `event` / `dir` / `studyUid`；`message` / `source` / `providerDescription` 等字符串统一把绝对路径替换为 `<path>`、DICOM UID 替换为 `<uid>`。已用临时实例 POST 嵌套患者字段验证：库中只剩清洗后的 `source/message`，嵌套字段全丢。
+- **本地权限**：台账目录 `700`、`*.jsonl` 及轮转文件 `600`；PACS 检查目录 `700`、DICOM 文件 `600`。两者都加了显式保留期开关 `QTRS_AUDIT_RETAIN_DAYS` / `QTRS_PACS_RETAIN_DAYS`（默认不删，只有设了天数才清理）。
+- **开发 URL**：`QTRS_DEV_URL` 只接受 `http(s)` + loopback（`localhost` / `127.0.0.1` / `::1`），远程页面拿不到 QWebChannel 桥。
+- **鉴权头**：`QTRS_LUME_TOKEN` 让审计/配置/AI 请求带 `Authorization: Bearer …`；日志只打印去掉 userinfo/query/fragment 的 URL。注意：Lume 参考服务本身仍不校验这个头，真实远程部署必须由反代/mTLS 收口。
+- **路径校验**：`src/appschemehandler.cpp` 的 `app://` 根目录前缀补了 `/`，避免同前缀兄弟目录绕过。
+
+仍**未**解决、也改代码解决不了的：医疗器械注册/临床验证/QMS/电子签名/操作者身份；Lume 直接暴露时的写接口鉴权；PACS C-FIND 全库列举的最小必要访问；真实 PACS 只支持 C-MOVE 时的 TLS 取回。演示阶段可以接受，进临床前必须单独处理。
 
 ## 上线前最低检查表
 

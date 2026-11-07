@@ -8,6 +8,7 @@
 #include "pacsclient.h"
 
 #include <QCoreApplication>
+#include <QDate>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -17,6 +18,37 @@
 #include <QStandardPaths>
 
 namespace {
+
+void prunePacsStoreIfConfigured()
+{
+    const QByteArray env = qgetenv("QTRS_PACS_RETAIN_DAYS");
+    if (env.isEmpty())
+        return;
+    const int days = env.toInt();
+    if (days <= 0)
+        return;
+
+    const QDate cutoff = QDate::currentDate().addDays(-days);
+    if (!cutoff.isValid())
+        return;
+
+    QDir root(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+              + QStringLiteral("/pacs"));
+    if (!root.exists())
+        return;
+
+    int removed = 0;
+    const QFileInfoList dirs = root.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+    for (const QFileInfo &info : dirs) {
+        if (info.lastModified().date() >= cutoff)
+            continue;
+        QDir studyDir(info.absoluteFilePath());
+        if (studyDir.removeRecursively())
+            ++removed;
+    }
+    if (removed > 0)
+        qInfo().noquote() << "[PACS] 按保留期清理旧检查：" << removed << "例";
+}
 
 #ifdef Q_OS_MACOS
 #include <mach/mach.h>
@@ -152,6 +184,7 @@ Bridge::Bridge(QObject *parent)
     // 台账在 Bridge 构造时打开，会话 id 从这一刻起贯穿整次运行。
     m_audit = new AuditSink(this);
     m_audit->open();
+    prunePacsStoreIfConfigured();
 
     // 术语对照：本地台账是唯一权威；Lume 是跨端可见的事件镜像（QTRS_LUME_URL 才启用）。
     // 观察者在落盘之后调用，网络故障不会影响本地证据链。

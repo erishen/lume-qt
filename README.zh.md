@@ -138,7 +138,7 @@ DEV_KILL_STALE=0 make dev   # 关闭自动清理：端口被占用时改为报�
 
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
-| `QTRS_DEV_URL` | 未设（`app://app/index.html`） | 改从 Vite dev server 加载（如 `http://localhost:5173`） |
+| `QTRS_DEV_URL` | 未设（`app://app/index.html`） | 改从 Vite dev server 加载；只接受 http(s) + loopback（`localhost` / `127.0.0.1` / `::1`），远程值会被忽略 |
 | `QTRS_TOPMOST` | 未设 | 存在即窗口置顶（调试截图用） |
 | `QTRS_RELOAD_MIN` | `30` | 每 N 分钟换 profile+page 重建渲染进程；`0` 关闭（见 H-21） |
 | `QTRS_MUTE_SIGNALS` | 未设 | `1` = 不把波形样本转发给网页（原生条照常画），用于内存归因 |
@@ -146,6 +146,7 @@ DEV_KILL_STALE=0 make dev   # 关闭自动清理：端口被占用时改为报�
 | `QTRS_CLOCK_OFFSET_MS` | `0` | 给模拟设备时钟加偏移（毫秒），验证「设备时基」下的延迟扣除 |
 | `QTRS_FAULT` | 未设 | 逗号分隔通道名（`ecg,spo2,eeg,emg`），启动 3 s 后停掉对应通道，注入中断 |
 | `QTRS_AUDIT_MAX_MB` | `8` | 单份台账文件上限（MB），超过即轮转 |
+| `QTRS_AUDIT_RETAIN_DAYS` | 未设（不清理） | 按文件名日期清理旧台账；显式设为天数才启用 |
 
 **模拟设备与报警**
 
@@ -158,6 +159,7 @@ DEV_KILL_STALE=0 make dev   # 关闭自动清理：端口被占用时改为报�
 | `QTRS_ALARM_MUTE_SEC` | `120` | 静音默认时长，夹到 `[5,300]` s |
 | `QTRS_ALARM_SOUND` | 开 | `0` 关闭报警音（判定与红框照常） |
 | `QTRS_LUME_URL` | 未设 | Lume 基地址，如 `http://127.0.0.1:8090`；未设则完全不建网络栈 |
+| `QTRS_LUME_TOKEN` | 未设 | 上行/配置/AI 请求统一带 `Authorization: Bearer …`；用于前置反代鉴权，日志不打印值 |
 
 **体数据与窗值**
 
@@ -188,6 +190,7 @@ DEV_KILL_STALE=0 make dev   # 关闭自动清理：端口被占用时改为报�
 | `QTRS_PACS_TLS_CA` | 未设 | CA 证书路径；启用 TLS 且 verify≠ignore 时必填 |
 | `QTRS_PACS_TLS_CERT` / `QTRS_PACS_TLS_KEY` | 未设 | 客户端证书/私钥 PEM；启用 TLS 时必填 |
 | `QTRS_PACS_TLS_VERIFY` | `require` | `require` / `check` / `ignore` |
+| `QTRS_PACS_RETAIN_DAYS` | 未设（不清理） | 启动时按目录 mtime 清理旧检查；显式设为天数才启用 |
 
 ## C++ ↔ JS 通信示例
 

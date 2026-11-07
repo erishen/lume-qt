@@ -44,8 +44,11 @@ void AppSchemeHandler::requestStarted(QWebEngineUrlRequestJob *job)
     const QDir rootDir(m_rootDir);
     const QString canonicalRoot = rootDir.canonicalPath();
     const QString canonicalFile = info.canonicalFilePath();
+    const QString rootPrefix = canonicalRoot.endsWith(QLatin1Char('/'))
+                                   ? canonicalRoot
+                                   : canonicalRoot + QLatin1Char('/');
 
-    if (!canonicalFile.startsWith(canonicalRoot) || !info.exists() || !info.isFile()) {
+    if (!canonicalFile.startsWith(rootPrefix) || !info.exists() || !info.isFile()) {
         qWarning().noquote()
             << "[Scheme] 404:" << url.toString()
             << "canonicalFile=" << canonicalFile

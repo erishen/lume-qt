@@ -42,6 +42,19 @@
 #include "volumeview.h"
 
 namespace {
+/// QTRS_DEV_URL 只用于本机 Vite 热重载。远程页面一旦拿到 QWebChannel，
+/// 就能读台账、读 PACS 状态、加载任意本地目录并扫内网——不能只靠“开发用”约束。
+bool isLoopbackDevUrl(const QUrl &url)
+{
+    const QString scheme = url.scheme().toLower();
+    if (scheme != QStringLiteral("http") && scheme != QStringLiteral("https"))
+        return false;
+    const QString host = url.host().toLower();
+    return host == QStringLiteral("localhost")
+        || host == QStringLiteral("127.0.0.1")
+        || host == QStringLiteral("::1");
+}
+
 /// 前端诊断探针脚本：捕获 WebGL 上下文创建失败与着色器编译/链接错误。
 ///
 /// 这类错误在前端只表现为“画布全黑”，且 three.js 只在 devtools 里报，
@@ -623,9 +636,14 @@ QSlider::handle:horizontal {
     // 若设置了 QTRS_DEV_URL（如 http://localhost:5173），则加载 Vite 开发服务器，
     // 前端改动即时生效（热重载）；否则加载本地构建产物 app://app/index.html。
     const QByteArray devUrlEnv = qgetenv("QTRS_DEV_URL");
-    const QUrl url(devUrlEnv.isEmpty()
-                       ? QStringLiteral("app://app/index.html")
-                       : QString::fromLocal8Bit(devUrlEnv));
+    QUrl url(devUrlEnv.isEmpty()
+                 ? QStringLiteral("app://app/index.html")
+                 : QString::fromLocal8Bit(devUrlEnv));
+    if (!devUrlEnv.isEmpty() && !isLoopbackDevUrl(url)) {
+        qWarning().noquote()
+            << "[Shell] 忽略 QTRS_DEV_URL：只允许 http(s) + loopback（localhost/127.0.0.1/::1）";
+        url = QUrl(QStringLiteral("app://app/index.html"));
+    }
 
     // WebEngine 渲染进程首次启动时，自定义 scheme 的首帧导航偶发失败。
     // 有限重试一次作为兜底；两次都失败才判定为真正的加载错误。

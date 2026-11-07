@@ -157,13 +157,14 @@ All switches are read once at startup. `0` or unset means off unless noted.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `QTRS_DEV_URL` | unset (`app://app/index.html`) | Load from a Vite dev server, e.g. `http://localhost:5173` |
+| `QTRS_DEV_URL` | unset (`app://app/index.html`) | Load from a Vite dev server; only http(s) + loopback (`localhost` / `127.0.0.1` / `::1`) is accepted, remote values are ignored |
 | `QTRS_TOPMOST` | unset | Keep the window on top (debug/screenshot helper) |
 | `QTRS_RELOAD_MIN` | `30` | Rebuild profile/page every N minutes; `0` disables it |
 | `QTRS_MUTE_SIGNALS` | unset | `1` stops forwarding waveform samples to the WebView; native strip still paints |
 | `QTRS_SAMPLE_DIV` | `1` | Forward 1 of every N waveform samples (diagnostic downsampling) |
 | `QTRS_FAULT` | unset | Comma-separated channels (`ecg,spo2,eeg,emg`) stopped 3 s after launch |
 | `QTRS_AUDIT_MAX_MB` | `8` | JSONL rotation threshold per file, in MB |
+| `QTRS_AUDIT_RETAIN_DAYS` | unset (no pruning) | Prune old audit files by filename date; opt-in |
 
 ### Simulated device and alarms
 
@@ -176,6 +177,7 @@ All switches are read once at startup. `0` or unset means off unless noted.
 | `QTRS_ALARM_MUTE_SEC` | `120` | Default mute duration, clamped to `[5,300]` s |
 | `QTRS_ALARM_SOUND` | on | `0` disables alarm audio; visual alarm state remains |
 | `QTRS_LUME_URL` | unset | Lume base URL, e.g. `http://127.0.0.1:8090`; unset means no Lume network stack |
+| `QTRS_LUME_TOKEN` | unset | Adds `Authorization: Bearer …` to audit/config/chat requests; intended for a reverse proxy, never logged |
 
 ### Volume and windowing
 
@@ -206,6 +208,7 @@ All switches are read once at startup. `0` or unset means off unless noted.
 | `QTRS_PACS_TLS_CA` | unset | CA certificate path; required when TLS verification is not `ignore` |
 | `QTRS_PACS_TLS_CERT` / `QTRS_PACS_TLS_KEY` | unset | Client certificate/key PEM paths; required for TLS |
 | `QTRS_PACS_TLS_VERIFY` | `require` | `require` / `check` / `ignore` |
+| `QTRS_PACS_RETAIN_DAYS` | unset (no pruning) | Prune old studies by directory mtime at startup; opt-in |
 
 The Chinese README contains the exhaustive table and the long engineering notes for every switch.
 
@@ -353,9 +356,9 @@ The project deliberately has **no CI pipeline**. Qt WebEngine + DCMTK make CI im
 - React component tests are not implemented yet; the existing frontend tests cover pure helpers.
 - Bone removal is threshold-only; clip planes are visual cuts, not closed surfaces.
 - C-MOVE receiver is plaintext; TLS is limited to SCU paths.
-- Lume HTTP is loopback-only by default and has no auth/TLS.
+- Lume HTTP is loopback-only by default and has no auth/TLS; `QTRS_LUME_TOKEN` only adds a header for a reverse proxy, the reference service does not verify it.
 - Windows is not tested; macOS/Linux are the supported demo environments.
-- No automated retention or deletion for local PHI.
+- Local PHI is owner-only (`700` directories / `600` files) with opt-in retention (`QTRS_AUDIT_RETAIN_DAYS` / `QTRS_PACS_RETAIN_DAYS`); nothing is deleted by default.
 
 ## Documentation
 

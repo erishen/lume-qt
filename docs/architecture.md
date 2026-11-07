@@ -341,6 +341,8 @@ POST /api/medmon/audit
 
 哈希是稳定摘要，不是加密：同一输入可关联，但不能从摘要反推原值；用于“这是不是同一例”的相关性，不用于还原。
 
+2026-11-07 起发端改为**字段白名单**：上表之外的字段默认丢弃，`personName` / `institutionName` / `referringPhysician` / `studyDescription` / `accession` / `operatorName` 等不会因为“没列进黑名单”而漏出。Lume 收端再做一次独立清洗：`message` / `source` 等字符串把路径与 UID 折叠为 `<path>` / `<uid>`，并直接丢弃 `studies` / `event` / `dir` / `studyUid` 等嵌套或标识字段。
+
 ### 6.5 Lume HTTP 接口
 
 | 方法 | 路径 | 用途 |
@@ -353,6 +355,8 @@ POST /api/medmon/audit
 | GET | `/api/medmon/events` | 最近事件（白名单） |
 | GET | `/api/agent/ready` | 工具是否注册，返回 `/react/api/chat` |
 | POST | `/react/api/chat` | Agent 复盘问答（由 Lume 框架提供） |
+
+> Lume 参考实现的 `SrvReq` 没有 headers 字段，服务端无法校验 `QTRS_LUME_TOKEN`；该头只对前置反向代理/mTLS 有意义。直接暴露 8090 时，`POST /api/medmon/config` 仍可被匿名改阈值，必须保持 loopback 或由代理收口。
 
 ### 6.6 本机存储布局
 

@@ -474,6 +474,10 @@ TEST(AuditSinkTest, WritesParsableJsonLinesWithFixedFields)
     ASSERT_TRUE(sink.open(dir.path()));
     EXPECT_FALSE(sink.filePath().isEmpty());
     EXPECT_FALSE(sink.sessionId().isEmpty());
+    // 台账按 PHI 处理：目录 700、文件 600，不能靠父目录权限兜底。
+    EXPECT_FALSE(QFileInfo(dir.path()).permissions().testFlag(QFileDevice::ReadGroup));
+    EXPECT_FALSE(QFileInfo(sink.filePath()).permissions().testFlag(QFileDevice::ReadGroup));
+    EXPECT_FALSE(QFileInfo(sink.filePath()).permissions().testFlag(QFileDevice::ReadOther));
 
     QVariantMap ev;
     ev.insert(QStringLiteral("channel"), QStringLiteral("ECG"));
@@ -763,6 +767,23 @@ int main(int argc, char **argv) {
     return RUN_ALL_TESTS();
 }
 
+TEST(AuditSinkRetention, RemovesOldFilesOnlyWhenConfigured)
+{
+    qputenv("QTRS_AUDIT_RETAIN_DAYS", "30");
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString oldPath = dir.path() + QStringLiteral("/audit-20200101.jsonl");
+    {
+        QFile f(oldPath);
+        ASSERT_TRUE(f.open(QIODevice::WriteOnly));
+        f.write("{}\n");
+    }
+    AuditSink sink;
+    ASSERT_TRUE(sink.open(dir.path()));
+    EXPECT_FALSE(QFileInfo(oldPath).exists());
+    qunsetenv("QTRS_AUDIT_RETAIN_DAYS");
+}
+
 TEST(AuditSinkRotation, RotatesOversizedFileBeforeAppend)
 {
     qputenv("QTRS_AUDIT_MAX_MB", "1");
@@ -855,9 +876,12 @@ TEST(LumeSinkPrivacyTest, IdentifiersAreHashedAndPatientFieldsRemoved)
         {QStringLiteral("patientId"), QStringLiteral("20130717")},
         {QStringLiteral("message"), QStringLiteral("取回失败：/Users/example/pacs/1.2.826.0.1.3680043")},
         {QStringLiteral("files"), 8},
-        {QStringLiteral("nested"), QJsonObject{
+        {QStringLiteral("event"), QJsonObject{
             {QStringLiteral("patientBirthDate"), QStringLiteral("19700101")},
             {QStringLiteral("studyInstanceUid"), QStringLiteral("1.2.3.4.5.6")},
+        }},
+        {QStringLiteral("nested"), QJsonObject{
+            {QStringLiteral("patientBirthDate"), QStringLiteral("19700101")},
         }},
     };
 
@@ -866,18 +890,42 @@ TEST(LumeSinkPrivacyTest, IdentifiersAreHashedAndPatientFieldsRemoved)
     EXPECT_FALSE(safe.contains(QStringLiteral("dir")));
     EXPECT_FALSE(safe.contains(QStringLiteral("patientName")));
     EXPECT_FALSE(safe.contains(QStringLiteral("patientId")));
+    EXPECT_FALSE(safe.contains(QStringLiteral("nested")));
     EXPECT_TRUE(safe.contains(QStringLiteral("studyUidHash")));
     EXPECT_TRUE(safe.contains(QStringLiteral("dirHash")));
     EXPECT_EQ(safe.value(QStringLiteral("files")).toInt(), 8);
     EXPECT_FALSE(safe.value(QStringLiteral("message")).toString().contains(QStringLiteral("/Users/")));
     EXPECT_FALSE(safe.value(QStringLiteral("message")).toString().contains(QStringLiteral("1.2.826")));
-    const QJsonObject nested = safe.value(QStringLiteral("nested")).toObject();
+    const QJsonObject nested = safe.value(QStringLiteral("event")).toObject();
     EXPECT_FALSE(nested.contains(QStringLiteral("patientBirthDate")));
     EXPECT_FALSE(nested.contains(QStringLiteral("studyInstanceUid")));
     EXPECT_TRUE(nested.contains(QStringLiteral("studyInstanceUidHash")));
     // 本地台账对象不被修改。
     EXPECT_TRUE(event.contains(QStringLiteral("patientName")));
     EXPECT_EQ(event.value(QStringLiteral("studyUid")).toString().left(5), QStringLiteral("1.2.8"));
+}
+
+TEST(LumeSinkPrivacyTest, UnknownMetadataFieldsAreDropped)
+{
+    QJsonObject event{
+        {QStringLiteral("type"), QStringLiteral("pacs.find")},
+        {QStringLiteral("personName"), QStringLiteral("Jane_Doe")},
+        {QStringLiteral("institutionName"), QStringLiteral("Demo Hospital")},
+        {QStringLiteral("referringPhysician"), QStringLiteral("Dr. Demo")},
+        {QStringLiteral("studyDescription"), QStringLiteral("demo study")},
+        {QStringLiteral("accession"), QStringLiteral("A123456")},
+        {QStringLiteral("operatorName"), QStringLiteral("Demo Operator")},
+        {QStringLiteral("channel"), QStringLiteral("ECG")},
+    };
+
+    const QJsonObject safe = LumeSink::sanitizedForLume(event);
+    for (const QString &key : {QStringLiteral("personName"), QStringLiteral("institutionName"),
+                               QStringLiteral("referringPhysician"),
+                               QStringLiteral("studyDescription"), QStringLiteral("accession"),
+                               QStringLiteral("operatorName")}) {
+        EXPECT_FALSE(safe.contains(key)) << key.toStdString();
+    }
+    EXPECT_EQ(safe.value(QStringLiteral("channel")).toString(), QStringLiteral("ECG"));
 }
 
 TEST(LumeSinkPrivacyTest, SanitizationIsStableForCorrelation)

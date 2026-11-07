@@ -150,5 +150,6 @@ curl -s http://127.0.0.1:8090/api/agent/ready
 - `server{}` 默认 `bind 127.0.0.1`；容器化要显式 `LUME_BIND=0.0.0.0`，并配反代鉴权。
 - `env()` 对含 `TOKEN`/`SECRET`/`KEY`/`PASSWORD` 的变量名返回 null（防 DSL 泄露凭据），
   不能用它判断「密钥是否配好」——那个判断恒为 false。
+- `QTRS_LUME_TOKEN` 会给审计/配置/AI 请求加 `Authorization: Bearer …`，留给前置反代/mTLS 做鉴权；Lume 参考服务本身不校验这个头，直接暴露仍等于无鉴权。
 - 上行内容含患者相关字段时，先做去标识化：`session` 是本地会话号，不含姓名/住院号；
-  后续接真实 PACS 时，`StudyInstanceUID` 等应改为哈希或干脆不上行。
+  `StudyInstanceUID` / `dir` 在发端已哈希，Lume 收端直接丢弃；`message` / `source` 中的路径和 UID 会折叠为 `<path>` / `<uid>`。

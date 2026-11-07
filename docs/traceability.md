@@ -42,7 +42,7 @@
 | QRS-X-001 | 术中事件必须能上行到跨端事件总线，且网络故障不得影响本地证据链与业务 | `src/lumesink.cpp` `src/auditsink.cpp` `tools/lume-medmon/app.lume` | `QTRS_LUME_URL` + `QTRS_SIM_SPO2=86`：上行 9 条（session/provider/dicom/watchdog/alarm），Lume `summary` 报 `alarm=1`、`last.type=alarm.on`；两轮重启累计 18 条；单测 `AuditSinkObserver`、`LumeSinkTest`；未设 URL 时不建网络栈 | 已验证 |
 | QRS-X-002 | 报警阈值必须可集中配置，越界/矛盾值不得生效，配置服务不可用时回退本地默认 | `src/alarmconfig.cpp` `src/vitalstrip.cpp` `src/mainwindow.cpp` `tools/lume-medmon/app.lume` | Lume 下发 `spo2Mid=95` + `QTRS_SIM_SPO2=93`：原生条「中优先级 · 血氧偏低 93%」、`alarm.config(source=lume)` 入账；POST 改回 90/92 重启后同值无报警；单测 `AlarmThresholdTest` 覆盖边界（严格小于）、越界拒绝、中<高对齐 | 已验证 |
 | QRS-X-003 | 体数据交接完成后必须释放只用一次的 CPU 副本，且显示不得回退 | `src/bridge.cpp` `src/volumeview.cpp` | 256³ 稳态物理足迹：释放侧 455.9 / 457.7 MB，保留侧 515.5 / 559.3 MB；`volume.memory` 入账 `bytes8/bytesHu/keptWeb`；体渲染区域截图 diff 0.32/255 | 已验证 |
-| QRS-X-004 | 术后复盘必须能由 Lume Agent 只读台账生成，且不把患者标识/本地路径送给模型、不阻塞本地报警与判定 | `src/lumesink.cpp` `src/bridge.cpp` `frontend/src/AuditStream.tsx` `tools/lume-medmon/app.lume` | `GET /api/agent/ready` 返回 3 个工具；`POST /react/api/chat` + `tools:["medmon_review"]` 实测 35 s、`[Lume] AI 复盘完成：162 字，工具轨迹 1 条，模式 model`；Lume 侧字段白名单过滤 `studyUid/dir`；桌面壳发端 `LumeSink::sanitizedForLume()` 先把 `studyUid/dir` 哈希、患者键移除、消息路径/UID 替换（单测覆盖）；未设 `QTRS_LUME_URL` 时按钮禁用、离线引擎明确提示未配置模型 | 已验证 |
+| QRS-X-004 | 术后复盘必须能由 Lume Agent 只读台账生成，且不把患者标识/本地路径送给模型、不阻塞本地报警与判定 | `src/lumesink.cpp` `src/bridge.cpp` `frontend/src/AuditStream.tsx` `tools/lume-medmon/app.lume` | `GET /api/agent/ready` 返回 3 个工具；`POST /react/api/chat` + `tools:["medmon_review"]` 实测 35 s、`[Lume] AI 复盘完成：162 字，工具轨迹 1 条，模式 model`；Lume 侧标量白名单过滤 `studyUid/dir`/`studies`/`event` 并把路径/UID 替换为 `<path>`/`<uid>`；桌面壳发端 `LumeSink::sanitizedForLume()` 先按白名单裁剪、`studyUid/dir` 哈希、患者键移除、消息路径/UID 替换（单测覆盖）；未设 `QTRS_LUME_URL` 时按钮禁用、离线引擎明确提示未配置模型 | 已验证 |
 
 ## B. 关键波形与报警原生化
 
@@ -91,7 +91,7 @@
 | QRS-F-001 | 前端崩溃或卡死时，关键波形与报警仍可用 | `src/vitalstrip.cpp` | 原生条独立于 WebView；`QTRS_FAULT` 下仍显示冻结帧与时长 | 已验证 |
 | QRS-F-002 | 静音有时限（≤5 分钟），到期自动恢复提示并留痕 | `src/vitalstrip.cpp` | 6 秒静音到期后边框回红，`alarm.unmute(reason=expired)` | 已验证 |
 | QRS-F-003 | 主进程异常退出后，重启能恢复到「有明确状态」而不是静默空白 | `src/bridge.cpp` `frontend/src/MedicalMonitor.tsx` | `kill -9` 后重启：`session.recovered(gapSeconds=4, events=8)` + 看板琥珀提示 + 上次体数据自动重建 60 层 | 已验证 |
-| QRS-F-005 | 前端延迟看板的逻辑必须有可执行单测，事件型通道口径不得回退 | `frontend/src/latency.test.ts` `frontend/package.json` `Makefile` | `make frontend-tests` 实跑 Vitest：5/5 通过（报警双阶段样本、健康列表排除报警、非法值丢弃、ECG 预算不被报警预算污染） | 已验证 |
+| QRS-F-005 | 前端延迟看板的逻辑必须有可执行单测，事件型通道口径不得回退 | `frontend/src/latency.test.ts` `frontend/package.json` `Makefile` | `make frontend-tests` 实跑 Vitest：8/8 通过（报警双阶段样本、健康列表排除报警、非法值丢弃、ECG 预算不被报警预算污染、µs→ms 换算、后台测量暂停） | 已验证 |
 | QRS-F-004 | 手术室内无外网时，功能不得依赖任何在线服务 | `src/pacsclient.cpp` `src/bridge.cpp` | PACS 全部为本机/院内地址；断网时进入未连通态而非崩溃 | 部分验证 |
 
 ## G. 法规与流程

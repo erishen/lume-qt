@@ -8,6 +8,8 @@
 
 #include <functional>
 
+class QNetworkRequest;
+
 /**
  * LumeSink — 把术中审计事件上行到 Lume 事件总线（HTTP/JSON）。
  *
@@ -59,10 +61,12 @@ public:
 
 private:
     void flush();
+    void applyAuth(QNetworkRequest &request) const;
 
     bool m_enabled = false;
     QUrl m_base;
     QUrl m_url;
+    QString m_token;
     class QNetworkAccessManager *m_nam = nullptr;
     QJsonArray m_queue;
     bool m_busy = false;

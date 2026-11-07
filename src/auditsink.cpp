@@ -3,6 +3,7 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QStandardPaths>
 #include <QDebug>
@@ -17,6 +18,47 @@ double nowMicros()
                         std::chrono::system_clock::now().time_since_epoch())
                         .count();
     return static_cast<double>(us);
+}
+
+constexpr QFileDevice::Permissions kOwnerDir =
+    QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner;
+constexpr QFileDevice::Permissions kOwnerFile =
+    QFileDevice::ReadOwner | QFileDevice::WriteOwner;
+
+void restrictDir(const QString &path)
+{
+    if (!path.isEmpty())
+        QFile::setPermissions(path, kOwnerDir);
+}
+
+void restrictFile(const QString &path)
+{
+    if (!path.isEmpty())
+        QFile::setPermissions(path, kOwnerFile);
+}
+
+void pruneAuditFiles(const QString &base, int retainDays)
+{
+    if (retainDays <= 0)
+        return;
+    const QDate cutoff = QDate::currentDate().addDays(-retainDays);
+    if (!cutoff.isValid())
+        return;
+
+    const QDir dir(base);
+    const QFileInfoList files = dir.entryInfoList(
+        {QStringLiteral("audit-*.jsonl*")}, QDir::Files, QDir::Name);
+    int removed = 0;
+    for (const QFileInfo &info : files) {
+        // 从文件名取日期，而不是 mtime：复制/恢复备份不会让旧 PHI 重新变成「新文件」。
+        const QDate day = QDate::fromString(info.fileName().mid(6, 8), QStringLiteral("yyyyMMdd"));
+        if (!day.isValid() || day >= cutoff)
+            continue;
+        if (QFile::remove(info.absoluteFilePath()))
+            ++removed;
+    }
+    if (removed > 0)
+        qInfo().noquote() << "[Audit] 按保留期清理旧台账：" << removed << "份";
 }
 
 } // namespace
@@ -45,6 +87,7 @@ bool AuditSink::open(const QString &dir)
         qWarning().noquote() << "[Audit] 无法创建台账目录：" << base;
         return false;
     }
+    restrictDir(base);
 
     const QDateTime now = QDateTime::currentDateTime();
     const QString day = now.toString(QStringLiteral("yyyyMMdd"));
@@ -58,6 +101,9 @@ bool AuditSink::open(const QString &dir)
         const double mb = env.toDouble();
         if (mb > 0.0) m_maxBytes = static_cast<qint64>(mb * 1024.0 * 1024.0);
     }
+    // 保留期是显式开关：默认不自动删任何证据，只有设了天数才按文件名日期清理。
+    if (const QByteArray retain = qgetenv("QTRS_AUDIT_RETAIN_DAYS"); !retain.isEmpty())
+        pruneAuditFiles(base, retain.toInt());
     if (!openDay(day)) return false;
     qInfo().noquote() << "[Audit] 台账：" << m_path << "session:" << m_session;
     return true;
@@ -79,6 +125,8 @@ bool AuditSink::openDay(const QString &day)
         qWarning().noquote() << "[Audit] 无法打开台账文件：" << m_path << m_file.errorString();
         return false;
     }
+    // 台账含 studyUid/落盘目录/PACS 端点，按 PHI 处理：仅属主可读写。
+    restrictFile(m_path);
     m_openFailed = false;
     return true;
 }
@@ -91,6 +139,7 @@ bool AuditSink::rotateCurrent()
         const QString rotated = QStringLiteral("%1.%2").arg(base).arg(i, 3, 10, QLatin1Char('0'));
         if (QFileInfo::exists(rotated)) continue;
         if (QFile::rename(base, rotated)) {
+            restrictFile(rotated);
             qInfo().noquote() << "[Audit] 台账轮转：" << rotated;
             return true;
         }

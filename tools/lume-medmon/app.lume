@@ -77,32 +77,74 @@ func body_of(req) {
   return { ok: r.ok, err: null };
 }
 
-// 先定义脱敏函数：POST /audit 落库、GET /events 与 Agent 工具都依赖它。
-func safe_source(v) {
-  if (v == null) {
-    return null;
+// 收端也做一次独立清洗，不能假设所有生产者都像桌面壳那样先脱敏：
+// 旧镜像、脚本直接 POST、未来新增客户端都可能把原始字段带进来。
+func replace_matches(s, pattern, repl) {
+  let r = try(() => str_match(pattern, s));
+  if (r.err != null or r.ok == null) {
+    return s;
   }
-  let s = string(v);
-  // 旧镜像库可能保存了绝对路径形式的 source；含路径分隔符的一律折叠成 <path>。
-  if (len(s) > 0 and replace(s, "/", "") != s) {
-    return "<path>";
+  let rows = r.ok;
+  // 从后往前替换，前面的偏移才不会被已替换的文本扰动。
+  let i = len(rows) - 1;
+  while (i >= 0) {
+    let row = rows[i];
+    let idx = int(get(row, "index", 0));
+    let text = get(row, "text", "");
+    if (idx >= 0) {
+      let before = substr(s, 0, idx);
+      let after = substr(s, idx + len(text));
+      s = before + repl + after;
+    }
+    i = i - 1;
   }
   return s;
 }
 
+func scrub_text(v) {
+  if (v == null) {
+    return null;
+  }
+  let s = string(v);
+  s = replace_matches(s, "(/Users|/home|/private|/tmp|/var/folders)/[^[:space:],;]+", "<path>");
+  s = replace_matches(s, "[0-9]+([.][0-9]+){4,}", "<uid>");
+  return s;
+}
+
 func redact_event(ev) {
+  // 只保留审计/时序需要的字段。studies/event/dir/studyUid 等嵌套或标识字段
+  // 不在收端白名单里：桌面壳已哈希的字段可以不带，原文更不能进模型。
   let keys = ["ts", "tsUs", "type", "level", "priority", "channel", "spo2", "hr",
-              "ms", "ageMs", "p50", "p95", "host", "port", "studies",
-              "layers", "parseMs", "source", "message", "session", "event"];
+              "ms", "ageMs", "p50", "p95", "p50Ms", "p95Ms", "thresholdMs",
+              "parseMs", "roundTripMs", "batchGapMs", "batchSamples", "gapSeconds",
+              "seconds", "host", "port", "events", "files", "layers", "dims",
+              "states", "group", "provider", "platform", "providerDescription",
+              "calledAe", "previousLastEvent", "previousSession", "previousStart",
+              "bytes", "bytes8", "bytesHu", "keptWeb", "hasHardwareClock",
+              "rssBeforeMb", "rssAfterMb", "savedAtUs", "reason", "attempt",
+              "method", "backoffMs", "alarmActive", "alarmLevel", "from",
+              "storeAe", "storePort", "to", "session", "source", "message"];
+  let text_keys = ["type", "level", "channel", "host", "platform", "provider",
+                   "providerDescription", "calledAe", "previousLastEvent",
+                   "previousSession", "reason", "method", "from", "storeAe",
+                   "storePort", "to", "session", "source", "message", "states"];
   let out = {};
   let i = 0;
   while (i < len(keys)) {
     let k = keys[i];
     let v = get(ev, k, null);
-    if (k == "source") {
-      v = safe_source(v);
-    }
     if (v != null) {
+      let j = 0;
+      let is_text = false;
+      while (j < len(text_keys)) {
+        if (k == text_keys[j]) {
+          is_text = true;
+        }
+        j = j + 1;
+      }
+      if (is_text) {
+        v = scrub_text(v);
+      }
       out = put(out, k, v);
     }
     i = i + 1;

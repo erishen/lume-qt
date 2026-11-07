@@ -31,13 +31,47 @@ QString scrubText(const QString &text)
     return out;
 }
 
+QString safeUrlForLog(const QUrl &url)
+{
+    // 端点可能配置成 http://user:pass@host/... 或带 query token。日志只保留
+    // scheme/host/port/path；userinfo、query、fragment 一律不落盘。
+    QUrl copy = url;
+    copy.setUserInfo(QString());
+    copy.setQuery(QString());
+    copy.setFragment(QString());
+    return copy.toString();
+}
+
 bool isPatientKey(const QString &key)
 {
     const QString k = key.toLower();
-    return k.startsWith(QStringLiteral("patient"))
-        || k == QStringLiteral("accessionnumber")
-        || k == QStringLiteral("medicalrecordnumber")
-        || k == QStringLiteral("issuerofpatientid");
+    // 黑名单只作纵深防御；真正的边界是下面的白名单。这里把常见 DICOM
+    // 患者/机构/医嘱字段都列出，避免以后新增事件字段时先漏一轮。
+    static const QStringList blocked = {
+        QStringLiteral("accession"),
+        QStringLiteral("accessionnumber"),
+        QStringLiteral("admissionid"),
+        QStringLiteral("admittingdiagnosesdescription"),
+        QStringLiteral("institutionaddress"),
+        QStringLiteral("institutionname"),
+        QStringLiteral("institutionaldepartmentname"),
+        QStringLiteral("issuerofpatientid"),
+        QStringLiteral("medicalrecordnumber"),
+        QStringLiteral("nameofphysiciansreadingstudy"),
+        QStringLiteral("operatorname"),
+        QStringLiteral("otherpatientids"),
+        QStringLiteral("patientaddress"),
+        QStringLiteral("patientcomments"),
+        QStringLiteral("patienttelephone"),
+        QStringLiteral("performingsphysicianname"),
+        QStringLiteral("personname"),
+        QStringLiteral("referringphysician"),
+        QStringLiteral("requestedprocedureid"),
+        QStringLiteral("studyid"),
+        QStringLiteral("studydescription"),
+        QStringLiteral("visitnumber"),
+    };
+    return k.startsWith(QStringLiteral("patient")) || blocked.contains(k);
 }
 
 bool isIdentifierKey(const QString &key)
@@ -50,6 +84,82 @@ bool isIdentifierKey(const QString &key)
         || k == QStringLiteral("sourcedir")
         || k == QStringLiteral("filepath")
         || k == QStringLiteral("path");
+}
+
+bool isAllowedLumeKey(const QString &key)
+{
+    // 上行只保留审计/时序需要的字段。未知字段一律丢弃，而不是「默认放行」：
+    // 新增 DICOM 元数据或调试字段时，漏字段的代价是 PHI 出端，远大于少一个字段。
+    static const QStringList allowed = {
+        QStringLiteral("ts"),
+        QStringLiteral("tsUs"),
+        QStringLiteral("type"),
+        QStringLiteral("level"),
+        QStringLiteral("priority"),
+        QStringLiteral("channel"),
+        QStringLiteral("spo2"),
+        QStringLiteral("hr"),
+        QStringLiteral("ms"),
+        QStringLiteral("ageMs"),
+        QStringLiteral("p50"),
+        QStringLiteral("p95"),
+        QStringLiteral("p50Ms"),
+        QStringLiteral("p95Ms"),
+        QStringLiteral("thresholdMs"),
+        QStringLiteral("parseMs"),
+        QStringLiteral("roundTripMs"),
+        QStringLiteral("batchGapMs"),
+        QStringLiteral("batchSamples"),
+        QStringLiteral("gapSeconds"),
+        QStringLiteral("seconds"),
+        QStringLiteral("host"),
+        QStringLiteral("port"),
+        QStringLiteral("studies"),
+        QStringLiteral("events"),
+        QStringLiteral("files"),
+        QStringLiteral("layers"),
+        QStringLiteral("dims"),
+        QStringLiteral("states"),
+        QStringLiteral("group"),
+        QStringLiteral("provider"),
+        QStringLiteral("platform"),
+        QStringLiteral("providerDescription"),
+        QStringLiteral("calledAe"),
+        QStringLiteral("previousLastEvent"),
+        QStringLiteral("previousSession"),
+        QStringLiteral("previousStart"),
+        QStringLiteral("bytes"),
+        QStringLiteral("bytes8"),
+        QStringLiteral("bytesHu"),
+        QStringLiteral("keptWeb"),
+        QStringLiteral("hasHardwareClock"),
+        QStringLiteral("rssBeforeMb"),
+        QStringLiteral("rssAfterMb"),
+        QStringLiteral("savedAtUs"),
+        QStringLiteral("reason"),
+        QStringLiteral("attempt"),
+        QStringLiteral("method"),
+        QStringLiteral("backoffMs"),
+        QStringLiteral("alarmActive"),
+        QStringLiteral("alarmLevel"),
+        QStringLiteral("from"),
+        QStringLiteral("storeAe"),
+        QStringLiteral("storePort"),
+        QStringLiteral("to"),
+        QStringLiteral("session"),
+        QStringLiteral("source"),
+        QStringLiteral("message"),
+        QStringLiteral("event"),
+        // 已哈希的标识字段（来自旧事件或嵌套对象）可以保留。
+        QStringLiteral("studyUidHash"),
+        QStringLiteral("studyInstanceUidHash"),
+        QStringLiteral("dirHash"),
+        QStringLiteral("destDirHash"),
+        QStringLiteral("sourceDirHash"),
+        QStringLiteral("filePathHash"),
+        QStringLiteral("pathHash"),
+    };
+    return allowed.contains(key, Qt::CaseInsensitive);
 }
 
 QJsonValue sanitizeValue(const QJsonValue &value);
@@ -70,6 +180,9 @@ QJsonObject sanitizeObject(const QJsonObject &input)
                     out.insert(hashKey, digestForLume(raw));
                 }
             }
+            continue;
+        }
+        if (!isAllowedLumeKey(key)) {
             continue;
         }
         out.insert(key, sanitizeValue(it.value()));
@@ -111,15 +224,19 @@ LumeSink::LumeSink(QObject *parent)
         base.chop(1);
     const QUrl url(base + QStringLiteral("/api/medmon/audit"));
     if (!url.isValid()) {
-        qWarning().noquote() << "[Lume] QTRS_LUME_URL 不是合法 URL：" << base << "，上行已禁用";
+        qWarning().noquote() << "[Lume] QTRS_LUME_URL 不是合法 URL：" << safeUrlForLog(QUrl(base))
+                             << "，上行已禁用";
         return;
     }
 
     m_base = QUrl(base);
     m_url = url;
+    m_token = QString::fromLocal8Bit(qgetenv("QTRS_LUME_TOKEN")).trimmed();
     m_enabled = true;
     m_nam = new QNetworkAccessManager(this);
-    qInfo().noquote() << "[Lume] 审计上行已启用：" << m_url.toString();
+    qInfo().noquote() << "[Lume] 审计上行已启用：" << safeUrlForLog(m_url)
+                      << (m_token.isEmpty() ? QStringLiteral("（无鉴权头）")
+                                            : QStringLiteral("（Bearer 鉴权）"));
 }
 
 QJsonObject LumeSink::sanitizedForLume(const QJsonObject &event)
@@ -140,6 +257,14 @@ int LumeSink::backoffDelayMs(int baseMs, int failedCount)
     return delay;
 }
 
+void LumeSink::applyAuth(QNetworkRequest &request) const
+{
+    if (!m_token.isEmpty()) {
+        request.setRawHeader("Authorization",
+                             QByteArrayLiteral("Bearer ") + m_token.toUtf8());
+    }
+}
+
 void LumeSink::fetchConfig(std::function<void(const QJsonObject &)> callback)
 {
     if (!m_enabled || !m_nam || !m_base.isValid() || !callback)
@@ -147,6 +272,7 @@ void LumeSink::fetchConfig(std::function<void(const QJsonObject &)> callback)
 
     QUrl url(m_base.toString() + QStringLiteral("/api/medmon/config"));
     QNetworkRequest request(url);
+    applyAuth(request);
     request.setTransferTimeout(2000);
     QNetworkReply *reply = m_nam->get(request);
     connect(reply, &QNetworkReply::finished, this, [reply, callback]() {
@@ -201,6 +327,7 @@ void LumeSink::flush()
 
     QNetworkRequest request(m_url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    applyAuth(request);
     request.setTransferTimeout(3000);
 
     m_busy = true;
@@ -265,6 +392,7 @@ void LumeSink::ask(const QString &message, std::function<void(const QJsonObject 
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     request.setRawHeader("Accept", "text/event-stream");
+    applyAuth(request);
     // 模型 + 一次工具调用实测约 35–90 秒；给 90 秒，超时仍走明确错误分支。
     request.setTransferTimeout(90000);
 
@@ -278,7 +406,7 @@ void LumeSink::ask(const QString &message, std::function<void(const QJsonObject 
     body.insert(QStringLiteral("sessionId"),
                 QStringLiteral("sess-qt-rs-%1").arg(QDateTime::currentMSecsSinceEpoch()));
 
-    qInfo().noquote() << "[Lume] AI 复盘请求：" << url.toString();
+    qInfo().noquote() << "[Lume] AI 复盘请求：" << safeUrlForLog(url);
     QNetworkReply *reply = m_nam->post(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
     connect(reply, &QNetworkReply::finished, this, [reply, callback, result]() mutable {
         reply->deleteLater();

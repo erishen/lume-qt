@@ -10,6 +10,7 @@
 #include <QElapsedTimer>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QStandardPaths>
 #include <QStringList>
 
@@ -33,6 +34,34 @@
 #endif
 
 namespace {
+
+constexpr QFileDevice::Permissions kOwnerDir =
+    QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner;
+constexpr QFileDevice::Permissions kOwnerFile =
+    QFileDevice::ReadOwner | QFileDevice::WriteOwner;
+
+/// PACS 落盘是完整 DICOM（含姓名/ID/检查信息），按 PHI 处理：
+/// 检查目录 700；如果父目录就是应用的 pacs/ 根，也一并收成 700。
+void securePacsDir(const QString &destDir)
+{
+    if (destDir.isEmpty())
+        return;
+    QFile::setPermissions(destDir, kOwnerDir);
+    const QFileInfo info(destDir);
+    const QDir parent = info.dir();
+    if (parent.dirName() == QStringLiteral("pacs"))
+        QFile::setPermissions(parent.absolutePath(), kOwnerDir);
+}
+
+void securePacsFiles(const QString &destDir)
+{
+    const QDir dir(destDir);
+    for (const QFileInfo &info : dir.entryInfoList(QDir::Files, QDir::Name)) {
+        if (info.fileName().startsWith(QLatin1Char('.')))
+            continue;
+        QFile::setPermissions(info.absoluteFilePath(), kOwnerFile);
+    }
+}
 
 /// C-MOVE 的接收端：PACS 会主动连过来把影像推给我们（我们在这里是 Storage SCP）。
 /// 让它直接落盘并统一补 .dcm 后缀，这样下游解析器和 C-GET 走同一套命名。
@@ -233,6 +262,7 @@ bool PacsClient::moveStudy(const Endpoint &endpoint, const QString &studyUid,
         if (err) *err = QStringLiteral("无法创建取回目录：%1").arg(destDir);
         return false;
     }
+    securePacsDir(destDir);
 
     // 先把本机的存储 SCP 挂起来：C-MOVE 是「服务端反向连我们」，
     // 它必须先能接受关联，否则 PACS 那边只会报 move destination unreachable。
@@ -357,6 +387,7 @@ PresentationContexts = StorageSCP
 
     const int landed = static_cast<int>(
         QDir(destDir).entryList({QStringLiteral("*.dcm")}, QDir::Files).size());
+    securePacsFiles(destDir);
     if (fileCount) *fileCount = landed;
 
     if (landed < completed) {
@@ -389,6 +420,7 @@ bool PacsClient::retrieveStudy(const Endpoint &endpoint, const QString &studyUid
         if (err) *err = QStringLiteral("无法创建取回目录：%1").arg(destDir);
         return false;
     }
+    securePacsDir(destDir);
 
     std::unique_ptr<DcmSCU> scu = makeScu();
 
@@ -464,6 +496,7 @@ bool PacsClient::retrieveStudy(const Endpoint &endpoint, const QString &studyUid
             QFile::rename(fi.absoluteFilePath(), fi.absoluteFilePath() + QStringLiteral(".dcm"));
         }
     }
+    securePacsFiles(destDir);
 
     const int landed = static_cast<int>(
         dir.entryList({QStringLiteral("*.dcm")}, QDir::Files).size());
