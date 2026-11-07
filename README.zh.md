@@ -6,6 +6,7 @@ Lume 的 Qt 桌面工作台（医疗监护演示）· Qt WebEngine / C++ / React
 
 > **非临床用途**：本项目是科研/工程演示，不是医疗器械，不能用于诊断、治疗或临床决策。
 > 隐私与合规审计、数据流向和上线前检查表见 [`docs/privacy-compliance.md`](docs/privacy-compliance.md)。
+> 系统架构、线程模型、原生/Web 分页与 DICOM/PACS、审计-Lume 链路见 [`docs/architecture.md`](docs/architecture.md)。
 
 ## 技术栈
 

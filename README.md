@@ -360,6 +360,7 @@ The project deliberately has **no CI pipeline**. Qt WebEngine + DCMTK make CI im
 
 | Document | Contents |
 |---|---|
+| [`docs/architecture.md`](docs/architecture.md) | System architecture, module boundaries, threading, native/Web split, DICOM/PACS and audit flows (Chinese) |
 | [`docs/privacy-compliance.md`](docs/privacy-compliance.md) | Data inventory, outbound path, implemented controls, residual risks, pre-deployment checklist |
 | [`docs/lume-integration.md`](docs/lume-integration.md) | Event contract, reference service, config downlink, agent review, next steps |
 | [`docs/traceability.md`](docs/traceability.md) | Requirement → implementation → evidence matrix |
