@@ -418,6 +418,7 @@ make trace
 - **自动化测试**：本地 `make test-all`（C++ Google Test + 前端 Vitest）为质量门；本项目不接入 CI（见上节）
 - **追溯矩阵**：`make trace` 校验 `docs/traceability.md` 的结构与引用，缺口不会被悄悄改成「已验证」
 - **文档一致性**：`make trace` 同时校验两版 README 的目录树登记了 `src/`、`frontend/src/`、`scripts/`、`tests/` 的全部文件，新增模块或脚本漏写会直接报错
+- **出站脱敏回归**：C++ 侧 `LumeSinkPrivacyTest.*` 覆盖短 UID 与含空格路径；`make lume-test` 另在临时端口起 Lume、直投原始 PHI 并核对 SQLite 落库内容不含标识（换回旧正则会变红）
 - **质量门**：主目标与 `bridge_test` 共用同一套 `-Wall -Wextra -Werror -Wconversion` 编译选项，测试代码不比产品代码宽松；测试失败即以非零码退出
 - **测试数据**：为每个测试提供可重现的数据
 - **错误处理测试**：验证错误场景的处理

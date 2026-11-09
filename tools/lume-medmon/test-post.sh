@@ -98,4 +98,44 @@ if [ "${count}" != "1" ]; then
   exit 1
 fi
 
+# 收端独立清洗回归：故意让「生产者」直接 POST 原始 PHI（旧镜像、脚本调用、
+# 未来新客户端都可能这样），验证落库前仍会被白名单 + 路径/UID 折叠拦住。
+PHI_PAYLOAD='{"app":"lume-qt","events":[{"ts":"2026-11-09T15:00:00.000","tsUs":2,"session":"'"${SESSION}"'","type":"test.redaction","message":"取回 2.25.31873619609263979417185351299617829387 于 /Users/<user>/Library/Application Support/research/lume-qt/pacs/A.dcm","source":"~/Library/Application Support/research/lume-qt/audit/a.jsonl","reason":"C:\\Users\\<user>\\Documents\\ct 与 /opt/homebrew/opt/qt","patientName":"Jane_Doe","studyUid":"1.2.840.10008","nested":{"patientId":"P123"}}]}'
+status=""
+for attempt in 1 2; do
+  if status="$(curl -sS --noproxy '*' --max-time 5 -o "${TMP}/phi-resp.json" -w '%{http_code}' \
+    -X POST "http://127.0.0.1:${PORT}/api/medmon/audit" \
+    -H 'Content-Type: application/json' \
+    --data "${PHI_PAYLOAD}")"; then
+    break
+  fi
+  status=""
+  sleep 1
+done
+if [ "${status}" != "200" ]; then
+  echo "==> [lume-test] 脱敏回归 POST 返回 ${status}" >&2
+  cat "${TMP}/phi-resp.json" >&2 || true
+  exit 1
+fi
+
+stored="$(sqlite3 "${TMP}/.data/medmon.db" \
+  "SELECT payload FROM events WHERE type='test.redaction' AND session='${SESSION}'")"
+if [ -z "${stored}" ]; then
+  echo "==> [lume-test] 脱敏回归事件未落库" >&2
+  exit 1
+fi
+for needle in "2.25." "3187361960" "1.2.840.10008" "/Users/" "Application Support" \
+              "~/Library" "opt/homebrew" "<user>" "Jane_Doe" "P123"; do
+  if printf '%s' "${stored}" | grep -Fq "${needle}"; then
+    echo "==> [lume-test] 落库仍含未脱敏片段：${needle}" >&2
+    printf '%s\n' "${stored}" >&2
+    exit 1
+  fi
+done
+printf '%s' "${stored}" | grep -Fq '<path>' || {
+  echo "==> [lume-test] 落库里没有 <path>，路径清洗可能未生效" >&2; exit 1; }
+printf '%s' "${stored}" | grep -Fq '<uid>' || {
+  echo "==> [lume-test] 落库里没有 <uid>，UID 清洗可能未生效" >&2; exit 1; }
+echo "==> [lume-test] 收端脱敏回归：短 UID / 带空格路径 / 家目录 / 患者字段均已清除"
+
 echo "==> [lume-test] POST 200 accepted=1，SQLite 落库 1 行；通过"

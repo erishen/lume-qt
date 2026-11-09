@@ -939,6 +939,49 @@ TEST(LumeSinkPrivacyTest, SanitizationIsStableForCorrelation)
     EXPECT_EQ(a.value(QStringLiteral("studyUidHash")).toString().size(), 16);
 }
 
+TEST(LumeSinkPrivacyTest, ShortDicomUidsAreScrubbed)
+{
+    // 2.25.<整数> 是 DICOM 的 UUID 派生 UID 形式，只有三段；旧正则要求至少五段。
+    QJsonObject event{
+        {QStringLiteral("type"), QStringLiteral("pacs.retrieve")},
+        {QStringLiteral("message"),
+         QStringLiteral("studyUid=2.25.31873619609263979417185351299617829387 已取回")},
+        {QStringLiteral("reason"), QStringLiteral("1.2.840.10008 与 1.2.3.4.5 都须折叠")},
+    };
+    const QJsonObject safe = LumeSink::sanitizedForLume(event);
+    const QString text = safe.value(QStringLiteral("message")).toString()
+                       + safe.value(QStringLiteral("reason")).toString();
+    EXPECT_FALSE(text.contains(QStringLiteral("2.25.")));
+    EXPECT_FALSE(text.contains(QStringLiteral("3187361960")));
+    EXPECT_FALSE(text.contains(QStringLiteral("1.2.840.10008")));
+    EXPECT_TRUE(text.contains(QStringLiteral("<uid>")));
+}
+
+TEST(LumeSinkPrivacyTest, PathsWithSpacesAndOtherRootsAreScrubbed)
+{
+    QJsonObject event{
+        {QStringLiteral("type"), QStringLiteral("volume.load")},
+        {QStringLiteral("message"),
+         QStringLiteral("解析 /Users/<user>/Library/Application Support/research/lume-qt/pacs/A.dcm 完成")},
+        {QStringLiteral("source"),
+         QStringLiteral("~/Library/Application Support/research/lume-qt/audit/audit-20261109.jsonl")},
+        {QStringLiteral("reason"),
+         QStringLiteral("Qt 位于 /opt/homebrew/opt/qt；样本 C:\\Users\\<user>\\Documents\\ct")},
+    };
+    const QJsonObject safe = LumeSink::sanitizedForLume(event);
+    QString text;
+    for (const QString &key : {QStringLiteral("message"), QStringLiteral("source"),
+                               QStringLiteral("reason")}) {
+        text += safe.value(key).toString() + QLatin1Char('\n');
+    }
+    EXPECT_FALSE(text.contains(QStringLiteral("/Users/")));
+    EXPECT_FALSE(text.contains(QStringLiteral("Application Support")));
+    EXPECT_FALSE(text.contains(QStringLiteral("~/Library")));
+    EXPECT_FALSE(text.contains(QStringLiteral("/opt/homebrew")));
+    EXPECT_FALSE(text.contains(QStringLiteral("C:\\Users")));
+    EXPECT_TRUE(text.contains(QStringLiteral("<path>")));
+}
+
 TEST(VolumePreferenceKeyTest, UnknownModalityKeepsLegacyGlobalKey)
 {
     // 启动时还不知道这批是 CT 还是 MR：写入仍用旧全局键，避免猜错桶。

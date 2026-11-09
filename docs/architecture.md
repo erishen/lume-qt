@@ -343,6 +343,12 @@ POST /api/medmon/audit
 
 2026-11-07 起发端改为**字段白名单**：上表之外的字段默认丢弃，`personName` / `institutionName` / `referringPhysician` / `studyDescription` / `accession` / `operatorName` 等不会因为“没列进黑名单”而漏出。Lume 收端再做一次独立清洗：`message` / `source` 等字符串把路径与 UID 折叠为 `<path>` / `<uid>`，并直接丢弃 `studies` / `event` / `dir` / `studyUid` 等嵌套或标识字段。
 
+2026-11-09 补强文本清洗边界，发端 `src/lumesink.cpp` 与收端 `tools/lume-medmon/app.lume` 同步：
+
+- **短 UID**：旧正则要求至少 5 段，会放行 `2.25.<整数>`（UUID 派生 UID，3 段）与 `1.2.840.10008`（4 段）；现改为至少 3 段。IPv4 与短 UID 同形，会被一并折叠成 `<uid>`，属于可接受的过度脱敏（`host` 等字段在 Lume 镜像里可能变成 `<uid>`，本地 JSONL 仍是完整权威记录）。
+- **路径**：旧正则只认 `/Users` / `/home` / `/private` / `/tmp` / `/var/folders` 且遇空格即停，macOS 的 `…/Library/Application Support/…` 只被洗掉前半截；现覆盖 `~/`、`/var`、`/opt`、`/Library`、`/Applications`、`/System`、`/Volumes` 与 Windows 盘符路径，并允许路径内含空格（到换行 / 逗号 / 分号 / 中文句读停止，宁可多折掉尾随描述）。
+- **回归**：C++ `LumeSinkPrivacyTest.ShortDicomUidsAreScrubbed` 与 `PathsWithSpacesAndOtherRootsAreScrubbed`；收端 `make lume-test` 直接 POST 原始 PHI 并核对 SQLite 落库内容。
+
 ### 6.5 Lume HTTP 接口
 
 | 方法 | 路径 | 用途 |

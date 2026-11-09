@@ -356,6 +356,7 @@ Current suites:
 - `BridgeUnitTests` — bridge contracts, PACS state, Lume sink queue/redaction behavior.
 - Frontend tests — eight Vitest cases for the latency/event measurement helpers.
 - `make trace` also verifies that both README directory trees list every file under `src/`, `frontend/src/`, `scripts/` and `tests/`; adding a module or script without updating the READMEs fails the gate.
+- `LumeSinkPrivacyTest.*` covers short DICOM UIDs and paths containing spaces; `make lume-test` starts a throwaway Lume instance, POSTs raw PHI and asserts the SQLite row has no identifiers (verified to fail against the old regex).
 
 The project deliberately has **no CI pipeline**. Qt WebEngine + DCMTK make CI images expensive; the local Makefile targets are the quality gate. If CI is added later, verify `qt6-webengine-dev` and `libdcmtk-dev` are available in the target image first.
 

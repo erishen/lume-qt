@@ -106,8 +106,15 @@ func scrub_text(v) {
     return null;
   }
   let s = string(v);
-  s = replace_matches(s, "(/Users|/home|/private|/tmp|/var/folders)/[^[:space:],;]+", "<path>");
-  s = replace_matches(s, "[0-9]+([.][0-9]+){4,}", "<uid>");
+  // 与桌面壳 src/lumesink.cpp 的 scrubText 保持同一套边界：路径允许空格
+  // （macOS 的 "Application Support"），到控制字符/逗号/分号为止；宁可多折
+  // 一段描述，也不能把带空格的路径只洗掉半截。短 DICOM UID 见下方注释。
+  s = replace_matches(s, "~/[^[:cntrl:],;]+", "<path>");
+  s = replace_matches(s, "[A-Za-z]:[/\\\\][^[:cntrl:],;]+", "<path>");
+  s = replace_matches(s, "(/Users|/home|/private|/tmp|/var|/opt|/Library|/Applications|/System|/Volumes)/[^[:cntrl:],;]+", "<path>");
+  // DICOM UID 最少可只有三段（2.25.<整数> 是 UUID 派生形式）；旧式 {4,}
+  // 会把 2.25.* 与 1.2.840.10008 这类短 UID 原样放行。
+  s = replace_matches(s, "[0-9]+([.][0-9]+){2,}", "<uid>");
   return s;
 }
 

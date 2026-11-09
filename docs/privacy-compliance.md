@@ -53,6 +53,13 @@
 - **鉴权头**：`QTRS_LUME_TOKEN` 让审计/配置/AI 请求带 `Authorization: Bearer …`；日志只打印去掉 userinfo/query/fragment 的 URL。注意：Lume 参考服务本身仍不校验这个头，真实远程部署必须由反代/mTLS 收口。
 - **路径校验**：`src/appschemehandler.cpp` 的 `app://` 根目录前缀补了 `/`，避免同前缀兄弟目录绕过。
 
+## 2026-11-09 复审后的清洗补强
+
+- **发端与收端同步**：`src/lumesink.cpp` 的 `scrubText()` 与 `tools/lume-medmon/app.lume` 的 `scrub_text()` 原先都要求 DICOM UID 至少 5 段、只认 5 种 Unix 路径前缀且遇空格即停。实测 `2.25.*`（UUID 派生 UID）、`1.2.840.10008`、`…/Application Support/…`、`~/Library/...`、`/opt/homebrew/...`、`C:\Users\...` 会原样或残留半截出端，已修复。
+- **新边界与代价**：UID 从 3 段起折叠；路径覆盖 `~/`、Windows 盘符与常见 macOS/Linux 根，允许空格。代价是 IPv4 形状的数字串会被一并折叠成 `<uid>`、路径后的尾随描述可能被一起折成 `<path>`——均为「宁可多删」的过度脱敏，本地 JSONL 保留完整原文。
+- **回归证据**：`tests/bridge_test.cpp` 新增 2 条 C++ 用例（先跑红确认缺口，修复后 5/5 绿）；`tools/lume-medmon/test-post.sh` 扩展为第二个 POST，故意直投原始 PHI 并核对 SQLite `payload` 不含任何标识；把 `app.lume` 换回旧正则时该测试确实变红，排除假绿。
+- **仍存在的边界**：自由文本里的患者姓名、机构/术式描述无法靠正则消除，仍依赖字段白名单与「不用真实数据演示」；`LumeSink::ask()` 的用户输入会发给模型（界面目前只发固定 `AI_PROMPT`，不含台账内容）。
+
 仍**未**解决、也改代码解决不了的：医疗器械注册/临床验证/QMS/电子签名/操作者身份；Lume 直接暴露时的写接口鉴权；PACS C-FIND 全库列举的最小必要访问；真实 PACS 只支持 C-MOVE 时的 TLS 取回。演示阶段可以接受，进临床前必须单独处理。
 
 ## 上线前最低检查表

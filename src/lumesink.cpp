@@ -23,10 +23,23 @@ QString digestForLume(const QString &value)
 QString scrubText(const QString &text)
 {
     QString out = text;
-    static const QRegularExpression pathRe(
-        QStringLiteral("(?:/Users|/home|/private|/tmp|/var/folders)/[^\\s,;\"']+"));
-    static const QRegularExpression uidRe(QStringLiteral("\\b\\d+(?:\\.\\d+){4,}\\b"));
-    out.replace(pathRe, QStringLiteral("<path>"));
+    // 路径先于 UID 折叠：路径里常带 DICOM UID，先吃掉整段才不会留下半截。
+    // 字符类允许空格（macOS 的 "Application Support" 这类目录名很常见），
+    // 到句子标点或换行停止；宁可连尾随描述一起折掉，也不能留下半截路径。
+    static const QRegularExpression homePathRe(
+        QStringLiteral("~/[^\\r\\n,;\"'。；，、]+"));
+    static const QRegularExpression windowsPathRe(
+        QStringLiteral("[A-Za-z]:[\\\\/][^\\r\\n,;\"'。；，、]+"));
+    static const QRegularExpression unixPathRe(
+        QStringLiteral("(?:/Users|/home|/private|/tmp|/var|/opt|/Library|/Applications|/System|/Volumes)"
+                       "/[^\\r\\n,;\"'。；，、]+"));
+    // DICOM UID 可以只有三段（2.25.<整数> 是 UUID 派生形式）；旧正则要求五段，
+    // 会把 2.25.* 与 1.2.840.10008 这类短 UID 原样放行。IPv4 与此同形，会一并
+    // 折叠成 <uid>，属于可接受的过度脱敏：本地 JSONL 仍是完整权威记录。
+    static const QRegularExpression uidRe(QStringLiteral("\\d+(?:\\.\\d+){2,}"));
+    out.replace(homePathRe, QStringLiteral("<path>"));
+    out.replace(windowsPathRe, QStringLiteral("<path>"));
+    out.replace(unixPathRe, QStringLiteral("<path>"));
     out.replace(uidRe, QStringLiteral("<uid>"));
     return out;
 }
