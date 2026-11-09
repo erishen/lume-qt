@@ -55,14 +55,14 @@ QTRS_PACS=127.0.0.1:11113:QTRSQR \
 - 本机演示数据位于 `~/Library/Application Support/research/lume-qt/`，不进入版本库。
 - 台账与 PACS 落盘按 PHI 对待，已收紧为属主可读写；默认不自动删除，需显式设置 `QTRS_AUDIT_RETAIN_DAYS` / `QTRS_PACS_RETAIN_DAYS`。
 - `QTRS_LUME_TOKEN` 只负责让客户端带 `Authorization: Bearer …`；Lume 参考服务本身不校验该头，远程部署必须由反向代理/mTLS 收口。
-- 演示截图和对外材料不得展示真实患者信息；样例 DICOM 只使用公开/合成数据。
+- 演示截图和对外材料不得展示真实患者信息；样例 DICOM 不随仓库分发，对外材料只使用许可明确的公开/合成数据（本机样例的来源与许可尚未确认，见 `docs/sample-data-attribution.md`）。
 
 ## 已知边界（不影响演示收尾）
 
 - 追溯表仍有 2 个缺口：真实设备协议接入（`QRS-D-002`）、真实临床场景验证（`QRS-R-004`）。
 - 未完成 IEC 62304 软件安全分类、ISO 14971 正式风险可接受性结论、IEC 60601-1-8 报警合规验证。
 - Lume 直接暴露时写接口无鉴权；PACS C-MOVE 接收端为明文；真实 PACS 仅支持 C-MOVE 时 TLS 取回受限。
-- 没有 React 组件测试、没有 CI、没有 LICENSE、没有 macOS app bundle/签名。
+- 没有 React 组件测试、没有 CI、没有 macOS app bundle/签名。交付快照时也没有 LICENSE；2026-11-09 已补齐 MIT 许可与第三方声明，见根目录 `LICENSE` / `THIRD_PARTY_NOTICES.md`。
 
 ## 收尾定义
 

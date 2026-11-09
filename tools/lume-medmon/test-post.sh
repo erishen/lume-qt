@@ -101,6 +101,11 @@ fi
 # 收端独立清洗回归：故意让「生产者」直接 POST 原始 PHI（旧镜像、脚本调用、
 # 未来新客户端都可能这样），验证落库前仍会被白名单 + 路径/UID 折叠拦住。
 PHI_PAYLOAD='{"app":"lume-qt","events":[{"ts":"2026-11-09T15:00:00.000","tsUs":2,"session":"'"${SESSION}"'","type":"test.redaction","message":"取回 2.25.31873619609263979417185351299617829387 于 /Users/<user>/Library/Application Support/research/lume-qt/pacs/A.dcm","source":"~/Library/Application Support/research/lume-qt/audit/a.jsonl","reason":"C:\\Users\\<user>\\Documents\\ct 与 /opt/homebrew/opt/qt","patientName":"Jane_Doe","studyUid":"1.2.840.10008","nested":{"patientId":"P123"}}]}'
+# fixture 自检：占位符必须真的出现在原始 payload 里，否则下面的 needle 断言会空转。
+printf '%s' "${PHI_PAYLOAD}" | grep -Fq '<user>' || {
+  echo "==> [lume-test] 脱敏回归 fixture 缺少 <user> 占位符，断言会假绿" >&2
+  exit 1
+}
 status=""
 for attempt in 1 2; do
   if status="$(curl -sS --noproxy '*' --max-time 5 -o "${TMP}/phi-resp.json" -w '%{http_code}' \

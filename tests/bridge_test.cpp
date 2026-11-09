@@ -1042,6 +1042,7 @@ TEST(LumeSinkPrivacyTest, PathsWithSpacesAndOtherRootsAreScrubbed)
         text += safe.value(key).toString() + QLatin1Char('\n');
     }
     EXPECT_FALSE(text.contains(QStringLiteral("/Users/")));
+    EXPECT_FALSE(text.contains(QStringLiteral("<user>")));
     EXPECT_FALSE(text.contains(QStringLiteral("Application Support")));
     EXPECT_FALSE(text.contains(QStringLiteral("~/Library")));
     EXPECT_FALSE(text.contains(QStringLiteral("/opt/homebrew")));

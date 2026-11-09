@@ -5,6 +5,7 @@
 Lume 的 Qt 桌面工作台（医疗监护演示）· Qt WebEngine / C++ / React（Vite + TypeScript）。
 
 > **非临床用途**：本项目是科研/工程演示，不是医疗器械，不能用于诊断、治疗或临床决策。
+> **默认配置不可直接部署**：Lume 写接口无鉴权、无 TLS，PACS C-FIND 可全库列举，C-MOVE 接收端为明文，本地 PHI 台账没有自动保留期清理。所有端口只应留在受控本地网络；部署前先读 [`docs/privacy-compliance.md`](docs/privacy-compliance.md)。
 > 隐私与合规审计、数据流向和上线前检查表见 [`docs/privacy-compliance.md`](docs/privacy-compliance.md)。
 > 系统架构、线程模型、原生/Web 分页与 DICOM/PACS、审计-Lume 链路见 [`docs/architecture.md`](docs/architecture.md)。
 
@@ -41,6 +42,7 @@ Lume 的 Qt 桌面工作台（医疗监护演示）· Qt WebEngine / C++ / React
 ```
 lume-qt/
 ├── CMakeLists.txt / Makefile      # CMake + Ninja 构建；Makefile 快捷目标
+├── LICENSE / THIRD_PARTY_NOTICES.md  # 本仓库 MIT 许可；第三方组件声明
 ├── src/                          # C++ Qt 宿主（34 个文件）
 │   ├── main.cpp / mainwindow.*    # 入口、app:// scheme、原生/Web 分页
 │   ├── appschemehandler.* / consolepage.*   # 静态资源 scheme、内置控制台页
@@ -325,6 +327,8 @@ bridge.dataFromCpp.connect((payload) => {
 - [docs/traceability.md](docs/traceability.md)：需求 → 实现 → 证据追溯矩阵
 - [docs/risk-analysis.md](docs/risk-analysis.md)：风险/控制分析
 - [docs/soak-2026-11-06.md](docs/soak-2026-11-06.md)：长时间运行浸泡记录
+- [docs/sample-data-attribution.md](docs/sample-data-attribution.md)：本机样例 DICOM 的来源与再分发说明（许可未确认，不随导出包分发）
+- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)：第三方组件许可与分发二进制时的 LGPL 条件
 
 ## 🧪 测试基础设施
 
@@ -438,3 +442,11 @@ make trace
 - 若需打包分发（`.app` / 安装包），可在 `CMakeLists.txt` 中启用 `MACOSX_BUNDLE`，并将 `resources/web/` 拷贝进包内资源目录。
 - 启动后若日志出现 `[WebEngine] 前端加载失败`，现在会同时打印 `加载错误详情`（Chromium 的 errorDomain / errorCode / errorString），据此区分：前端产物缺失、自定义 scheme 未投递、或进程在 WebEngine 就绪前被终止。先确认 `resources/web/index.html` 存在，再检查是否有残留实例；`make dev` 会在启动前自动清理 5173 残留，也可随时单独执行 `make dev-stop`。
 - 在**隔离沙箱 / 无 GUI 会话**的环境里启动 Qt 应用，WebEngine 渲染进程可能起不来并报 `loadFinished(false)`；此类失败属于运行环境限制，请在本机 Terminal（或 `make run` / `make dev`）正常桌面会话中运行。
+
+## 许可与对外分享
+
+本仓库的原创源码与文档采用 [MIT 许可](LICENSE)。第三方组件（Qt 6、DCMTK、OpenSSL、Google Test、npm 依赖树）**不在** MIT 覆盖范围内；分发二进制时还需满足 Qt LGPL 的声明与可重链条件，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+`resources/dicom/` 下的样例 DICOM 未入库、**不随任何对外分享的导出包分发**，其来源与再分发许可尚未确认，见 [样例数据说明](docs/sample-data-attribution.md)。
+
+> ⚠️ **分享只能用干净导出**（如 `git archive HEAD`），**绝不要直接打包整个工作目录**：本机 `tools/lume-medmon/.env` 含真实 API Key 与密码，`.data/` 有本地数据库与日志，`build/` 含构建机绝对路径。完整结论见 [`docs/privacy-compliance.md`](docs/privacy-compliance.md) 的「对外分享审计」一节。

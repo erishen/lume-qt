@@ -5,6 +5,7 @@
 Lume's Qt desktop workbench for a **clinical monitoring demo** · Qt WebEngine / C++17 / React (Vite + TypeScript).
 
 > **Non-clinical use only.** This is a research and engineering demo, not a medical device. It must not be used for diagnosis, treatment, or clinical decision-making.
+> **Default configuration is not secure for deployment.** The Lume write endpoint has no authentication or TLS, C-FIND can enumerate an entire PACS, C-MOVE's receiver is plaintext, and the local PHI ledger has no automatic retention limit. Keep every port on a trusted local network; see [`docs/privacy-compliance.md`](docs/privacy-compliance.md) before deploying.
 > For the privacy/compliance audit, data flow, and pre-deployment checklist, see [`docs/privacy-compliance.md`](docs/privacy-compliance.md).
 
 ## What it is
@@ -61,6 +62,7 @@ Key design points:
 ```text
 lume-qt/
 ├── CMakeLists.txt / Makefile     # CMake + Ninja build; Makefile shortcuts
+├── LICENSE / THIRD_PARTY_NOTICES.md  # MIT for this repo; third-party terms
 ├── src/                         # C++ Qt host (34 files)
 │   ├── main.cpp / mainwindow.*   # entry, app:// scheme, native/web tabs
 │   ├── appschemehandler.* / consolepage.*  # static scheme, built-in console page
@@ -383,8 +385,14 @@ The project deliberately has **no CI pipeline**. Qt WebEngine + DCMTK make CI im
 | [`docs/traceability.md`](docs/traceability.md) | Requirement → implementation → evidence matrix |
 | [`docs/risk-analysis.md`](docs/risk-analysis.md) | Hazard/control analysis, including alarm and AI risks |
 | [`docs/soak-2026-11-06.md`](docs/soak-2026-11-06.md) | Long-running soak notes and observations |
+| [`docs/sample-data-attribution.md`](docs/sample-data-attribution.md) | Local DICOM sample: provenance unverified, excluded from exports (Chinese) |
+| [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) | Third-party component licenses and LGPL distribution conditions |
 | [`README.zh.md`](README.zh.md) | Chinese README: overview, build/run, environment variables, tests, known issues |
 
 ## License
 
-No license file is included in this repository snapshot. Add one before distributing the project outside the current workspace.
+The original source in this repository is released under the [MIT License](LICENSE). Third-party components (Qt 6, DCMTK, OpenSSL, Google Test, the npm dependency tree) are **not** covered by it — see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for their licenses and the LGPL relinking conditions that apply if you distribute binaries.
+
+The local DICOM sample under `resources/dicom/` is not tracked and is **not included** in shareable exports; its provenance and redistribution terms are unverified ([`docs/sample-data-attribution.md`](docs/sample-data-attribution.md)).
+
+**Sharing:** use a clean `git archive HEAD` export, never a copy of the working directory — the working directory contains `tools/lume-medmon/.env` (real credentials), `.data/`, `build/` with host paths, and unlicensed sample data. See [`docs/privacy-compliance.md`](docs/privacy-compliance.md).

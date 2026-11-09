@@ -5,7 +5,7 @@
 
 ## 结论先说
 
-- **仓库里没有发现硬编码密钥或真实病患数据。** `.env`、样例 DICOM、本地 SQLite/skills 缓存都在 `.gitignore` 内，git 历史中没有 `.env` / `.dcm` / 台账文件。
+- **git 仓库里没有发现硬编码密钥或真实病患数据。** `.env`、样例 DICOM、本地 SQLite/skills 缓存都在 `.gitignore` 内，git 历史中没有 `.env` / `.dcm` / 台账文件。**这条结论只覆盖版本库，不覆盖整个工作目录**——直接打包目录会把真实密钥、本机数据库和构建机路径一起带出去，见下节「对外分享审计」。
 - **但项目不是临床合规产品。** 目前没有医疗器械注册、临床验证、质量体系、电子签名或审计追踪签核；界面和文档必须持续标注“演示/非临床”。
 - **真实 PACS 接入后，主要风险是 PHI 出端与本地留存，而不是源码泄露。** 旧链路会把 `studyUid` 和落盘目录原样上行到 Lume；Lume 的读接口也会返回原始 payload。本轮已修复这两条，但部署层仍需做网络、账号、加密和保留期控制。
 
@@ -14,7 +14,7 @@
 | 数据 | 位置 | 是否入库 | 风险 |
 |---|---|---|---|
 | LLM API Key / 模型地址 | `tools/lume-medmon/.env` | 否（已 ignore） | 本机明文密钥；权限已为 `600`；一旦复制/截图/打包仍可能泄露 |
-| 样例 DICOM 序列 | `resources/dicom/` | 否（已 ignore） | 头部可见 `Jane_Doe` 等演示标识；**不是**从临床系统导出的真实病例；换真实数据后即为 PHI |
+| 样例 DICOM 序列 | `resources/dicom/` | 否（已 ignore） | 头部可见 `Jane_Doe` 等演示标识；**不是**从临床系统导出的真实病例；换真实数据后即为 PHI。来源与再分发许可未确认，见 `docs/sample-data-attribution.md` |
 | 本地审计台账 | `~/Library/Application Support/research/lume-qt/audit/*.jsonl` | 否 | 含 `studyUid`、`dir`、PACS 端点、报警/信号事件；按 PHI 保护；目录 700 / 文件 600，保留期开关默认关闭 |
 | PACS 落盘 | `~/Library/Application Support/research/lume-qt/pacs/` | 否 | 完整 DICOM，含患者姓名/ID/检查信息；目录 700 / 文件 600；保留期开关默认关闭 |
 | Lume 镜像库 | `tools/lume-medmon/.data/medmon.db` | 否 | 旧数据可能含原始 `studyUid`/`dir`；新数据落库前已白名单化 |
@@ -69,6 +69,14 @@
 - **仍未解决**：`ignore` 模式本身不验服务端证书；C-MOVE 接收端没有 TLS（只能强制禁用）；`DcmTLSSCU::enableAuthentication()` 返回 `void`，证书文件存在但内容损坏时无法在建连前从返回码判定，只能靠握手失败暴露。
 
 仍**未**解决、也改代码解决不了的：医疗器械注册/临床验证/QMS/电子签名/操作者身份；Lume 直接暴露时的写接口鉴权；PACS C-FIND 全库列举的最小必要访问；真实 PACS 只支持 C-MOVE 时的 TLS 取回。演示阶段可以接受，进临床前必须单独处理。
+
+## 2026-11-09 对外分享审计
+
+- **发布面**：仓库从未 push（无 remote、无 `refs/remotes`，父目录不是 git 仓）。审计时 HEAD 的 77 个 blob 与全历史 553 个 blob 全部逐字节扫过，无游离对象、无 `.env` / `.dcm` / 证书 / 台账入库；历史里唯一的 `.env*` 是 `.env.example`（公开端点 + 空 KEY）。
+- **已清理**：HEAD 中 3 处真实用户名/主机名（脱敏回归 fixture、实例锁实测日志）改为 `<user>` / `demo-host.local` 占位，并同步断言 needle、加 fixture 自检防止 needle 空转；PACS 示例地址改用 RFC 5737 文档段 `192.0.2.0/24`。历史提交里曾出现的主机名不在 HEAD，用 `git archive` 干净导出不会带出。
+- **打包禁令**：**绝不打包整个工作目录**。本机 `tools/lume-medmon/.env` 含真实 `LLM_API_KEY` / `LUME_AUTH_PASSWORD`，`.data/` 含本地 SQLite、会话与 supervisor 日志，`build/build.ninja` 含 234 处构建机绝对路径，`resources/dicom/` 是 78MB、再分发许可未确认的样例数据。分享只用 `git archive HEAD`（或新建单提交的干净仓），并显式排除 `.env` / `.data/` / `build/` / `resources/dicom/` / `frontend/node_modules/` / `.git/`。若历史上曾把整个目录发给别人，应立即轮换上述两个凭据，而不是清 git 历史。
+- **合规补齐**：新增 `LICENSE`（MIT，中性版权主体）、`THIRD_PARTY_NOTICES.md`（Qt 6 LGPLv3/GPL、DCMTK、React/Vite/Three.js 等条件）、`docs/sample-data-attribution.md`（样例数据不随导出包分发，来源与再分发许可未确认）。
+- **仍需随分享披露**：默认配置不安全（Lume 写接口无鉴权无 TLS、C-FIND 全库列举、PHI 台账无自动清理、C-MOVE 接收端明文），已在两版 README 首屏标注；项目不是临床合规产品。
 
 ## 上线前最低检查表
 

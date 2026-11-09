@@ -279,7 +279,7 @@ python3 -c "import json,sys;[print(json.loads(l)['type']) for l in open(sys.argv
     studyInstanceUid / modality / series`。
   - 每次都开新关联再释放，不留长连接——术中网络抖动时长连接会留下半死状态，
     而下一次探测的开销只有几毫秒。
-- **配置**：`QTRS_PACS=host:port:calledAE`（例 `QTRS_PACS=192.0.2.12:104:ORPACS`）。
+- **配置**：`QTRS_PACS=host:port:calledAE`（例 `QTRS_PACS=192.0.2.12:104:ORPACS`，`192.0.2.0/24` 是 RFC 5737 文档示例段）。
   启动后 1.2 s 自动 C-ECHO，成功则立刻接着 C-FIND——接入现场的真实顺序就是
   「先验证连通、再找病人」，分两步手动触发只会让人忘了第二步。
 - **线程模型**：网络调用在工作线程里跑，回主线程后才发信号。`PacsThreadHolder`

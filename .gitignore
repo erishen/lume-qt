@@ -9,9 +9,11 @@ frontend/dist/
 # qwebchannel.js 由 vite.config.ts 从 Qt 安装同步，属生成物
 frontend/public/qwebchannel.js
 
-# Qt WebEngine 运行数据（缓存/存储）
+# 前端构建产物 / Qt WebEngine 运行数据（缓存/存储）
+# 注意：不能用 `resources/web/` 尾斜杠规则，它会连带吃掉后面的负向规则，
+# 使 .gitkeep 永远无法入库（git archive 出来的干净树会缺这个目录）。
 *.log
-resources/web/
+resources/web/*
 !resources/web/.gitkeep
 
 # 样例 DICOM 序列（约 78MB，只留在本地，不入库）
