@@ -16,7 +16,7 @@
 
 ## 前端侧
 
-版本与完整传递依赖见 [`frontend/package.json`](frontend/package.json) 与 [`frontend/package-lock.json`](frontend/package-lock.json)。
+版本声明见 [`frontend/package.json`](frontend/package.json)；完整传递依赖以 `npm install` 在本机生成的 `frontend/package-lock.json` 为准。该 lockfile 被开发环境**全局** gitignore 规则排除，因此**不随本仓库或干净导出包分发**——若需要可复现构建，请显式取消该规则并把 lockfile 纳入版本库。
 
 | 组件 | 许可（概述） |
 |---|---|
