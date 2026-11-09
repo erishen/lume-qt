@@ -36,9 +36,10 @@ CTEST ?= ctest
 # 默认目标：完整构建
 all: cpp
 
-## 检查需求追溯矩阵（ID 唯一 / 状态合法 / 引用文件存在）
+## 检查追溯矩阵与两版 README 目录树（ID / 状态 / 引用 / 文件登记）
 trace:
 	@python3 scripts/check-traceability.py
+	@python3 scripts/check-readme-layout.py
 
 ## 构建并运行应用
 run: all
@@ -193,17 +194,17 @@ run-tests: cpp
 bridge_test: run-tests
 	@true
 
-## 运行前端单元测试（npm test）
-## 注意：前端 Jest/RTL 测试尚未接入（见 README “测试基础设施”），
-## 目前 package.json 无 test 脚本，本目标会明确提示而非静默失败。
+## 运行前端单元测试（Vitest，npm test）
+## package.json 有 test 脚本就执行；缺失时明确提示而非静默失败。
+## 当前 8 条用例覆盖延迟看板纯逻辑，React 组件测试尚未接入（见 README）。
 frontend-tests: deps
 	@echo "==> 前端单元测试"
 	@cd $(ROOT)/frontend && \
 		if node -e "process.exit(require('./package.json').scripts && require('./package.json').scripts.test ? 0 : 1)" 2>/dev/null; then \
 			$(NPM) test; \
 		else \
-			echo "  [跳过] 前端单测未实现：package.json 暂无 test 脚本 / Jest 依赖。"; \
-			echo "  参见 README “测试基础设施” 中的规划说明。"; \
+			echo "  [跳过] 前端单测未接入：package.json 缺少 test 脚本。"; \
+			echo "  参见 README “测试基础设施” 中的说明。"; \
 		fi
 
 ## 启动 Lume medmon，并用写链路探针确认可用（不负责长期监督）

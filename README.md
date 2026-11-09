@@ -60,32 +60,40 @@ Key design points:
 
 ```text
 lume-qt/
-├── CMakeLists.txt
-├── Makefile
-├── src/
-│   ├── main.cpp                 # app entry, app:// scheme, profile migration
-│   ├── mainwindow.{h,cpp}       # tabs, WebEngine view, native page, dark QSS
-│   ├── bridge.{h,cpp}           # QWebChannel methods/signals
-│   ├── auditsink.{h,cpp}        # append-only JSONL ledger
-│   ├── lumesink.{h,cpp}         # batched Lume uplink + source-side sanitization
-│   ├── alarmconfig.{h,cpp}      # env/Lume-configurable alarm thresholds
-│   ├── deviceprovider.{h,cpp}   # simulated device abstraction
-│   ├── pacs*.{h,cpp}            # DCMTK SCU/SCP paths
-│   ├── volumeview.{h,cpp}       # native offscreen volume renderer
-│   └── volumestats.{h,cpp}      # pure window/level helpers and tests
-├── frontend/                    # React 19 + Vite 6 + TypeScript
-│   ├── src/App.tsx              # monitoring cockpit
-│   ├── src/AuditStream.tsx      # ledger + Lume review UI
-│   └── src/qwebchannel.ts       # typed bridge wrapper
-├── tools/lume-medmon/           # reference Lume service (.lume)
-│   ├── app.lume
-│   ├── .env.example
-│   └── .data/                   # local mirror DB, gitignored
+├── CMakeLists.txt / Makefile     # CMake + Ninja build; Makefile shortcuts
+├── src/                         # C++ Qt host (34 files)
+│   ├── main.cpp / mainwindow.*   # entry, app:// scheme, native/web tabs
+│   ├── appschemehandler.* / consolepage.*  # static scheme, built-in console page
+│   ├── bridge.*                 # QWebChannel methods and signals
+│   ├── deviceprovider.h / simulatorprovider.*  # device abstraction, simulated feed
+│   ├── vitalstrip.* / alarmconfig.*           # native strips, alarm thresholds, mute
+│   ├── dicomreader.* / volumeview.* / volumestats.* / volumeprefs.*
+│   │                            # DICOM parsing / volume render / stats / prefs
+│   ├── pacsclient.* / pacstls.* # PACS SCU/SCP and DICOM TLS
+│   └── auditsink.* / auditquery.* / lumesink.* # ledger / query / redacted uplink
+├── frontend/                    # React 19 + Vite 6 + TS (14 files under src/)
+│   ├── index.html / vite.config.ts / tsconfig.json / package.json
+│   └── src/
+│       ├── App.tsx / main.tsx / App.css       # cockpit and entry point
+│       ├── qwebchannel.ts / activity.ts / latency.ts / latency.test.ts
+│       ├── framePacing.ts                    # offscreen pause, frame-rate tiers
+│       ├── MedicalMonitor.tsx / Neuro3D.tsx / Volume3D.tsx
+│       └── syntheticVolume.ts / AuditStream.tsx / vite-env.d.ts
+├── tests/                       # Google Test (3 files)
+│   ├── bridge_test.cpp / volume_stats_test.cpp
+│   └── CMakeLists.txt
+├── scripts/                     # build and check scripts (4 files)
+│   ├── build.sh / frontend-build.sh
+│   └── check-traceability.py / check-readme-layout.py
+├── tools/lume-medmon/           # reference Lume service (.env / .data not tracked)
+├── docs/                        # architecture, notes, privacy, risk, trace, soak
 ├── resources/web/               # frontend build output, gitignored
-├── tests/                       # Google Test suites
-├── docs/                        # privacy, integration, traceability, risk, soak
-└── scripts/build.sh
+└── resources/dicom/             # local DICOM sample, gitignored
 ```
+
+`src/` has grown from the original four-file skeleton to 34 files; PACS, the audit
+ledger, the Lume uplink and the native volume renderer all live there. Component
+responsibilities and the threading model are in [`docs/architecture.md`](docs/architecture.md).
 
 ## Requirements
 
@@ -338,7 +346,7 @@ make run-tests                  # C++ unit tests through ctest
 make frontend-tests             # Vitest frontend tests
 cd frontend && npm run typecheck
 cd frontend && npm run build
-make trace                      # validate requirement traceability IDs/status/references
+make trace                      # traceability matrix + README layout consistency
 make perf-bench                 # performance benchmark target
 ```
 
@@ -347,6 +355,7 @@ Current suites:
 - `VolumeStatsUnitTests` — pure window/level and percentile helpers.
 - `BridgeUnitTests` — bridge contracts, PACS state, Lume sink queue/redaction behavior.
 - Frontend tests — eight Vitest cases for the latency/event measurement helpers.
+- `make trace` also verifies that both README directory trees list every file under `src/`, `frontend/src/`, `scripts/` and `tests/`; adding a module or script without updating the READMEs fails the gate.
 
 The project deliberately has **no CI pipeline**. Qt WebEngine + DCMTK make CI images expensive; the local Makefile targets are the quality gate. If CI is added later, verify `qt6-webengine-dev` and `libdcmtk-dev` are available in the target image first.
 

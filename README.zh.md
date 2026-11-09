@@ -40,23 +40,39 @@ Lume 的 Qt 桌面工作台（医疗监护演示）· Qt WebEngine / C++ / React
 
 ```
 lume-qt/
-├── CMakeLists.txt              # 构建配置：Qt6 + 前端构建集成
-├── src/
-│   ├── main.cpp                # 入口：注册 app:// scheme
-│   ├── mainwindow.h/.cpp       # 主窗口 + QWebEngineView + WebChannel
-│   ├── bridge.h/.cpp           # C++↔JS 桥接对象
-│   └── appschemehandler.h/.cpp # app:// 静态资源处理器
-├── frontend/                   # React 前端 (Vite + TS)
-│   ├── package.json
-│   ├── vite.config.ts          # 输出到 ../resources/web
-│   ├── index.html
+├── CMakeLists.txt / Makefile      # CMake + Ninja 构建；Makefile 快捷目标
+├── src/                          # C++ Qt 宿主（34 个文件）
+│   ├── main.cpp / mainwindow.*    # 入口、app:// scheme、原生/Web 分页
+│   ├── appschemehandler.* / consolepage.*   # 静态资源 scheme、内置控制台页
+│   ├── bridge.*                  # QWebChannel 方法与信号
+│   ├── deviceprovider.h / simulatorprovider.*   # 设备抽象与模拟数据源
+│   ├── vitalstrip.* / alarmconfig.*            # 原生波形条、报警阈值与静音
+│   ├── dicomreader.* / volumeview.* / volumestats.* / volumeprefs.*
+│   │                             # DICOM 解析 / 体渲染 / 统计 / 窗值偏好
+│   ├── pacsclient.* / pacstls.*  # PACS SCU/SCP 与 DICOM TLS
+│   └── auditsink.* / auditquery.* / lumesink.* # 本地台账 / 查询 / 脱敏上行
+├── frontend/                     # React 19 + Vite 6 + TS（src 下 14 个文件）
+│   ├── index.html / vite.config.ts / tsconfig.json / package.json
 │   └── src/
-│       ├── main.tsx
-│       ├── App.tsx             # 桥接演示界面
-│       └── qwebchannel.ts      # QWebChannel 类型安全封装
-├── resources/web/              # 前端构建产物（生成，gitignored）
-└── scripts/build.sh            # 一键构建
+│       ├── App.tsx / main.tsx / App.css        # 监护台界面与入口
+│       ├── qwebchannel.ts / activity.ts / latency.ts / latency.test.ts
+│       ├── framePacing.ts                     # 离屏暂停与帧率分级
+│       ├── MedicalMonitor.tsx / Neuro3D.tsx / Volume3D.tsx
+│       ├── syntheticVolume.ts / AuditStream.tsx / vite-env.d.ts
+├── tests/                        # Google Test（3 个文件）
+│   ├── bridge_test.cpp / volume_stats_test.cpp
+│   └── CMakeLists.txt
+├── scripts/                      # 构建与校验脚本（4 个文件）
+│   ├── build.sh / frontend-build.sh
+│   └── check-traceability.py / check-readme-layout.py
+├── tools/lume-medmon/            # Lume 参考服务（app.lume；.env / .data 不入库）
+├── docs/                         # 架构、实现记录、隐私、风险、追溯、浸泡、交付说明
+├── resources/web/                # 前端构建产物（生成，gitignored）
+└── resources/dicom/              # 样例 DICOM（本地自备，gitignored）
 ```
+
+> 与早期骨架相比，`src/` 已从 4 个文件扩展到 34 个；新增的 PACS、审计台账、Lume 上行、
+> 原生体渲染等模块都在这里。各模块的职责与线程模型见 [`docs/architecture.md`](docs/architecture.md)。
 
 ## 环境要求
 
@@ -393,7 +409,7 @@ make perf-bench
 # 运行完整测试套件（C++ + 前端）
 make test-all
 
-# 检查需求追溯矩阵（ID / 状态 / 引用文件）
+# 检查追溯矩阵与两版 README 目录树（ID / 状态 / 引用 / 文件登记）
 make trace
 ```
 
@@ -401,6 +417,7 @@ make trace
 
 - **自动化测试**：本地 `make test-all`（C++ Google Test + 前端 Vitest）为质量门；本项目不接入 CI（见上节）
 - **追溯矩阵**：`make trace` 校验 `docs/traceability.md` 的结构与引用，缺口不会被悄悄改成「已验证」
+- **文档一致性**：`make trace` 同时校验两版 README 的目录树登记了 `src/`、`frontend/src/`、`scripts/`、`tests/` 的全部文件，新增模块或脚本漏写会直接报错
 - **质量门**：主目标与 `bridge_test` 共用同一套 `-Wall -Wextra -Werror -Wconversion` 编译选项，测试代码不比产品代码宽松；测试失败即以非零码退出
 - **测试数据**：为每个测试提供可重现的数据
 - **错误处理测试**：验证错误场景的处理
@@ -411,7 +428,7 @@ make trace
 - **代码质量**：通过测试确保代码正确性和健壮性
 - **开发效率**：早期发现错误，减少回归风险
 - **文档生成**：测试用例可作为文档
-- **持续集成**：确保每次提交都经过质量验证
+- **质量门可复现**：C++ 单测、前端单测、类型检查与追溯矩阵都走本地命令，不依赖远端流水线（本项目不接入 CI，见上节）
 
 ## 已知事项
 

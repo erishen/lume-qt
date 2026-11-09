@@ -18,6 +18,10 @@ resources/web/
 # 需要自备一份放到 resources/dicom/brain-t1，否则 DICOM 演示与相关单测会跳过
 /resources/dicom/
 
+# Python 校验脚本的字节码缓存
+__pycache__/
+*.py[cod]
+
 # OS / IDE
 .DS_Store
 .vscode/
