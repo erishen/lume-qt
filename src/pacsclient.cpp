@@ -135,21 +135,21 @@ bool openAssociation(DcmSCU &scu, const PacsClient::Endpoint &endpoint, QString 
         // 桌面 GUI 没有 stdin，会在建连前挂住。
         tlsScu->enableAuthentication(cfg.keyFile.toStdString(), cfg.certFile.toStdString(), "",
                                      DCF_Filetype_PEM, DCF_Filetype_PEM);
-        if (cfg.verify != qtrs::PacsTlsConfig::Verify::Ignore) {
+        if (cfg.verify == qtrs::PacsTlsConfig::Verify::Require) {
             tlsScu->addTrustedCertFile(cfg.caFile.toStdString());
         }
+        // 只保留 fail-closed 的 require 与「显式知情」的 ignore。
+        // 配置层已经拒绝其余级别，这里不做任何「默认宽松」的兜底分支。
         switch (cfg.verify) {
         case qtrs::PacsTlsConfig::Verify::Ignore:
             tlsScu->setPeerCertVerification(DCV_ignoreCertificate);
-            break;
-        case qtrs::PacsTlsConfig::Verify::Check:
-            tlsScu->setPeerCertVerification(DCV_checkCertificate);
+            qWarning().noquote() << QStringLiteral(
+                "[PACS] TLS verify=ignore：不校验 PACS 服务端证书，中间人可冒充，仅限受控网段排障");
             break;
         case qtrs::PacsTlsConfig::Verify::Require:
             tlsScu->setPeerCertVerification(DCV_requireCertificate);
             break;
         }
-        qInfo().noquote() << QStringLiteral("[PACS] TLS 已启用：%1").arg(cfg.summary());
     }
 
     OFCondition cond = scu.initNetwork();
@@ -169,6 +169,11 @@ bool openAssociation(DcmSCU &scu, const PacsClient::Endpoint &endpoint, QString 
     if (cond.bad()) {
         if (err) *err = QStringLiteral("关联协商失败：%1").arg(QString::fromStdString(cond.text()));
         return false;
+    }
+    // 只有关联真的建起来才记 TLS：把日志放在装载参数之后会让人误以为
+    // 「日志说 TLS 已启用，那这次失败就不是加密问题」，掩盖证书错配。
+    if (cfg.enabled) {
+        qInfo().noquote() << QStringLiteral("[PACS] TLS 关联已建立：%1").arg(cfg.summary());
     }
     return true;
 }
@@ -234,9 +239,14 @@ bool PacsClient::isRetryableError(const QString &message)
 {
     if (message.isEmpty()) return false;
     const QString lower = message.toLower();
-    // 确定性失败：不存在 / 无匹配，重试没有意义
+    // 确定性失败：不存在 / 无匹配 / 证书与 TLS 配置错配，重试没有意义。
+    // 证书错配常裹在「关联协商失败：…」里，不单独排除就会被当成网络抖动，
+    // 连试三次还把「CA 配错了」伪装成「PACS 不稳定」。
     if (lower.contains(QStringLiteral("no such")) || lower.contains(QStringLiteral("找不到"))
-        || lower.contains(QStringLiteral("不存在")) || lower.contains(QStringLiteral("0xa900"))) {
+        || lower.contains(QStringLiteral("不存在")) || lower.contains(QStringLiteral("0xa900"))
+        || lower.contains(QStringLiteral("certificate verify"))
+        || lower.contains(QStringLiteral("tls error")) || lower.contains(QStringLiteral("tls 配置无效"))
+        || lower.contains(QStringLiteral("证书"))) {
         return false;
     }
     return lower.contains(QStringLiteral("tcp")) || lower.contains(QStringLiteral("timeout"))
@@ -249,6 +259,13 @@ bool PacsClient::moveStudy(const Endpoint &endpoint, const QString &studyUid,
                            const QString &destAe, int destPort, const QString &destDir,
                            int *fileCount, QString *err)
 {
+    // fail-fast：接收端是明文 Storage SCP，启用 TLS 时绝不能先开监听端口再拒绝。
+    // 判定必须早于 mkpath / openListenPort（顺序由 scripts/check-pacs-tls.py 锁住）。
+    const QString tlsBlock = qtrs::pacsTlsMoveBlockReason(qtrs::pacsTlsConfigFromEnv());
+    if (!tlsBlock.isEmpty()) {
+        if (err) *err = tlsBlock;
+        return false;
+    }
     if (studyUid.trimmed().isEmpty()) {
         if (err) *err = QStringLiteral("缺少 StudyInstanceUID，无法取回");
         return false;
@@ -312,12 +329,6 @@ PresentationContexts = StorageSCP
     scp.setConnectionTimeout(3);
 
     const OFCondition bindRc = scp.openListenPort();
-    if (qtrs::pacsTlsConfigFromEnv().enabled) {
-        // C-MOVE 是「服务端反向连回我们的存储 SCP」，那条链路也得 TLS + 双向认证。
-        // 客户端这半边能加密、接收端还没挂 TLS 层，硬上就是半吊子，明确拒绝。
-        if (err) *err = QStringLiteral("C-MOVE 在 TLS 模式下暂不支持（接收端 TLS 未实现），请用 C-GET");
-        return false;
-    }
     if (bindRc.bad()) {
         if (err) *err = QStringLiteral("无法监听本机接收端口 %1：%2")
                              .arg(destPort).arg(bindRc.text());

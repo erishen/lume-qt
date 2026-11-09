@@ -758,6 +758,15 @@ TEST(PacsClientTest, ClassifiesRetryableErrors)
     EXPECT_FALSE(PacsClient::isRetryableError(
         QStringLiteral("C-GET 部分失败： 找不到该检查（0xA900）")));
     EXPECT_FALSE(PacsClient::isRetryableError(QStringLiteral("")));
+
+    // TLS 证书/配置错配是确定性结论：消息里带「关联协商失败」也不能当成网络抖动。
+    // 否则真实 CA 配错时会连试三次，把「证书问题」伪装成「PACS 不稳定」。
+    EXPECT_FALSE(PacsClient::isRetryableError(
+        QStringLiteral("关联协商失败： TLS error: certificate verify failed")));
+    EXPECT_FALSE(PacsClient::isRetryableError(
+        QStringLiteral("TLS 配置无效： CA 不存在：/etc/qtrs/pacs-ca.pem")));
+    EXPECT_TRUE(PacsClient::isRetryableError(
+        QStringLiteral("关联协商失败： TCP Initialization Error: Connection refused")));
 }
 
 int main(int argc, char **argv) {
@@ -847,7 +856,7 @@ TEST(PacsTlsConfigTest, MissingFilesAreNamed)
 {
     const auto cfg = qtrs::pacsTlsConfigFromValues(
         true, QStringLiteral("/no/ca.pem"), QStringLiteral("/no/client.pem"),
-        QStringLiteral("/no/client.key"), QStringLiteral("check"),
+        QStringLiteral("/no/client.key"), QStringLiteral("require"),
         [](const QString &) { return false; });
     EXPECT_FALSE(cfg.usable());
     EXPECT_TRUE(cfg.error.contains(QStringLiteral("证书不存在"))) << cfg.error.toStdString();
@@ -862,7 +871,65 @@ TEST(PacsTlsConfigTest, UnknownVerifyIsRejected)
         QStringLiteral("/tmp/client.key"), QStringLiteral("whatever"),
         [](const QString &) { return true; });
     EXPECT_FALSE(cfg.usable());
-    EXPECT_TRUE(cfg.error.contains(QStringLiteral("ignore/check/require"))) << cfg.error.toStdString();
+    EXPECT_TRUE(cfg.error.contains(QStringLiteral("QTRS_PACS_TLS_VERIFY"))) << cfg.error.toStdString();
+}
+
+TEST(PacsTlsConfigTest, CheckVerificationIsRejectedAsFailOpen)
+{
+    // DCMTK 的 DCV_checkCertificate 是「有证书就验，没有证书也放行」。
+    // 一个能让对端不给证书就握手的级别，不能算「验签配置通过」。
+    const auto cfg = qtrs::pacsTlsConfigFromValues(
+        true, QStringLiteral("/tmp/ca.pem"), QStringLiteral("/tmp/client.pem"),
+        QStringLiteral("/tmp/client.key"), QStringLiteral("check"),
+        [](const QString &) { return true; });
+    EXPECT_FALSE(cfg.usable());
+    EXPECT_TRUE(cfg.error.contains(QStringLiteral("check"))) << cfg.error.toStdString();
+    EXPECT_TRUE(cfg.error.contains(QStringLiteral("证书"))) << cfg.error.toStdString();
+}
+
+TEST(PacsTlsConfigTest, RequireAndIgnoreRemainTheOnlyUsableLevels)
+{
+    auto exists = [](const QString &) { return true; };
+    const auto require = qtrs::pacsTlsConfigFromValues(
+        true, QStringLiteral("/tmp/ca.pem"), QStringLiteral("/tmp/client.pem"),
+        QStringLiteral("/tmp/client.key"), QStringLiteral("require"), exists);
+    ASSERT_TRUE(require.error.isEmpty()) << require.error.toStdString();
+    EXPECT_TRUE(require.usable());
+    EXPECT_EQ(require.verify, qtrs::PacsTlsConfig::Verify::Require);
+
+    const auto implicit = qtrs::pacsTlsConfigFromValues(
+        true, QStringLiteral("/tmp/ca.pem"), QStringLiteral("/tmp/client.pem"),
+        QStringLiteral("/tmp/client.key"), QString(), exists);
+    EXPECT_EQ(implicit.verify, qtrs::PacsTlsConfig::Verify::Require);
+    EXPECT_TRUE(implicit.usable());
+
+    const auto ignore = qtrs::pacsTlsConfigFromValues(
+        true, {}, QStringLiteral("/tmp/client.pem"), QStringLiteral("/tmp/client.key"),
+        QStringLiteral("ignore"), exists);
+    EXPECT_TRUE(ignore.usable());
+    EXPECT_EQ(ignore.verify, qtrs::PacsTlsConfig::Verify::Ignore);
+    EXPECT_TRUE(ignore.summary().contains(QStringLiteral("不验服务端证书")));
+}
+
+TEST(PacsTlsConfigTest, MoveVerdictIsFailClosedBeforeListener)
+{
+    auto exists = [](const QString &) { return true; };
+    const auto plain = qtrs::pacsTlsConfigFromValues(false, {}, {}, {}, {}, exists);
+    EXPECT_TRUE(qtrs::pacsTlsMoveBlockReason(plain).isEmpty());
+
+    const auto tls = qtrs::pacsTlsConfigFromValues(
+        true, QStringLiteral("/tmp/ca.pem"), QStringLiteral("/tmp/client.pem"),
+        QStringLiteral("/tmp/client.key"), QStringLiteral("require"), exists);
+    const QString reason = qtrs::pacsTlsMoveBlockReason(tls);
+    EXPECT_TRUE(reason.contains(QStringLiteral("C-MOVE")));
+    EXPECT_TRUE(reason.contains(QStringLiteral("TLS")));
+
+    // 证书配错也不能「退回明文 C-MOVE」：那等于用配置错误换一个 PHI 明文入口。
+    const auto broken = qtrs::pacsTlsConfigFromValues(true, {}, {}, {},
+                                                     QStringLiteral("require"), exists);
+    const QString brokenReason = qtrs::pacsTlsMoveBlockReason(broken);
+    EXPECT_TRUE(brokenReason.contains(QStringLiteral("配置无效")));
+    EXPECT_TRUE(brokenReason.contains(QStringLiteral("明文 C-MOVE")));
 }
 
 

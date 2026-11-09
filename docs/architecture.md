@@ -235,7 +235,7 @@ sequenceDiagram
 - PACS 请求是**单飞**：上一次未返回时不再开第二条；心跳是一条独立线程，长取回期间仍能 C-ECHO。
 - 取回成功后 `m_authoritativeVolumeDir` 标记该目录；样例自动加载被忽略，防止“真实病例被演示数据覆盖”。
 - 失败按错误分类重试；C-GET 的“不支持”才回落 C-MOVE，其他确定性错误不反复重试。
-- C-MOVE 需要 PACS 侧登记本机 `QTRSSTORE`/端口；接收端目前是明文 SCP，TLS 只覆盖出站 SCU 路径。
+- C-MOVE 需要 PACS 侧登记本机 `QTRSSTORE`/端口；接收端目前是明文 SCP，TLS 只覆盖出站 SCU 路径。启用 TLS 时 `pacsTlsMoveBlockReason()` 在创建取回目录、`openListenPort()` 之前就拒绝 C-MOVE，不会「先开明文入口再报错」；该顺序由 `scripts/check-pacs-tls.py` 锁住。
 
 ### 5.5 审计与 Lume 链路
 

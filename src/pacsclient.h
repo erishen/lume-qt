@@ -14,7 +14,10 @@
  * 为什么是同步接口：网络调用必须在工作线程里跑，由调用方（Bridge）负责线程与 UI 隔离，
  * 这样本类不依赖 Qt 事件循环，也就能在 gtest 里直接测（见 parseEndpoint）。
  *
- * 暂未实现（后续批次）：C-GET / C-MOVE 拉取影像、TLS、AE 白名单与超时重连策略。
+ * 已实现：C-ECHO / C-FIND / C-GET / C-MOVE（本机临时 SCP），以及出站 SCU 的
+ * DICOM TLS（配置与验签级别见 pacstls.h）。
+ * 仍未实现：AE 白名单、C-MOVE 接收端 TLS（因此 TLS 模式下禁用 C-MOVE）、
+ * 断线重连退避策略。
  */
 class PacsClient
 {

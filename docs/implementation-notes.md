@@ -1127,7 +1127,7 @@ curl -s http://127.0.0.1:8090/api/agent/ready
 
 现场 PACS 一旦关掉明文端口，C-ECHO / C-FIND / C-GET 全部要在 TLS 上重来。实现拆成两层：
 
-- `src/pacstls.{h,cpp}`：纯配置解析与校验。证书/私钥必须存在；`verify` 不是 `ignore` 时缺 CA 直接判配置错误——「没有 CA 的 TLS」等于连谁都信，不能算通过。
+- `src/pacstls.{h,cpp}`：纯配置解析与校验。证书/私钥必须存在；`verify=require` 时缺 CA 直接判配置错误——「没有 CA 的 TLS」等于连谁都信，不能算通过。`Verify` 只控制**服务端证书**怎么验，客户端证书由 `enableAuthentication()` 无条件装载。
 - `src/pacsclient.cpp`：`QTRS_PACS_TLS=1` 时把 `DcmSCU` 换成 `DcmTLSSCU`（子类，调用点不分叉），建关联前装客户端证书/CA，`initNetwork()` 之后再设套件（`DcmTLSSCU` 的前置条件）。
 
 启用方式：
@@ -1138,15 +1138,16 @@ export QTRS_PACS_TLS=1
 export QTRS_PACS_TLS_CA=/etc/qtrs/pacs-ca.pem
 export QTRS_PACS_TLS_CERT=/etc/qtrs/qtrs-client.pem
 export QTRS_PACS_TLS_KEY=/etc/qtrs/qtrs-client.key
-export QTRS_PACS_TLS_VERIFY=require   # require（默认）/ check / ignore
+export QTRS_PACS_TLS_VERIFY=require   # require（默认）/ ignore；check 已禁用
 ```
 
-行为约定：
+行为约定（2026-11-09 复审后）：
 
-- `require` = 双向认证（服务端也校验客户端证书）；`check` = 有证书就验、没有也放行；`ignore` = 只加密不验签，仅限受控网段排障。
-- 任一文件缺失、或其他值填进 `QTRS_PACS_TLS_VERIFY`，C-ECHO 直接失败并在状态行显示原因，**不会静默回落明文**。
-- `C-MOVE` 的接收端（本机临时存储 SCP）还没挂 TLS 层，TLS 模式下明确提示「请用 C-GET」，避免出现「请求加密、回连明文」的半吊子。
-- 前端 PACS 状态行显示 `· TLS` 或 `· 明文`，现场排障时先分清是加密问题还是网络问题。
+- 客户端证书由 `enableAuthentication()` 无条件装载；`Verify` 只管**服务端证书**。`require` = 服务端必须出示本地 CA 签发的证书；`ignore` = 只加密、不验服务端证书，仅限受控网段排障（运行时打 warning）。
+- `check` 已禁用：DCMTK 的该级别在「对端不出示证书」时直接放行，配了 CA 也不等于验过服务端身份，属 fail-open。
+- 任一文件缺失、验签级别填成 `check` 或其它值，C-ECHO 直接失败并显示原因，**不会静默回落明文**；证书验证失败归为确定性错误，不进入重试。
+- `C-MOVE` 的接收端（本机临时存储 SCP）还没挂 TLS 层，TLS 模式下明确提示「请用 C-GET」；判定在创建目录与 `openListenPort()` 之前完成，避免「先开明文入口再报错」，也避免证书配错时退回明文 C-MOVE。
+- 前端 PACS 状态行显示 `· TLS` 或 `· 明文`；`[PACS] TLS 关联已建立` 只在协商成功后打印，不会让人误以为「日志说启用了 TLS，所以这次失败与加密无关」。
 
 本机端到端实测（`dcmqrscp` + 自签 CA/服务端/客户端证书，`QTRS_PACS=127.0.0.1:11112:QTRSQR`）：
 
@@ -1161,6 +1162,17 @@ export QTRS_PACS_TLS_VERIFY=require   # require（默认）/ check / ignore
 
 1. `DcmSCU::useSecureConnection(DcmTLSTransportLayer*)` 在本机 DCMTK 3.7.1 上报 `ASC Caller passed in a NULL key`——单独探针里私钥/证书都加载成功、`checkPrivateKeyMatchesCertificate()` 为真，仍然建不起连接；换 `DcmTLSSCU` 才能通。DCMTK 已把 `DcmTLSSCU` 标为 deprecated，本文件里用 `#pragma clang diagnostic ignored "-Wdeprecated-declarations"` 顶住质量门，等上游修好再换回新 API。
 2. `DcmTLSSCU::enableAuthentication()` 的 passphrase 必须显式传 `""`。默认 `NULL` 会从 stdin 读口令，桌面 GUI 没有 stdin，会卡在建连之前。
+
+2026-11-09 复审（未改端到端结论，补的是配置与顺序边界）：
+
+| 缺口 | 依据 | 处理 |
+| --- | --- | --- |
+| `check` 验签级别 fail-open | DCMTK `tlslayer.h`：`DCV_checkCertificate` = “check peer certificate if present, **succeed if no certificate is present**” | 从 `PacsTlsConfig::Verify` 枚举与合法取值中移除，配置层明确拒绝 |
+| C-MOVE 的 TLS 判定晚于 `openListenPort()` | `pacsclient.cpp` 原第 314–320 行 | 抽 `pacsTlsMoveBlockReason()` 到函数入口，早于 `mkpath()` 与监听；`scripts/check-pacs-tls.py` 把顺序锁进 `make trace` |
+| 证书错配被当瞬时故障重试 | `isRetryableError()` 只看「关联」等关键词 | `certificate verify` / `TLS error` / `TLS 配置无效` 归入确定性失败 |
+| 注释与实现相反 | `pacsclient.h` 旧注释写「C-GET / C-MOVE / TLS 暂未实现」，`pacstls.h` 把 `ignore` 说成「不验客户端」 | 两处注释按现状重写 |
+
+`PacsTlsConfigTest.*` 新增 3 条、`PacsClientTest.ClassifiesRetryableErrors` 扩展 3 个断言，先跑红确认再修复；静态门禁做了四负例一正例自检。
 
 ### 23.12 窗值持久化与「恢复上次预设」
 

@@ -73,7 +73,7 @@
 | QRS-I-004 | 瞬时故障自动重试（有界退避），状态翻转时记录在线/离线 | `src/pacsclient.cpp` `src/bridge.cpp` | 断网三次失败后放弃；重试途中恢复第 2 次成功；心跳恢复 4ms | 已验证 |
 | QRS-I-005 | 多例选择 / 按病人过滤，而不是永远取第一例 | `frontend/src/MedicalMonitor.tsx` `src/bridge.cpp` | 库里两例时下拉可切换；选第二例后取回 8 个对象、体积来自该例目录 | 已验证 |
 | QRS-I-006 | 长时间取回期间的掉线要能及时暴露，而不是等取回失败 | `src/bridge.cpp` | 心跳独立线程/关联：C-MOVE 进行中杀掉 PACS，同一秒记 `pacs.offline`、取回随后才失败；日志无「跳过本次探测」 | 已验证 |
-| QRS-I-007 | PACS 关联必须支持 DICOM TLS 双向认证，配置错误时不得静默回落明文 | `src/pacstls.cpp` `src/pacsclient.cpp` | 自签 CA + 服务端/客户端证书 + `dcmqrscp +tls`：C-ECHO 8 ms → C-FIND 2 例 → C-GET 60 对象 179 ms，界面 `已连通 8 ms · 2 例 · TLS`；TLS 连明文端口 / 明文连 TLS 端口 / 无关 CA 三种错配均明确失败 | 已验证 |
+| QRS-I-007 | PACS 关联必须支持 DICOM TLS 双向认证，配置错误时不得静默回落明文 | `src/pacstls.cpp` `src/pacsclient.cpp` `scripts/check-pacs-tls.py` | 自签 CA + 服务端/客户端证书 + `dcmqrscp +tls`：C-ECHO 8 ms → C-FIND 2 例 → C-GET 60 对象 179 ms，界面 `已连通 8 ms · 2 例 · TLS`；TLS 连明文端口 / 明文连 TLS 端口 / 无关 CA 三种错配均明确失败。2026-11-09 复审补强：`check` 验签级别（对端无证书即放行）禁用、C-MOVE 的 TLS 判定前移到明文监听之前、证书验证失败不再误判为可重试；`PacsTlsConfigTest.*` 10/10 绿 + `make trace` 静态门禁四负例一正例自检 | 已验证 |
 
 ## E. 审计与可追溯
 

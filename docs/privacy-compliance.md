@@ -60,6 +60,14 @@
 - **回归证据**：`tests/bridge_test.cpp` 新增 2 条 C++ 用例（先跑红确认缺口，修复后 5/5 绿）；`tools/lume-medmon/test-post.sh` 扩展为第二个 POST，故意直投原始 PHI 并核对 SQLite `payload` 不含任何标识；把 `app.lume` 换回旧正则时该测试确实变红，排除假绿。
 - **仍存在的边界**：自由文本里的患者姓名、机构/术式描述无法靠正则消除，仍依赖字段白名单与「不用真实数据演示」；`LumeSink::ask()` 的用户输入会发给模型（界面目前只发固定 `AI_PROMPT`，不含台账内容）。
 
+## 2026-11-09 PACS TLS 复审
+
+- `QTRS_PACS_TLS_VERIFY=check` 已禁用。DCMTK 头文件明确该级别是「对端有证书就验、**没有证书也放行**」，配上 CA 也不等于验过服务端身份；原先把它和 `require` 并列为合法取值，等于给 PHI 链路留了一个看起来验了、实际可被冒充的开关。现在只保留 `require`（默认）与 `ignore`，后者运行时打 warning 并在状态摘要标注「不验服务端证书」。
+- C-MOVE 的 TLS 判定原先在 `openListenPort()` **之后**：TLS 模式下会先开放一个明文 Storage SCP 端口再报错退出。现改为函数入口 `pacsTlsMoveBlockReason()` 前置判定，且 TLS 配置不合法时同样拒绝，避免「证书配错就退回明文 C-MOVE」。
+- 证书验证失败（`certificate verify failed` / `TLS error`）原先因消息含「关联协商失败」被判为瞬时故障、重试三次，把 CA 配错伪装成 PACS 不稳定；现归入确定性失败。
+- 回归证据：`PacsTlsConfigTest.*` 新增 3 条（先跑红、修复后 10/10 绿），`PacsClientTest.ClassifiesRetryableErrors` 扩展 3 个断言；`scripts/check-pacs-tls.py` 静态门禁做了四负例一正例自检。`QRS-I-007` 的验证证据已补。
+- **仍未解决**：`ignore` 模式本身不验服务端证书；C-MOVE 接收端没有 TLS（只能强制禁用）；`DcmTLSSCU::enableAuthentication()` 返回 `void`，证书文件存在但内容损坏时无法在建连前从返回码判定，只能靠握手失败暴露。
+
 仍**未**解决、也改代码解决不了的：医疗器械注册/临床验证/QMS/电子签名/操作者身份；Lume 直接暴露时的写接口鉴权；PACS C-FIND 全库列举的最小必要访问；真实 PACS 只支持 C-MOVE 时的 TLS 取回。演示阶段可以接受，进临床前必须单独处理。
 
 ## 上线前最低检查表

@@ -62,9 +62,9 @@ lume-qt/
 ├── tests/                        # Google Test（3 个文件）
 │   ├── bridge_test.cpp / volume_stats_test.cpp
 │   └── CMakeLists.txt
-├── scripts/                      # 构建与校验脚本（4 个文件）
+├── scripts/                      # 构建与校验脚本（5 个文件）
 │   ├── build.sh / frontend-build.sh
-│   └── check-traceability.py / check-readme-layout.py
+│   └── check-traceability.py / check-readme-layout.py / check-pacs-tls.py
 ├── tools/lume-medmon/            # Lume 参考服务（app.lume；.env / .data 不入库）
 ├── docs/                         # 架构、实现记录、隐私、风险、追溯、浸泡、交付说明
 ├── resources/web/                # 前端构建产物（生成，gitignored）
@@ -409,7 +409,7 @@ make perf-bench
 # 运行完整测试套件（C++ + 前端）
 make test-all
 
-# 检查追溯矩阵与两版 README 目录树（ID / 状态 / 引用 / 文件登记）
+# 检查追溯矩阵、两版 README 目录树与 PACS TLS fail-closed 约束
 make trace
 ```
 
@@ -419,6 +419,7 @@ make trace
 - **追溯矩阵**：`make trace` 校验 `docs/traceability.md` 的结构与引用，缺口不会被悄悄改成「已验证」
 - **文档一致性**：`make trace` 同时校验两版 README 的目录树登记了 `src/`、`frontend/src/`、`scripts/`、`tests/` 的全部文件，新增模块或脚本漏写会直接报错
 - **出站脱敏回归**：C++ 侧 `LumeSinkPrivacyTest.*` 覆盖短 UID 与含空格路径；`make lume-test` 另在临时端口起 Lume、直投原始 PHI 并核对 SQLite 落库内容不含标识（换回旧正则会变红）
+- **PACS TLS fail-closed**：`make trace` 静态锁住「不得引用 fail-open 验签级别、TLS 可用性检查早于建连、C-MOVE 的 TLS 判定早于明文监听」；`PacsTlsConfigTest.*` 覆盖禁用的 `check` 级别、证书错配不重试、C-MOVE 拒绝判定
 - **质量门**：主目标与 `bridge_test` 共用同一套 `-Wall -Wextra -Werror -Wconversion` 编译选项，测试代码不比产品代码宽松；测试失败即以非零码退出
 - **测试数据**：为每个测试提供可重现的数据
 - **错误处理测试**：验证错误场景的处理

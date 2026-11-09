@@ -82,9 +82,9 @@ lume-qt/
 ├── tests/                       # Google Test (3 files)
 │   ├── bridge_test.cpp / volume_stats_test.cpp
 │   └── CMakeLists.txt
-├── scripts/                     # build and check scripts (4 files)
+├── scripts/                     # build and check scripts (5 files)
 │   ├── build.sh / frontend-build.sh
-│   └── check-traceability.py / check-readme-layout.py
+│   └── check-traceability.py / check-readme-layout.py / check-pacs-tls.py
 ├── tools/lume-medmon/           # reference Lume service (.env / .data not tracked)
 ├── docs/                        # architecture, notes, privacy, risk, trace, soak
 ├── resources/web/               # frontend build output, gitignored
@@ -346,7 +346,7 @@ make run-tests                  # C++ unit tests through ctest
 make frontend-tests             # Vitest frontend tests
 cd frontend && npm run typecheck
 cd frontend && npm run build
-make trace                      # traceability matrix + README layout consistency
+make trace                      # traceability + README layout + PACS TLS fail-closed checks
 make perf-bench                 # performance benchmark target
 ```
 
@@ -357,6 +357,7 @@ Current suites:
 - Frontend tests — eight Vitest cases for the latency/event measurement helpers.
 - `make trace` also verifies that both README directory trees list every file under `src/`, `frontend/src/`, `scripts/` and `tests/`; adding a module or script without updating the READMEs fails the gate.
 - `LumeSinkPrivacyTest.*` covers short DICOM UIDs and paths containing spaces; `make lume-test` starts a throwaway Lume instance, POSTs raw PHI and asserts the SQLite row has no identifiers (verified to fail against the old regex).
+- `make trace` also enforces PACS TLS fail-closed invariants: no fail-open peer-verification level, config validation before association, and the C-MOVE TLS verdict before any plaintext listener is opened. `PacsTlsConfigTest.*` covers the rejected `check` level, non-retryable certificate errors and the C-MOVE verdict.
 
 The project deliberately has **no CI pipeline**. Qt WebEngine + DCMTK make CI images expensive; the local Makefile targets are the quality gate. If CI is added later, verify `qt6-webengine-dev` and `libdcmtk-dev` are available in the target image first.
 

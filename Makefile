@@ -36,10 +36,11 @@ CTEST ?= ctest
 # 默认目标：完整构建
 all: cpp
 
-## 检查追溯矩阵与两版 README 目录树（ID / 状态 / 引用 / 文件登记）
+## 检查追溯矩阵、两版 README 目录树与 PACS TLS fail-closed 约束
 trace:
 	@python3 scripts/check-traceability.py
 	@python3 scripts/check-readme-layout.py
+	@python3 scripts/check-pacs-tls.py
 
 ## 构建并运行应用
 run: all
