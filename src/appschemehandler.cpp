@@ -1,5 +1,7 @@
 #include "appschemehandler.h"
 
+#include "schemepath.h"
+
 #include <QBuffer>
 #include <QCoreApplication>
 #include <QDir>
@@ -19,19 +21,12 @@ AppSchemeHandler::AppSchemeHandler(const QString &rootDir, QObject *parent)
 void AppSchemeHandler::requestStarted(QWebEngineUrlRequestJob *job)
 {
     const QUrl url = job->requestUrl();
-    QString path = url.path();
 
     // 正常请求不打日志（每次启动 5+ 条会刷屏）；
     // 只在 404 / 打开失败时告警，这两类正是「页面空白」时的关键线索。
-    // 根路径回退到 index.html
-    if (path.isEmpty() || path == QLatin1String("/")) {
-        path = QStringLiteral("/index.html");
-    }
-
-    // 去掉前导 '/'
-    if (path.startsWith(QLatin1Char('/'))) {
-        path.remove(0, 1);
-    }
+    // 根路径与无扩展名的路由式路径（history 深链）在 resolveRequestPath 里
+    // 回退到 index.html；其余路径原样交给下面的文件系统分支与 404 判断。
+    QString path = scheme::resolveRequestPath(url.path());
 
     // 虚拟二进制资源：不走文件系统，直接交给 provider 供数
     if (path == QLatin1String("__volume/current.bin")) {

@@ -85,6 +85,22 @@ if (GTest_FOUND)
     endif()
     add_test(NAME VolumeStatsUnitTests COMMAND volume_stats_test)
 
+    # 纯函数单测：app:// 请求路径归一化（根路径 / history 深链 / 资源透传）。
+    # 只链 Qt6::Core，不碰 WebEngine，所以能在任意环境跑。
+    add_executable(scheme_path_test
+        scheme_path_test.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/schemepath.cpp
+    )
+    target_link_libraries(scheme_path_test Qt6::Core GTest::gtest GTest::gtest_main)
+    target_compile_features(scheme_path_test PRIVATE cxx_std_17)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(scheme_path_test PRIVATE
+            -Wall -Wextra -Werror -pedantic -Wshadow -Wformat=2
+            -Wconversion -Wnull-dereference -Wdouble-promotion
+        )
+    endif()
+    add_test(NAME SchemePathUnitTests COMMAND scheme_path_test)
+
     # 添加测试
     add_test(NAME BridgeUnitTests
         COMMAND bridge_test
@@ -101,7 +117,7 @@ if (GTest_FOUND)
     # 添加运行测试的目标
     add_custom_target(run_tests
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-        DEPENDS bridge_test volume_stats_test
+        DEPENDS bridge_test volume_stats_test scheme_path_test
         COMMENT "运行所有单元测试"
         VERBATIM
     )
