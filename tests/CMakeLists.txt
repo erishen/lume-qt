@@ -101,6 +101,21 @@ if (GTest_FOUND)
     endif()
     add_test(NAME SchemePathUnitTests COMMAND scheme_path_test)
 
+    # 单实例锁：flock 语义在进程内即可验证（两个独立的 fd 互相冲突）。
+    add_executable(instance_lock_test
+        instance_lock_test.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/instancelock.cpp
+    )
+    target_link_libraries(instance_lock_test Qt6::Core GTest::gtest GTest::gtest_main)
+    target_compile_features(instance_lock_test PRIVATE cxx_std_17)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(instance_lock_test PRIVATE
+            -Wall -Wextra -Werror -pedantic -Wshadow -Wformat=2
+            -Wconversion -Wnull-dereference -Wdouble-promotion
+        )
+    endif()
+    add_test(NAME InstanceLockUnitTests COMMAND instance_lock_test)
+
     # 添加测试
     add_test(NAME BridgeUnitTests
         COMMAND bridge_test
@@ -117,7 +132,7 @@ if (GTest_FOUND)
     # 添加运行测试的目标
     add_custom_target(run_tests
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-        DEPENDS bridge_test volume_stats_test scheme_path_test
+        DEPENDS bridge_test volume_stats_test scheme_path_test instance_lock_test
         COMMENT "运行所有单元测试"
         VERBATIM
     )

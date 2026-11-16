@@ -100,6 +100,8 @@ qt_add_executable(lume-qt
     src/appschemehandler.h
     src/schemepath.cpp
     src/schemepath.h
+    src/instancelock.cpp
+    src/instancelock.h
     src/consolepage.cpp
     src/consolepage.h
     src/vitalstrip.cpp

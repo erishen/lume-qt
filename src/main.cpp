@@ -10,6 +10,7 @@
 #include <QSettings>
 #include <QStandardPaths>
 
+#include "instancelock.h"
 #include "mainwindow.h"
 
 namespace {
@@ -33,50 +34,11 @@ void disableRendererThrottling()
     qputenv("QTWEBENGINE_CHROMIUM_FLAGS", merged);
 }
 /**
- * 单实例锁：不用 QLockFile，因为它的「陈旧」判定同时看文件年龄与进程存活，
- * 把 staleLockTime 设成 0 又会把进程存活检查一起关掉——进程被杀后反而再也起不来。
- * 这里只认 PID 存活：锁文件里写自己的 pid，启动时若持有者还活着就拒绝，
- * 若已经不在（被 kill -9 / 断电）就直接接管。
- * 返回 true 表示拿到了锁；false 时 holderPid 里是仍活着的那一方。
+ * 单实例锁的取舍见 src/instancelock.h：不用 QLockFile（它的陈旧判定同时看文件年龄
+ * 与进程存活，staleLockTime=0 会连存活检查一起关掉），也不用「O_EXCL 建锁 + 读 pid
+ * 判活 + 删陈旧锁」——那条路径里判定与删除不是原子的。改用 flock，所有权由内核维护。
  */
-bool acquireInstanceLock(const QString &path, qint64 *holderPid)
-{
-    if (holderPid) *holderPid = -1;
-    for (int attempt = 0; attempt < 2; ++attempt) {
-        const int fd = ::open(path.toUtf8().constData(), O_CREAT | O_EXCL | O_WRONLY, 0644);
-        if (fd >= 0) {
-            const QByteArray pid = QByteArray::number(static_cast<qint64>(::getpid())) + '\n';
-            ::write(fd, pid.constData(), static_cast<size_t>(pid.size()));
-            ::close(fd);
-            return true;
-        }
-        QFile existing(path);
-        if (!existing.open(QIODevice::ReadOnly)) return false;
-        const qint64 pid = existing.readLine().trimmed().toLongLong();
-        existing.close();
-        // 持有者还活着（EPERM 说明进程存在但属于别人）→ 拒绝启动。
-        if (pid > 0 && (::kill(static_cast<pid_t>(pid), 0) == 0 || errno == EPERM)) {
-            if (holderPid) *holderPid = pid;
-            return false;
-        }
-        // 死进程留下的锁：清掉，下一轮重新用 O_EXCL 抢。
-        QFile::remove(path);
-    }
-    return false;
-}
-
-/// 正常退出时清掉自己的锁；被 kill -9 时清不掉，靠下一次启动的接管逻辑处理。
-QString gInstanceLockPath;
-
-void releaseInstanceLock()
-{
-    if (gInstanceLockPath.isEmpty()) return;
-    QFile existing(gInstanceLockPath);
-    if (!existing.open(QIODevice::ReadOnly)) return;
-    const qint64 pid = existing.readLine().trimmed().toLongLong();
-    existing.close();
-    if (pid == static_cast<qint64>(::getpid())) QFile::remove(gInstanceLockPath);
-}
+InstanceLock gInstanceLock;
 /**
  * 从旧的 qt-react-shell 迁移本机数据与偏好。
  *
@@ -150,16 +112,14 @@ int main(int argc, char *argv[])
     QDir().mkpath(stateDir);
     const QString lockPath = stateDir + QStringLiteral("/instance.lock");
     qint64 holderPid = -1;
-    // 只按 PID 判活：进程被杀留下的锁文件能在下一次启动时自动接管，
-    // 不设「锁文件太老就忽略」的时限，避免把仍在运行的旧实例误判为死掉。
-    if (!acquireInstanceLock(lockPath, &holderPid)) {
+    // flock 拿不到就是另一个实例真的持有；文件里的 pid 只用于这条提示。
+    if (!gInstanceLock.acquire(lockPath, &holderPid)) {
         qWarning().noquote()
             << "[Single] 已有实例在运行（pid=" << holderPid << "，锁：" << lockPath
             << "），本次启动中止。术中不允许两个界面共享同一份台账与体数据状态。";
         return 1;
     }
-    gInstanceLockPath = lockPath;
-    std::atexit(releaseInstanceLock);
+    // 锁随进程生命周期存在：全局对象析构时释放，被 kill -9 时由内核关闭 fd 释放。
 
     qInfo() << "Starting lume-qt with web root:" << WEB_ROOT_PATH;
 
