@@ -34,7 +34,8 @@ set(WEB_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/resources/web")
 
 # ---------------------------------------------------------------------------
 # 前端构建：npm run build → resources/web
-# 通过 CUSTOM_TARGET 挂在 all 之前，保证每次构建都同步最新前端
+# CUSTOM_TARGET 挂在 ALL 上，只保证它进入默认构建；先于宿主目标编译的顺序
+# 由下面 qt_add_executable 之后的 add_dependencies 负责，二者缺一不可。
 # ---------------------------------------------------------------------------
 find_program(NPM_EXECUTABLE npm REQUIRED)
 find_program(BASH_EXECUTABLE bash REQUIRED)
@@ -110,6 +111,10 @@ qt_add_executable(lume-qt
     src/volumestats.cpp
     src/volumestats.h
 )
+
+# 显式依赖边：ALL 只表示"参与默认构建"，不表示"先于本目标完成"。
+# 没有这一行，ninja 可以先把宿主目标编译完再跑前端构建，产物一致性又回到靠人。
+add_dependencies(lume-qt frontend-build)
 
 # 设置编译器警告（目标定义后设置）
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
